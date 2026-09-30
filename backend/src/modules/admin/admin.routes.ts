@@ -19,7 +19,7 @@ const authenticateAdmin = (req: Request, res: Response, next: NextFunction): voi
     return;
   }
 
-  const secret = process.env.JWT_SECRET || 'nexus_super_secret_jwt_key_2024';
+  const secret = process.env.JWT_SECRET!;
 
   try {
     const decoded = jwt.verify(token, secret) as any;

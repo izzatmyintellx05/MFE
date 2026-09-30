@@ -23,7 +23,7 @@ export const Login: React.FC = () => {
     setError(null);
 
     try {
-      console.log('[SIGN-IN] Sending request to backend http://localhost:3000/api/auth/login...');
+      console.log('[SIGN-IN] Sending request to backend /api/auth/login...');
       await login(targetEmail.trim(), targetPass.trim());
       console.log('[SIGN-IN SUCCESS] Redirecting to MR11 Master Ledger...');
       window.location.replace('/mr11');
