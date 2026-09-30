@@ -1,0 +1,65 @@
+name: Deploy to Azure App Service
+
+# Builds the frontend and backend into one package and deploys it to the web app.
+# One-time setup: run infra/azure/setup.sh, then add the secrets/variable it prints
+# under GitHub > Settings > Secrets and variables > Actions.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # Azure login with OIDC (no stored passwords)
+  contents: read
+
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          npm ci
+          npm run build
+          npm prune --omit=dev
+          npx prisma generate
+
+      - name: Assemble deploy package
+        run: |
+          mkdir deploy
+          cp -r backend/dist backend/node_modules backend/prisma backend/package.json backend/package-lock.json deploy/
+          cp -r frontend/dist deploy/public
+          # .bin holds symlinks that zip deploy does not keep; start:azure calls prisma directly
+          rm -rf deploy/node_modules/.bin
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          package: deploy

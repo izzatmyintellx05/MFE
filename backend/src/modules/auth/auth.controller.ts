@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
 const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || 'mfe-formwork-jwt-secret-2026';
+const JWT_SECRET = process.env.JWT_SECRET!;
 
 function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -251,7 +251,7 @@ export async function getMe(req: Request, res: Response): Promise<Response> {
     }
 
     const token = authHeader.split(' ')[1];
-    const secret = process.env.JWT_SECRET || 'nexus_super_secret_jwt_key_2024';
+    const secret = process.env.JWT_SECRET!;
     const decoded = jwt.verify(token, secret) as any;
 
     const user = await prisma.user.findUnique({

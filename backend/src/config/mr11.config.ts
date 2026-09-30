@@ -70,6 +70,7 @@ export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {
     'Project No.',
   ],
   ADMIN: [],
+  CEO: [],
 };
 
 // Complete ordered list preserving all BD/commercial columns, Shellplan, Design,

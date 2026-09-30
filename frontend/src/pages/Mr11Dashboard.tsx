@@ -58,7 +58,7 @@ export const Mr11Dashboard: React.FC = () => {
   };
 
   const handleExport = () => {
-    window.open(`${api.defaults.baseURL || 'http://localhost:3000/api'}/mr11/export`, '_blank');
+    window.open(`${api.defaults.baseURL}/mr11/export`, '_blank');
   };
 
   const isStreamMergeColumn = (colHeader: string) => {
