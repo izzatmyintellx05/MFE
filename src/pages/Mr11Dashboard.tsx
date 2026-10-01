@@ -17,9 +17,16 @@ const STREAM_MERGE_COLUMNS = [
   'Total Quantity Ordered m2',
 ];
 
+// Columns shown under a shared top header (e.g. Payment terms), as in the BD workbook
+interface HeaderGroup {
+  label: string;
+  columns: { key: string; label: string }[];
+}
+
 export const Mr11Dashboard: React.FC = () => {
   const [records, setRecords] = useState<any[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
+  const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +41,7 @@ export const Mr11Dashboard: React.FC = () => {
       const data = res.data?.data;
       setRecords(data?.run?.records || []);
       setHeaders(data?.orderedHeaders || []);
+      setHeaderGroups(data?.headerGroups || []);
     } catch (err: any) {
       setError(err.response?.data?.error?.message || err.message || 'Failed to fetch MR11 records');
     } finally {
@@ -65,6 +73,15 @@ export const Mr11Dashboard: React.FC = () => {
     return STREAM_MERGE_COLUMNS.some(
       (c) => c === colHeader || colHeader.toLowerCase().startsWith(c.toLowerCase())
     );
+  };
+
+  const groupOf = (h: string) => headerGroups.find((g) => g.columns.some((c) => c.key === h));
+  const subLabelOf = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
+  const groupSpan = (idx: number) => {
+    const group = groupOf(headers[idx]);
+    let span = 1;
+    while (group && idx + span < headers.length && groupOf(headers[idx + span]) === group) span++;
+    return span;
   };
 
   const isAtdColumn = (colHeader: string) => {
@@ -174,17 +191,49 @@ export const Mr11Dashboard: React.FC = () => {
               <table className="w-full text-left border-collapse text-xs">
                 <thead className="bg-[#FAF9F6] text-stone-600 font-extrabold uppercase sticky top-0 z-20 text-[10px] tracking-wider border-b border-stone-200">
                   <tr>
-                    <th className="p-2.5 border-r border-stone-200 text-center w-10 bg-[#FAF9F6] sticky left-0 z-30 font-mono">
+                    <th
+                      rowSpan={2}
+                      className="p-2.5 border-r border-stone-200 text-center w-10 bg-[#FAF9F6] sticky left-0 z-30 font-mono"
+                    >
                       #
                     </th>
-                    {headers.map((h, idx) => (
-                      <th
-                        key={idx}
-                        className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
-                      >
-                        {h}
-                      </th>
-                    ))}
+                    {headers.map((h, idx) => {
+                      const group = groupOf(h);
+                      if (!group) {
+                        return (
+                          <th
+                            key={idx}
+                            rowSpan={2}
+                            className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
+                          >
+                            {h}
+                          </th>
+                        );
+                      }
+                      // Grouped column: only the first column of the group draws the shared header
+                      if (idx > 0 && groupOf(headers[idx - 1]) === group) return null;
+                      return (
+                        <th
+                          key={idx}
+                          colSpan={groupSpan(idx)}
+                          className="p-2.5 border-r border-b border-stone-200 whitespace-nowrap text-center bg-[#FAF9F6]"
+                        >
+                          {group.label}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                  <tr>
+                    {headers.map((h, idx) =>
+                      groupOf(h) ? (
+                        <th
+                          key={idx}
+                          className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
+                        >
+                          {subLabelOf(h)}
+                        </th>
+                      ) : null
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-100 text-stone-800">

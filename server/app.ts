@@ -59,7 +59,7 @@ app.get('/api/health/db', async (req, res) => {
 
     return res.json({
       status: 'CONNECTED',
-      message: 'Successfully connected to Supabase PostgreSQL database!',
+      message: 'Successfully connected to the PostgreSQL database.',
       endpoint: maskedUrl,
       serverTime: result.rows[0]?.server_time,
       version: result.rows[0]?.version?.split(' ')?.[0],

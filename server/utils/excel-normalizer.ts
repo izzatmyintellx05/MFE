@@ -41,6 +41,10 @@ function extractRawValue(val: any): any {
     if ('result' in val) {
       return extractRawValue(val.result);
     }
+    // Formula saved without a calculated result: there is no value to show
+    if ('formula' in val || 'sharedFormula' in val) {
+      return null;
+    }
     if (val instanceof Date) {
       return val.toISOString().split('T')[0];
     }
@@ -52,6 +56,15 @@ function extractRawValue(val: any): any {
     }
   }
   return val;
+}
+
+// ExcelJS's cell.value drops a formula result of 0 (or false / ""); cell.result keeps it
+function cellValue(cell: ExcelJS.Cell): any {
+  if (cell.type === ExcelJS.ValueType.Formula) {
+    const result = cell.result;
+    return result === undefined ? null : { result };
+  }
+  return cell.value;
 }
 
 function safeString(val: any): string {
@@ -137,13 +150,13 @@ export async function parseAndNormalizeWorkbook(input: string | Buffer): Promise
           fontColor = `#${cell.font.color.argb.slice(-6).toUpperCase()}`;
         }
 
-        let rawVal = extractRawValue(cell.value);
+        let rawVal = extractRawValue(cellValue(cell));
 
         const parentMerge = mergeMap.get(`${r}_${c}`);
         if (parentMerge && (rawVal === null || rawVal === undefined || rawVal === '')) {
           try {
             const parentCell = worksheet.getCell(parentMerge.r + 1, parentMerge.c + 1);
-            rawVal = extractRawValue(parentCell.value);
+            rawVal = extractRawValue(cellValue(parentCell));
           } catch {
             // keep null
           }

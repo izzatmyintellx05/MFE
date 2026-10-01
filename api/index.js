@@ -927,6 +927,9 @@ function extractRawValue(val) {
     if ("result" in val) {
       return extractRawValue(val.result);
     }
+    if ("formula" in val || "sharedFormula" in val) {
+      return null;
+    }
     if (val instanceof Date) {
       return val.toISOString().split("T")[0];
     }
@@ -938,6 +941,13 @@ function extractRawValue(val) {
     }
   }
   return val;
+}
+function cellValue(cell) {
+  if (cell.type === ExcelJS.ValueType.Formula) {
+    const result = cell.result;
+    return result === void 0 ? null : { result };
+  }
+  return cell.value;
 }
 function safeString(val) {
   if (val === null || val === void 0) return "";
@@ -1009,12 +1019,12 @@ async function parseAndNormalizeWorkbook(input) {
         if (cell.font?.color?.argb && typeof cell.font.color.argb === "string") {
           fontColor = `#${cell.font.color.argb.slice(-6).toUpperCase()}`;
         }
-        let rawVal = extractRawValue(cell.value);
+        let rawVal = extractRawValue(cellValue(cell));
         const parentMerge = mergeMap.get(`${r}_${c}`);
         if (parentMerge && (rawVal === null || rawVal === void 0 || rawVal === "")) {
           try {
             const parentCell = worksheet.getCell(parentMerge.r + 1, parentMerge.c + 1);
-            rawVal = extractRawValue(parentCell.value);
+            rawVal = extractRawValue(cellValue(parentCell));
           } catch {
           }
         }
@@ -1057,6 +1067,19 @@ init_prisma();
 
 // server/config/mr11.config.ts
 init_prisma();
+var MR11_HEADER_GROUPS = [
+  {
+    label: "Payment terms",
+    columns: [
+      { key: "Payment terms - Percentage", label: "Percentage" },
+      { key: "Payment terms - Type", label: "Type" },
+      { key: "Payment terms - Balance Percentage", label: "Balance Percentage" },
+      { key: "Payment terms - Type 2", label: "Type" },
+      { key: "Payment terms - Balance Percentage 2", label: "Balance Percentage" },
+      { key: "Payment terms - Type 3", label: "Type" }
+    ]
+  }
+];
 var MR11_SOURCE_KEY_MAP = {
   BD: [
     "Customer & Project Name",
@@ -1141,7 +1164,13 @@ var ORDERED_HEADER_LIST = [
   "Original NCA Qty",
   "Revised NCA Qty",
   "NCA Remarks",
-  "Payment terms",
+  // Payment terms group (two-row header, same layout as the BD workbook)
+  "Payment terms - Percentage",
+  "Payment terms - Type",
+  "Payment terms - Balance Percentage",
+  "Payment terms - Type 2",
+  "Payment terms - Balance Percentage 2",
+  "Payment terms - Type 3",
   "Selling Price (USD)",
   "LME",
   "Incoterms",
@@ -1153,10 +1182,6 @@ var ORDERED_HEADER_LIST = [
   "Advance Received / Payment Status",
   "Actual Received",
   "Payment Date",
-  "Percentage",
-  "Type",
-  "Balance Percentage",
-  "Type Balance Percentage",
   // --- Shellplan Columns (Col AJ, AK) ---
   "Shell Plan Status - Pending Consultant Drawings",
   "Shell Plan Approved Date",
@@ -1222,8 +1247,16 @@ var MR11_ORDERED_COLUMNS = [
   { target: "NCA date", sourceDept: "BD" /* BD */, sourceColumn: "NCA date", type: "date" },
   { target: "Original NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Original NCA Qty", type: "number" },
   { target: "Revised NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Revised NCA Qty", type: "number" },
-  { target: "NCA Remarks", sourceDept: "BD" /* BD */, sourceColumn: "NCA Remarks", type: "string" },
-  { target: "Payment terms", sourceDept: "BD" /* BD */, sourceColumn: "Payment terms", type: "string" },
+  // BD's second "Remarks" column (right after Revised NCA Qty) is the NCA remark
+  { target: "NCA Remarks", sourceDept: "BD" /* BD */, sourceColumn: "Remarks 2", type: "string", exact: true },
+  // Payment terms sub-columns under the BD two-row "Payment terms" header (exact match:
+  // a missing "Type 3" must not fall back to "Type")
+  { target: "Payment terms - Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Percentage", type: "number", exact: true },
+  { target: "Payment terms - Type", sourceDept: "BD" /* BD */, sourceColumn: "Type", type: "string", exact: true },
+  { target: "Payment terms - Balance Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Balance Percentage", type: "number", exact: true },
+  { target: "Payment terms - Type 2", sourceDept: "BD" /* BD */, sourceColumn: "Type 2", type: "string", exact: true },
+  { target: "Payment terms - Balance Percentage 2", sourceDept: "BD" /* BD */, sourceColumn: "Balance Percentage 2", type: "number", exact: true },
+  { target: "Payment terms - Type 3", sourceDept: "BD" /* BD */, sourceColumn: "Type 3", type: "string", exact: true },
   { target: "Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Selling Price (USD)", type: "number" },
   { target: "LME", sourceDept: "BD" /* BD */, sourceColumn: "LME", type: "number" },
   { target: "Incoterms", sourceDept: "BD" /* BD */, sourceColumn: "Incoterms", type: "string" },
@@ -1235,11 +1268,6 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Advance Received / Payment Status", sourceDept: "FINANCE" /* FINANCE */, sourceColumn: "Advance Received / Payment Status", type: "string" },
   { target: "Actual Received", sourceDept: "FINANCE" /* FINANCE */, sourceColumn: "Actual Received", type: "number" },
   { target: "Payment Date", sourceDept: "FINANCE" /* FINANCE */, sourceColumn: "Payment Date", type: "date" },
-  // Payment terms sub-columns under the two-row "Payment terms" header
-  { target: "Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Percentage", type: "number" },
-  { target: "Type", sourceDept: "BD" /* BD */, sourceColumn: "Type", type: "string" },
-  { target: "Balance Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Balance Percentage", type: "number" },
-  { target: "Type Balance Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Type 2", type: "string" },
   // Shellplan & Design
   { target: "Shell Plan Status - Pending Consultant Drawings", sourceDept: "SHELLPLAN" /* SHELLPLAN */, sourceColumn: "Shell Plan Status - Pending Consultant Drawings", type: "string" },
   { target: "Shell Plan Approved Date", sourceDept: "SHELLPLAN" /* SHELLPLAN */, sourceColumn: "Shell Plan Approved Date", type: "date" },
@@ -1528,6 +1556,29 @@ function sheetToRecordsWithStyles(sheet) {
       }
     }
   }
+  const merges = sheet.config?.merge || {};
+  const masterStyle = (r, c) => {
+    if (celldata.length > 0) {
+      const cell2 = celldata.find((x) => x && x.r === r && x.c === c);
+      return { fc: cell2?.v?.fc, bg: cell2?.v?.bg };
+    }
+    const cell = sheet.data?.[r]?.[c];
+    return cell && typeof cell === "object" ? { fc: cell.fc || cell.v?.fc, bg: cell.bg || cell.v?.bg } : {};
+  };
+  for (const m of Object.values(merges)) {
+    if (!m || m.c > 4 || m.rs < 2) continue;
+    const { fc, bg } = masterStyle(m.r, m.c);
+    const sfc = fc ? String(fc).toUpperCase() : "";
+    const sbg = bg ? String(bg).toUpperCase() : "";
+    const useFont = sfc && sfc !== "#000000" && sfc !== "BLACK" && sfc !== "#000";
+    const useFill = sbg && sbg !== "#FFFFFF" && sbg !== "WHITE" && sbg !== "#000000" && sbg !== "TRANSPARENT";
+    for (let rr = m.r + 1; rr < m.r + m.rs; rr++) {
+      const style = rowStyleMap[rr];
+      if (!style) continue;
+      if (useFont && !style.fontColor) style.fontColor = sfc;
+      if (useFill && !style.fillColor) style.fillColor = sbg;
+    }
+  }
   const isRepeatedHeaderRow = (rKey) => {
     const cells = rawCellsMap[rKey] || {};
     let filled = 0;
@@ -1630,6 +1681,35 @@ function buildFinanceMonthColumns(headers) {
   }
   flush(null);
   return result;
+}
+function isUsableValue(val) {
+  if (val === null || val === void 0 || typeof val === "object") return false;
+  const s = String(val).trim();
+  return s !== "" && !s.startsWith("#");
+}
+function resolveLmePricing(bdData) {
+  const keyWhere = (test) => Object.keys(bdData).find((k) => test(k.toLowerCase().trim()));
+  const lmeType = String(bdData[keyWhere((k) => k === "lme" || k.startsWith("lme ("))] ?? "").trim().toLowerCase();
+  const lmeRate = bdData[keyWhere((k) => k.startsWith("lme rate"))];
+  let computedAdjusted = null;
+  if (lmeType === "fixed") computedAdjusted = 0;
+  else if (lmeType === "freeze") computedAdjusted = "Check";
+  else if (lmeType === "variable") computedAdjusted = isUsableValue(lmeRate) ? parseNumeric(lmeRate) : "Check";
+  const bdAdjusted = findCellValue(bdData, "LME Adjusted (USD)");
+  const lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
+  const bdFinal = findCellValue(bdData, "Final Selling Price (USD)");
+  if (isUsableValue(bdFinal)) return { lmeAdjusted, finalSellingPrice: bdFinal };
+  if (String(lmeAdjusted ?? "").trim().toLowerCase() === "check") return { lmeAdjusted, finalSellingPrice: "Check" };
+  const parts = [
+    findCellValue(bdData, "Selling Price (USD)"),
+    findCellValue(bdData, "Props, WPB, Waler, Acc (USD)"),
+    findCellValue(bdData, "Aluminium Weight Adjusted (USD)"),
+    lmeAdjusted,
+    findCellValue(bdData, "Freight Adjusted (USD)")
+  ];
+  if (!parts.some(isUsableValue)) return { lmeAdjusted, finalSellingPrice: null };
+  const total = parts.reduce((sum, p) => sum + (isUsableValue(p) ? parseNumeric(p) : 0), 0);
+  return { lmeAdjusted, finalSellingPrice: Math.round(total * 1e6) / 1e6 };
 }
 function findCellValue(row, candidateHeader) {
   if (!row) return null;
@@ -1911,9 +1991,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const cellColors = {};
     for (const mapping of MR11_ORDERED_COLUMNS) {
       if (mapping.sourceDept === "BD" /* BD */) {
-        outRow[mapping.target] = findCellValue(bdData, mapping.sourceColumn);
+        outRow[mapping.target] = mapping.exact ? bdData[mapping.sourceColumn] ?? null : findCellValue(bdData, mapping.sourceColumn);
       }
     }
+    const lmePricing = resolveLmePricing(bdData);
+    outRow["LME Adjusted (USD)"] = lmePricing.lmeAdjusted;
+    outRow["Final Selling Price (USD)"] = lmePricing.finalSellingPrice;
     const findBestDeptRow = (dept) => {
       const deptDataset = datasetMap[dept] || [];
       const possibleKeyNames = MR11_SOURCE_KEY_MAP[dept] || [];
@@ -2258,12 +2341,6 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Total Quantity Ordered (m2)"] = finalQuantityAN;
     outRow["Total Quantity Ordered"] = finalQuantityAN;
     outRow["processed qty"] = finalQuantityAN;
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 40) {
-      const colANHeader = ORDERED_HEADER_LIST[39];
-      if (colANHeader) {
-        outRow[colANHeader] = finalQuantityAN;
-      }
-    }
     const streamMatchedShellplan = shellplanRows.filter((spRow) => {
       const spProjNo = cleanStr(findCellValue(spRow.data, "Project No") || findCellValue(spRow.data, "Project No.") || spRow.rawCells?.[0]);
       const spProjName = cleanStr(findCellValue(spRow.data, "Project Name") || findCellValue(spRow.data, "Customer & Project Name") || spRow.rawCells?.[1]);
@@ -2360,12 +2437,6 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const resolvedProcessedDate = activeClosingDate || latestSeriesClosingDate || (tracker ? tracker.lastChangedDate : null) || todayStr;
     outRow["Processed Date"] = resolvedProcessedDate;
     outRow["Closing Date"] = resolvedProcessedDate;
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 42) {
-      const colAPHeader = ORDERED_HEADER_LIST[41];
-      if (colAPHeader) {
-        outRow[colAPHeader] = resolvedProcessedDate;
-      }
-    }
     let matchedProdRow = null;
     let highestProdScore = -1;
     for (const pRow of productionRows) {
@@ -2403,12 +2474,6 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Total Produced"] = finalColumnAQ;
     outRow["Total Produced Quantity"] = finalColumnAQ;
     outRow["produced qty"] = finalColumnAQ;
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 43) {
-      const colAQHeader = ORDERED_HEADER_LIST[42];
-      if (colAQHeader) {
-        outRow[colAQHeader] = finalColumnAQ;
-      }
-    }
     let latestFilledDate = null;
     if (matchedProdRow) {
       const COL_R_INDEX = 17;
@@ -2443,12 +2508,6 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
     }
     outRow["Produced Date"] = latestFilledDate;
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 44) {
-      const colARHeader = ORDERED_HEADER_LIST[43];
-      if (colARHeader) {
-        outRow[colARHeader] = latestFilledDate;
-      }
-    }
     outRow["_fontColor"] = bdFontColor;
     outRow["_fillColor"] = bdFillColor;
     return outRow;
@@ -2965,7 +3024,8 @@ async function getLatestMr11(req, res) {
       data: {
         run: latestRun,
         visibleColumns: config?.visibleColumns || [],
-        orderedHeaders: ORDERED_HEADER_LIST2
+        orderedHeaders: ORDERED_HEADER_LIST2,
+        headerGroups: MR11_HEADER_GROUPS
       }
     });
   } catch (err) {
@@ -3020,17 +3080,29 @@ async function exportMr11ToExcel(req, res) {
     const worksheet = workbook.addWorksheet("MR11 Master");
     const headers = ORDERED_HEADER_LIST2;
     worksheet.columns = headers.map((header) => ({
-      header,
       key: header,
       width: Math.max(header.length + 4, 16)
     }));
-    const headerRow = worksheet.getRow(1);
-    headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
-    headerRow.fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FF1E293B" }
-    };
+    const groupOf = (h) => MR11_HEADER_GROUPS.find((g2) => g2.columns.some((c) => c.key === h));
+    const subLabel = (h) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
+    worksheet.addRow(headers.map((h) => groupOf(h)?.label ?? h));
+    worksheet.addRow(headers.map((h) => groupOf(h) ? subLabel(h) : h));
+    for (let c = 1; c <= headers.length; ) {
+      const group = groupOf(headers[c - 1]);
+      let span = 1;
+      while (group && c + span <= headers.length && groupOf(headers[c + span - 1]) === group) span++;
+      if (group && span > 1) worksheet.mergeCells(1, c, 1, c + span - 1);
+      if (!group) worksheet.mergeCells(1, c, 2, c);
+      c += span;
+    }
+    [1, 2].forEach((r) => {
+      const headerRow = worksheet.getRow(r);
+      headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      headerRow.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+      headerRow.eachCell({ includeEmpty: true }, (cell) => {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E293B" } };
+      });
+    });
     records.forEach((row) => {
       const orderedRowData = {};
       headers.forEach((h) => {
@@ -3073,7 +3145,7 @@ async function exportMr11ToExcel(req, res) {
         (h) => h === colName || h.toLowerCase().trim() === colName.toLowerCase().trim()
       ) + 1;
       if (colIdx > 0) {
-        let r = 2;
+        let r = 3;
         for (let i = 0; i < records.length; ) {
           const span = records[i]["_streamSpan"] || 1;
           if (span > 1) {
@@ -3514,7 +3586,7 @@ app.get("/api/health/db", async (req, res) => {
     await pool.end();
     return res.json({
       status: "CONNECTED",
-      message: "Successfully connected to Supabase PostgreSQL database!",
+      message: "Successfully connected to the PostgreSQL database.",
       endpoint: maskedUrl,
       serverTime: result.rows[0]?.server_time,
       version: result.rows[0]?.version?.split(" ")?.[0],
@@ -3578,7 +3650,7 @@ async function bootstrapSystem() {
     const adminId2 = admin?.id || "user-admin-1";
     const dbCodes = await hydrateActiveVersionsFromDb(prisma);
     if (dbCodes) {
-      console.log(`[MFE Formwork MR11] Loaded active workbooks from Supabase: ${[...dbCodes].join(", ") || "none"}`);
+      console.log(`[MFE Formwork MR11] Loaded active workbooks from database: ${[...dbCodes].join(", ") || "none"}`);
     }
     const uploadsStorageDir = path2.resolve(process.cwd(), "uploads_storage");
     const uploadsDir = path2.resolve(process.cwd(), "uploads");
@@ -3623,7 +3695,7 @@ async function bootstrapSystem() {
     const dbRun = await fetchLatestMr11RunFromDb();
     if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) {
       await prisma.mr11Run.create({ data: dbRun });
-      console.log("[MFE Formwork MR11] Loaded latest MR11 Master from Supabase");
+      console.log("[MFE Formwork MR11] Loaded latest MR11 Master from database");
     } else {
       try {
         await executeMr11Pipeline(prisma, { persist: false });

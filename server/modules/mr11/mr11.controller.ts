@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 import { executeMr11Pipeline } from './mr11.engine';
 import { getLatestMr11Run, hydrateActiveVersionsFromDb } from '../../db/supabase';
 import * as mr11ConfigModule from '../../config/mr11.config';
+import { MR11_HEADER_GROUPS } from '../../config/mr11.config';
 
 const prisma = new PrismaClient();
 
@@ -24,6 +25,7 @@ export async function getLatestMr11(req: Request, res: Response) {
         run: latestRun,
         visibleColumns: (config?.visibleColumns as string[]) || [],
         orderedHeaders: ORDERED_HEADER_LIST,
+        headerGroups: MR11_HEADER_GROUPS,
       },
     });
   } catch (err: any) {
@@ -85,18 +87,34 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
 
     const headers = ORDERED_HEADER_LIST;
     worksheet.columns = headers.map((header) => ({
-      header,
       key: header,
       width: Math.max(header.length + 4, 16),
     }));
 
-    const headerRow = worksheet.getRow(1);
-    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    headerRow.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF1E293B' },
-    };
+    // Two header rows: grouped columns (e.g. Payment terms) share a merged top cell with
+    // their sub-labels below; every other column is merged across both rows.
+    const groupOf = (h: string) => MR11_HEADER_GROUPS.find((g) => g.columns.some((c) => c.key === h));
+    const subLabel = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
+    worksheet.addRow(headers.map((h) => groupOf(h)?.label ?? h));
+    worksheet.addRow(headers.map((h) => (groupOf(h) ? subLabel(h) : h)));
+
+    for (let c = 1; c <= headers.length; ) {
+      const group = groupOf(headers[c - 1]);
+      let span = 1;
+      while (group && c + span <= headers.length && groupOf(headers[c + span - 1]) === group) span++;
+      if (group && span > 1) worksheet.mergeCells(1, c, 1, c + span - 1);
+      if (!group) worksheet.mergeCells(1, c, 2, c);
+      c += span;
+    }
+
+    [1, 2].forEach((r) => {
+      const headerRow = worksheet.getRow(r);
+      headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      headerRow.eachCell({ includeEmpty: true }, (cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      });
+    });
 
     records.forEach((row) => {
       const orderedRowData: Record<string, any> = {};
@@ -141,7 +159,7 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       ) + 1;
 
       if (colIdx > 0) {
-        let r = 2; // Excel row index starts at 2 (1 is the header)
+        let r = 3; // Data starts at row 3 (rows 1-2 are the header)
         for (let i = 0; i < records.length; ) {
           const span = records[i]['_streamSpan'] || 1;
           if (span > 1) {

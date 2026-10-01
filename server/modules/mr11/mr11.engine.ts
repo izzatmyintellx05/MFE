@@ -373,6 +373,33 @@ export function sheetToRecordsWithStyles(sheet: FortuneSheet): {
     }
   }
 
+  // Merged identity cells (e.g. Project Shortname merged down a whole block) carry the
+  // block's colour only on the top cell; apply it to every row the merge covers.
+  const merges: Record<string, { r: number; c: number; rs: number; cs: number }> =
+    (sheet as any).config?.merge || {};
+  const masterStyle = (r: number, c: number): { fc?: any; bg?: any } => {
+    if (celldata.length > 0) {
+      const cell = celldata.find((x) => x && x.r === r && x.c === c);
+      return { fc: cell?.v?.fc, bg: cell?.v?.bg };
+    }
+    const cell = (sheet as any).data?.[r]?.[c];
+    return cell && typeof cell === 'object' ? { fc: cell.fc || cell.v?.fc, bg: cell.bg || cell.v?.bg } : {};
+  };
+  for (const m of Object.values(merges)) {
+    if (!m || m.c > 4 || m.rs < 2) continue;
+    const { fc, bg } = masterStyle(m.r, m.c);
+    const sfc = fc ? String(fc).toUpperCase() : '';
+    const sbg = bg ? String(bg).toUpperCase() : '';
+    const useFont = sfc && sfc !== '#000000' && sfc !== 'BLACK' && sfc !== '#000';
+    const useFill = sbg && sbg !== '#FFFFFF' && sbg !== 'WHITE' && sbg !== '#000000' && sbg !== 'TRANSPARENT';
+    for (let rr = m.r + 1; rr < m.r + m.rs; rr++) {
+      const style = rowStyleMap[rr];
+      if (!style) continue;
+      if (useFont && !style.fontColor) style.fontColor = sfc;
+      if (useFill && !style.fillColor) style.fillColor = sbg;
+    }
+  }
+
   // Skip rows that repeat the header text (some workbooks duplicate the header on row 2,
   // or put sub-headers such as ACTUAL / F'CAST there)
   const isRepeatedHeaderRow = (rKey: number): boolean => {
@@ -482,6 +509,56 @@ export function buildFinanceMonthColumns(headers: Record<number, string>): { hea
   }
   flush(null);
   return result;
+}
+
+// A cell value usable as-is: not empty, not an Excel error (#VALUE!, #REF!, ...)
+function isUsableValue(val: any): boolean {
+  if (val === null || val === undefined || typeof val === 'object') return false;
+  const s = String(val).trim();
+  return s !== '' && !s.startsWith('#');
+}
+
+/**
+ * LME Adjusted and Final Selling Price for a BD row. BD's own (cached) values are used
+ * when present; when a formula has no saved result or returns an Excel error, the value
+ * is worked out with the same rules as the BD workbook formulas:
+ *   LME Adjusted = Fixed -> 0, Freeze -> "Check", Variable -> LME rate (or "Check" if blank)
+ *   Final Selling Price = Selling Price + Props + Aluminium + LME Adjusted + Freight,
+ *                         or "Check" while LME Adjusted is "Check".
+ */
+export function resolveLmePricing(bdData: Record<string, any>): {
+  lmeAdjusted: number | string | null;
+  finalSellingPrice: number | string | null;
+} {
+  const keyWhere = (test: (k: string) => boolean) =>
+    Object.keys(bdData).find((k) => test(k.toLowerCase().trim()));
+  const lmeType = String(bdData[keyWhere((k) => k === 'lme' || k.startsWith('lme ('))!] ?? '')
+    .trim()
+    .toLowerCase();
+  const lmeRate = bdData[keyWhere((k) => k.startsWith('lme rate'))!];
+
+  let computedAdjusted: number | string | null = null;
+  if (lmeType === 'fixed') computedAdjusted = 0;
+  else if (lmeType === 'freeze') computedAdjusted = 'Check';
+  else if (lmeType === 'variable') computedAdjusted = isUsableValue(lmeRate) ? parseNumeric(lmeRate) : 'Check';
+
+  const bdAdjusted = findCellValue(bdData, 'LME Adjusted (USD)');
+  const lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
+
+  const bdFinal = findCellValue(bdData, 'Final Selling Price (USD)');
+  if (isUsableValue(bdFinal)) return { lmeAdjusted, finalSellingPrice: bdFinal };
+  if (String(lmeAdjusted ?? '').trim().toLowerCase() === 'check') return { lmeAdjusted, finalSellingPrice: 'Check' };
+
+  const parts = [
+    findCellValue(bdData, 'Selling Price (USD)'),
+    findCellValue(bdData, 'Props, WPB, Waler, Acc (USD)'),
+    findCellValue(bdData, 'Aluminium Weight Adjusted (USD)'),
+    lmeAdjusted,
+    findCellValue(bdData, 'Freight Adjusted (USD)'),
+  ];
+  if (!parts.some(isUsableValue)) return { lmeAdjusted, finalSellingPrice: null };
+  const total = parts.reduce((sum: number, p) => sum + (isUsableValue(p) ? parseNumeric(p) : 0), 0);
+  return { lmeAdjusted, finalSellingPrice: Math.round(total * 1e6) / 1e6 };
 }
 
 function findCellValue(row: Record<string, any>, candidateHeader: string): any {
@@ -853,9 +930,14 @@ export async function executeMr11Pipeline(
     // 1. Populate defined BD columns directly from BD
     for (const mapping of MR11_ORDERED_COLUMNS) {
       if (mapping.sourceDept === RoleCode.BD) {
-        outRow[mapping.target] = findCellValue(bdData, mapping.sourceColumn);
+        outRow[mapping.target] = mapping.exact
+          ? bdData[mapping.sourceColumn] ?? null
+          : findCellValue(bdData, mapping.sourceColumn);
       }
     }
+    const lmePricing = resolveLmePricing(bdData);
+    outRow['LME Adjusted (USD)'] = lmePricing.lmeAdjusted;
+    outRow['Final Selling Price (USD)'] = lmePricing.finalSellingPrice;
 
     // Best-matching row from a department: project id must match, then stream, font and fill colour add weight
     const findBestDeptRow = (dept: RoleCode): Record<string, any> | null => {
@@ -1366,13 +1448,6 @@ export async function executeMr11Pipeline(
     outRow['Total Quantity Ordered'] = finalQuantityAN;
     outRow['processed qty'] = finalQuantityAN;
 
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 40) {
-      const colANHeader = ORDERED_HEADER_LIST[39];
-      if (colANHeader) {
-        outRow[colANHeader] = finalQuantityAN;
-      }
-    }
-
     // ------------------------------------------------------------------------
     // SHELLPLAN MAPPINGS (Matched strictly by Stream)
     // ------------------------------------------------------------------------
@@ -1524,13 +1599,6 @@ export async function executeMr11Pipeline(
     outRow['Processed Date'] = resolvedProcessedDate;
     outRow['Closing Date'] = resolvedProcessedDate;
 
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 42) {
-      const colAPHeader = ORDERED_HEADER_LIST[41];
-      if (colAPHeader) {
-        outRow[colAPHeader] = resolvedProcessedDate;
-      }
-    }
-
     // ------------------------------------------------------------------------
     // PRODUCTION MAPPINGS (Color & Fill Aware)
     // ------------------------------------------------------------------------
@@ -1601,13 +1669,6 @@ export async function executeMr11Pipeline(
     outRow['Total Produced Quantity'] = finalColumnAQ;
     outRow['produced qty'] = finalColumnAQ;
 
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 43) {
-      const colAQHeader = ORDERED_HEADER_LIST[42];
-      if (colAQHeader) {
-        outRow[colAQHeader] = finalColumnAQ;
-      }
-    }
-
     let latestFilledDate: string | null = null;
     if (matchedProdRow) {
       const COL_R_INDEX = 17;
@@ -1648,12 +1709,6 @@ export async function executeMr11Pipeline(
     }
 
     outRow['Produced Date'] = latestFilledDate;
-    if (Array.isArray(ORDERED_HEADER_LIST) && ORDERED_HEADER_LIST.length >= 44) {
-      const colARHeader = ORDERED_HEADER_LIST[43];
-      if (colARHeader) {
-        outRow[colARHeader] = latestFilledDate;
-      }
-    }
 
     outRow['_fontColor'] = bdFontColor;
     outRow['_fillColor'] = bdFillColor;
