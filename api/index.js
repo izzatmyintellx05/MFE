@@ -1233,12 +1233,12 @@ var MR11_ORDERED_COLUMNS = [
   // BD / Pre-Shellplan Columns
   { target: "Customer & Project Name", sourceDept: "BD" /* BD */, sourceColumn: "Customer & Project Name", type: "string" },
   { target: "Project No", sourceDept: "BD" /* BD */, sourceColumn: "Project No", type: "string" },
-  { target: "Short Name", sourceDept: "BD" /* BD */, sourceColumn: "Short Name", type: "string" },
+  { target: "Short Name", sourceDept: "BD" /* BD */, sourceColumn: "Short Name", type: "string", aliases: ["Project Shortname", "Shortname"] },
   { target: "Stream", sourceDept: "BD" /* BD */, sourceColumn: "Stream", type: "string" },
   { target: "Countries", sourceDept: "BD" /* BD */, sourceColumn: "Countries", type: "string" },
   { target: "PIC", sourceDept: "BD" /* BD */, sourceColumn: "PIC", type: "string" },
   { target: "Status", sourceDept: "BD" /* BD */, sourceColumn: "Status", type: "string" },
-  { target: "Products type", sourceDept: "BD" /* BD */, sourceColumn: "Products type", type: "string" },
+  { target: "Products type", sourceDept: "BD" /* BD */, sourceColumn: "Products type", type: "string", aliases: ["Product Type"] },
   { target: "Formwork type", sourceDept: "BD" /* BD */, sourceColumn: "Formwork type", type: "string" },
   { target: "Remarks", sourceDept: "BD" /* BD */, sourceColumn: "Remarks", type: "string" },
   { target: "PO", sourceDept: "BD" /* BD */, sourceColumn: "PO", type: "string" },
@@ -1691,24 +1691,26 @@ function resolveLmePricing(bdData) {
   const keyWhere = (test) => Object.keys(bdData).find((k) => test(k.toLowerCase().trim()));
   const lmeType = String(bdData[keyWhere((k) => k === "lme" || k.startsWith("lme ("))] ?? "").trim().toLowerCase();
   const lmeRate = bdData[keyWhere((k) => k.startsWith("lme rate"))];
+  const rateIsNumber = isUsableValue(lmeRate) && !isNaN(Number(lmeRate));
   let computedAdjusted = null;
-  if (lmeType === "fixed") computedAdjusted = 0;
+  if (lmeType === "fixed") computedAdjusted = rateIsNumber ? Number(lmeRate) : 0;
   else if (lmeType === "freeze") computedAdjusted = "Check";
-  else if (lmeType === "variable") computedAdjusted = isUsableValue(lmeRate) ? parseNumeric(lmeRate) : "Check";
-  const bdAdjusted = findCellValue(bdData, "LME Adjusted (USD)");
+  else if (lmeType === "variable") computedAdjusted = rateIsNumber ? Number(lmeRate) : "Check";
+  const col = (prefix) => bdData[keyWhere((k) => k.startsWith(prefix))];
+  const bdAdjusted = col("lme adjusted");
   const lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
-  const bdFinal = findCellValue(bdData, "Final Selling Price (USD)");
+  const bdFinal = col("final selling price");
   if (isUsableValue(bdFinal)) return { lmeAdjusted, finalSellingPrice: bdFinal };
-  if (String(lmeAdjusted ?? "").trim().toLowerCase() === "check") return { lmeAdjusted, finalSellingPrice: "Check" };
+  const isNumber = (v) => isUsableValue(v) && !isNaN(Number(v));
   const parts = [
-    findCellValue(bdData, "Selling Price (USD)"),
-    findCellValue(bdData, "Props, WPB, Waler, Acc (USD)"),
-    findCellValue(bdData, "Aluminium Weight Adjusted (USD)"),
+    col("selling price"),
+    col("props, wpb, waler"),
+    col("aluminium weight adjusted"),
     lmeAdjusted,
-    findCellValue(bdData, "Freight Adjusted (USD)")
+    col("freight adjusted")
   ];
-  if (!parts.some(isUsableValue)) return { lmeAdjusted, finalSellingPrice: null };
-  const total = parts.reduce((sum, p) => sum + (isUsableValue(p) ? parseNumeric(p) : 0), 0);
+  if (!parts.some(isNumber)) return { lmeAdjusted, finalSellingPrice: null };
+  const total = parts.reduce((sum, p) => sum + (isNumber(p) ? Number(p) : 0), 0);
   return { lmeAdjusted, finalSellingPrice: Math.round(total * 1e6) / 1e6 };
 }
 function findCellValue(row, candidateHeader) {
@@ -1991,7 +1993,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const cellColors = {};
     for (const mapping of MR11_ORDERED_COLUMNS) {
       if (mapping.sourceDept === "BD" /* BD */) {
-        outRow[mapping.target] = mapping.exact ? bdData[mapping.sourceColumn] ?? null : findCellValue(bdData, mapping.sourceColumn);
+        let value = mapping.exact ? bdData[mapping.sourceColumn] ?? null : findCellValue(bdData, mapping.sourceColumn);
+        for (const alias of mapping.aliases || []) {
+          if (value !== null && value !== void 0 && value !== "") break;
+          value = findCellValue(bdData, alias);
+        }
+        outRow[mapping.target] = value;
       }
     }
     const lmePricing = resolveLmePricing(bdData);

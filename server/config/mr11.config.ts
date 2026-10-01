@@ -7,6 +7,8 @@ export interface ColumnMapping {
   type: 'string' | 'number' | 'date';
   /** Only read the source column with exactly this name (no prefix matching). */
   exact?: boolean;
+  /** Other header names the department may use for the same column (tried in order). */
+  aliases?: string[];
 }
 
 /**
@@ -197,12 +199,12 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   // BD / Pre-Shellplan Columns
   { target: 'Customer & Project Name', sourceDept: RoleCode.BD, sourceColumn: 'Customer & Project Name', type: 'string' },
   { target: 'Project No', sourceDept: RoleCode.BD, sourceColumn: 'Project No', type: 'string' },
-  { target: 'Short Name', sourceDept: RoleCode.BD, sourceColumn: 'Short Name', type: 'string' },
+  { target: 'Short Name', sourceDept: RoleCode.BD, sourceColumn: 'Short Name', type: 'string', aliases: ['Project Shortname', 'Shortname'] },
   { target: 'Stream', sourceDept: RoleCode.BD, sourceColumn: 'Stream', type: 'string' },
   { target: 'Countries', sourceDept: RoleCode.BD, sourceColumn: 'Countries', type: 'string' },
   { target: 'PIC', sourceDept: RoleCode.BD, sourceColumn: 'PIC', type: 'string' },
   { target: 'Status', sourceDept: RoleCode.BD, sourceColumn: 'Status', type: 'string' },
-  { target: 'Products type', sourceDept: RoleCode.BD, sourceColumn: 'Products type', type: 'string' },
+  { target: 'Products type', sourceDept: RoleCode.BD, sourceColumn: 'Products type', type: 'string', aliases: ['Product Type'] },
   { target: 'Formwork type', sourceDept: RoleCode.BD, sourceColumn: 'Formwork type', type: 'string' },
   { target: 'Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks', type: 'string' },
   { target: 'PO', sourceDept: RoleCode.BD, sourceColumn: 'PO', type: 'string' },
