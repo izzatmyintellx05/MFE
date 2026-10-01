@@ -1,0 +1,6 @@
+{
+  "name": "MFE Formwork MR11 System",
+  "description": "Enterprise Micro-Frontend (MFE) system for MR11 master schedule coordination, department uploads, and manufacturing progress tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

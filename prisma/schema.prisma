@@ -1,0 +1,177 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  // "native" for local dev, Debian for Azure, and RHEL for Vercel Serverless
+  binaryTargets = ["native", "debian-openssl-3.0.x", "debian-openssl-1.1.x", "rhel-openssl-3.0.x"]
+}
+
+enum RoleCode {
+  ADMIN
+  CEO
+  BD
+  FINANCE
+  SHELLPLAN
+  DESIGN
+  PLANNING
+  PRODUCTION
+  DISPATCH
+}
+
+enum Mr11Status {
+  EMPTY
+  PARTIAL
+  READY
+  FAILED
+}
+
+enum FileVersionStatus {
+  UPLOADING
+  PROCESSING
+  READY
+  FAILED
+}
+
+model User {
+  id                 String        @id @default(uuid())
+  email              String        @unique
+  fullName           String
+  passwordHash       String
+  status             String        @default("ACTIVE")
+  isActive           Boolean       @default(true)
+  roles              UserRole[]
+  auditLogs          AuditLog[]
+  fileVersions       FileVersion[]
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+}
+
+model Role {
+  id          String     @id @default(uuid())
+  code        RoleCode   @unique
+  name        String
+  description String?
+  users       UserRole[]
+  createdAt   DateTime   @default(now())
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, roleId])
+}
+
+model Department {
+  id              String            @id @default(uuid())
+  code            RoleCode          @unique
+  name            String
+  description     String?
+  activeVersionId String?           @unique
+  activeVersion   FileVersion?      @relation("ActiveVersion", fields: [activeVersionId], references: [id])
+  versions        FileVersion[]     @relation("AllVersions")
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+}
+
+model FileVersion {
+  id               String            @id @default(uuid())
+  departmentId     String
+  department       Department        @relation("AllVersions", fields: [departmentId], references: [id], onDelete: Cascade)
+  originalFilename String
+  storageKey       String
+  fileSize         Int?
+  mimeType         String?
+  checksumSha256   String?
+  status           FileVersionStatus @default(READY)
+  parsedWorkbook   Json?
+  uploadedById     String?
+  uploadedBy       User?             @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  uploadedAt       DateTime          @default(now())
+  processedAt      DateTime?
+  createdAt        DateTime          @default(now())
+  activeForDept    Department?       @relation("ActiveVersion")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+}
+
+model Mr11Run {
+  id             String     @id @default(uuid())
+  status         Mr11Status @default(EMPTY)
+  sourceSnapshot Json
+  recordCount    Int        @default(0)
+  records        Json
+  generatedAt    DateTime   @default(now())
+}
+
+model Mr11Config {
+  id             String   @id @default("singleton")
+  visibleColumns Json
+  updatedAt      DateTime @updatedAt
+}
+
+model PlanningSeriesHistory {
+  id               String   @id @default(uuid())
+  projectNo        String
+  projectShortname String?
+  projectName      String?
+  stream           String
+  fontColor        String   @default("#000000")
+  seriesNumber     Int
+  totalProcessed   Float    @default(0)
+  totalQuantity    Float?
+  closingDate      String?
+  detectedAt       DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([projectNo, stream, fontColor, seriesNumber])
+  @@index([projectNo, stream])
+}
+
+model PlanningProjectQuantityTracker {
+  id               String   @id @default(uuid())
+  projectNo        String
+  stream           String
+  fontColor        String   @default("#000000")
+  projectShortname String?
+  projectName      String?
+  lastQuantity     Float    @default(0)
+  lastChangedDate  String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([projectNo, stream, fontColor])
+  @@index([projectNo, stream])
+}
+
+model ProductionSeriesHistory {
+  id               String   @id @default(uuid())
+  projectShortname String
+  projectNo        String?
+  projectName      String?
+  stream           String
+  fontColor        String   @default("#000000")
+  seriesNumber     Int
+  totalProduced    Float    @default(0)
+  detectedAt       DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([projectShortname, stream, fontColor, seriesNumber])
+  @@index([projectShortname, stream])
+}

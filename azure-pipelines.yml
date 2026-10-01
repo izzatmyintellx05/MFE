@@ -1,0 +1,99 @@
+# Azure DevOps CI/CD Pipeline for MFE Formwork MR11 System
+# Target Azure Tenant: drpradeepsinghmyintellx.onmicrosoft.com
+# Target Azure Subscription: 9705dfa8-59ea-40ec-b5ab-f2b89e0c5d43
+
+trigger:
+  branches:
+    include:
+      - azure-deploy
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  NODE_VERSION: '22.x'
+  AZURE_SUBSCRIPTION_ID: '9705dfa8-59ea-40ec-b5ab-f2b89e0c5d43'
+  AZURE_TENANT_ID: 'drpradeepsinghmyintellx.onmicrosoft.com'
+  AZURE_SERVICE_CONNECTION: 'azure-service-connection-9705dfa8'
+  AZURE_RESOURCE_GROUP: 'rg-mfe-formwork-prod'
+  AZURE_WEBAPP_NAME: 'mfe-formwork-mr11-app'
+  APP_DIR: '$(System.DefaultWorkingDirectory)'
+
+stages:
+  - stage: BuildAndValidate
+    displayName: 'Build, Lint & Package'
+    jobs:
+      - job: Build
+        displayName: 'Install Dependencies & Build Production Assets'
+        steps:
+          - task: NodeTool@0
+            displayName: 'Install Node.js $(NODE_VERSION)'
+            inputs:
+              versionSpec: $(NODE_VERSION)
+
+          - script: |
+              echo "==> Installing dependencies..."
+              npm ci || npm install
+            displayName: 'NPM Install'
+
+          - script: |
+              echo "==> Running TypeScript & lint verification..."
+              npm run lint
+            displayName: 'Lint & Type Check'
+
+          - script: |
+              echo "==> Compiling production Vite bundle..."
+              npm run build
+            displayName: 'Vite Production Build'
+
+          - task: ArchiveFiles@2
+            displayName: 'Package Deployment Zip'
+            inputs:
+              rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/mfe-app-$(Build.BuildId).zip'
+              replaceExistingArchive: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Build Artifact'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'drop'
+              publishLocation: 'Container'
+
+  - stage: DeployToAzure
+    displayName: 'Deploy to Azure Web App (Subscription 9705dfa8)'
+    dependsOn: BuildAndValidate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/azure-deploy'))
+    jobs:
+      - deployment: DeployWeb
+        displayName: 'Deploy to Azure App Service Linux'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadBuildArtifacts@0
+                  displayName: 'Download Artifact Drop'
+                  inputs:
+                    buildType: 'current'
+                    downloadType: 'single'
+                    artifactName: 'drop'
+                    downloadPath: '$(System.ArtifactsDirectory)'
+
+                - task: AzureWebApp@1
+                  displayName: 'Deploy to Azure Web App (Subscription 9705dfa8)'
+                  inputs:
+                    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                    appType: 'webAppLinux'
+                    appName: '$(AZURE_WEBAPP_NAME)'
+                    package: '$(System.ArtifactsDirectory)/drop/mfe-app-$(Build.BuildId).zip'
+                    startUpCommand: 'npm start'
+                    appSettings: |
+                      -PORT 3000
+                      -NODE_ENV production
+                      -JWT_SECRET "mfe-formwork-enterprise-jwt-prod-2026"
+                      -AZURE_SUBSCRIPTION_ID $(AZURE_SUBSCRIPTION_ID)
+                      -AZURE_TENANT_ID $(AZURE_TENANT_ID)
