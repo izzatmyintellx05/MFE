@@ -10,6 +10,9 @@
     "db:push": "prisma db push",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "db:start": "node scripts/localdb.mjs start",
+    "db:stop": "node scripts/localdb.mjs stop",
+    "db:status": "node scripts/localdb.mjs status",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

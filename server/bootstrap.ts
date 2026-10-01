@@ -25,7 +25,7 @@ export async function bootstrapSystem() {
     // 1. Supabase holds the workbooks users actually uploaded; load those first
     const dbCodes = await hydrateActiveVersionsFromDb(prisma);
     if (dbCodes) {
-      console.log(`[MFE Formwork MR11] Loaded active workbooks from Supabase: ${[...dbCodes].join(', ') || 'none'}`);
+      console.log(`[MFE Formwork MR11] Loaded active workbooks from database: ${[...dbCodes].join(', ') || 'none'}`);
     }
 
     // 2. Bundled sample workbooks only fill departments Supabase has nothing for.
@@ -83,7 +83,7 @@ export async function bootstrapSystem() {
     const dbRun = await fetchLatestMr11RunFromDb();
     if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) {
       await prisma.mr11Run.create({ data: dbRun });
-      console.log('[MFE Formwork MR11] Loaded latest MR11 Master from Supabase');
+      console.log('[MFE Formwork MR11] Loaded latest MR11 Master from database');
     } else {
       try {
         await executeMr11Pipeline(prisma as any, { persist: false });

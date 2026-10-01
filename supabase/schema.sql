@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS "FileVersion" (
     "rawDataJson" JSONB,
     "errorMessage" TEXT,
     "uploadedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- Columns the app reads and writes (see department.service.ts and server/db/supabase.ts)
+    "storageKey" TEXT,
+    "mimeType" TEXT,
+    "parsedWorkbook" JSONB,
+    "processedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "FileVersion_pkey" PRIMARY KEY ("id")
 );
 

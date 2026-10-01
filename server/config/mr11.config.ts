@@ -5,7 +5,32 @@ export interface ColumnMapping {
   sourceDept: RoleCode;
   sourceColumn: string;
   type: 'string' | 'number' | 'date';
+  /** Only read the source column with exactly this name (no prefix matching). */
+  exact?: boolean;
 }
+
+/**
+ * Columns shown under a shared top header (two-row header), matching the department
+ * workbook layout. `key` is the MR11 column name; `label` is the text in the second row.
+ */
+export interface HeaderGroup {
+  label: string;
+  columns: { key: string; label: string }[];
+}
+
+export const MR11_HEADER_GROUPS: HeaderGroup[] = [
+  {
+    label: 'Payment terms',
+    columns: [
+      { key: 'Payment terms - Percentage', label: 'Percentage' },
+      { key: 'Payment terms - Type', label: 'Type' },
+      { key: 'Payment terms - Balance Percentage', label: 'Balance Percentage' },
+      { key: 'Payment terms - Type 2', label: 'Type' },
+      { key: 'Payment terms - Balance Percentage 2', label: 'Balance Percentage' },
+      { key: 'Payment terms - Type 3', label: 'Type' },
+    ],
+  },
+];
 
 export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {
   BD: [
@@ -95,7 +120,13 @@ export const ORDERED_HEADER_LIST = [
   'Original NCA Qty',
   'Revised NCA Qty',
   'NCA Remarks',
-  'Payment terms',
+  // Payment terms group (two-row header, same layout as the BD workbook)
+  'Payment terms - Percentage',
+  'Payment terms - Type',
+  'Payment terms - Balance Percentage',
+  'Payment terms - Type 2',
+  'Payment terms - Balance Percentage 2',
+  'Payment terms - Type 3',
   'Selling Price (USD)',
   'LME',
   'Incoterms',
@@ -107,10 +138,6 @@ export const ORDERED_HEADER_LIST = [
   'Advance Received / Payment Status',
   'Actual Received',
   'Payment Date',
-  'Percentage',
-  'Type',
-  'Balance Percentage',
-  'Type Balance Percentage',
 
   // --- Shellplan Columns (Col AJ, AK) ---
   'Shell Plan Status - Pending Consultant Drawings',
@@ -184,8 +211,16 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'NCA date', sourceDept: RoleCode.BD, sourceColumn: 'NCA date', type: 'date' },
   { target: 'Original NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Original NCA Qty', type: 'number' },
   { target: 'Revised NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Revised NCA Qty', type: 'number' },
-  { target: 'NCA Remarks', sourceDept: RoleCode.BD, sourceColumn: 'NCA Remarks', type: 'string' },
-  { target: 'Payment terms', sourceDept: RoleCode.BD, sourceColumn: 'Payment terms', type: 'string' },
+  // BD's second "Remarks" column (right after Revised NCA Qty) is the NCA remark
+  { target: 'NCA Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks 2', type: 'string', exact: true },
+  // Payment terms sub-columns under the BD two-row "Payment terms" header (exact match:
+  // a missing "Type 3" must not fall back to "Type")
+  { target: 'Payment terms - Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Percentage', type: 'number', exact: true },
+  { target: 'Payment terms - Type', sourceDept: RoleCode.BD, sourceColumn: 'Type', type: 'string', exact: true },
+  { target: 'Payment terms - Balance Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage', type: 'number', exact: true },
+  { target: 'Payment terms - Type 2', sourceDept: RoleCode.BD, sourceColumn: 'Type 2', type: 'string', exact: true },
+  { target: 'Payment terms - Balance Percentage 2', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage 2', type: 'number', exact: true },
+  { target: 'Payment terms - Type 3', sourceDept: RoleCode.BD, sourceColumn: 'Type 3', type: 'string', exact: true },
   { target: 'Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Selling Price (USD)', type: 'number' },
   { target: 'LME', sourceDept: RoleCode.BD, sourceColumn: 'LME', type: 'number' },
   { target: 'Incoterms', sourceDept: RoleCode.BD, sourceColumn: 'Incoterms', type: 'string' },
@@ -197,11 +232,6 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'Advance Received / Payment Status', sourceDept: RoleCode.FINANCE, sourceColumn: 'Advance Received / Payment Status', type: 'string' },
   { target: 'Actual Received', sourceDept: RoleCode.FINANCE, sourceColumn: 'Actual Received', type: 'number' },
   { target: 'Payment Date', sourceDept: RoleCode.FINANCE, sourceColumn: 'Payment Date', type: 'date' },
-  // Payment terms sub-columns under the two-row "Payment terms" header
-  { target: 'Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Percentage', type: 'number' },
-  { target: 'Type', sourceDept: RoleCode.BD, sourceColumn: 'Type', type: 'string' },
-  { target: 'Balance Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage', type: 'number' },
-  { target: 'Type Balance Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Type 2', type: 'string' },
 
   // Shellplan & Design
   { target: 'Shell Plan Status - Pending Consultant Drawings', sourceDept: RoleCode.SHELLPLAN, sourceColumn: 'Shell Plan Status - Pending Consultant Drawings', type: 'string' },
