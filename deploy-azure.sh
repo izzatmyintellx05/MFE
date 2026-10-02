@@ -7,6 +7,10 @@
 
 set -e
 
+# Supabase connection string (Transaction pooler URI with your password) must be set first:
+#   export DATABASE_URL="postgresql://..."
+: "${DATABASE_URL:?Set DATABASE_URL to your Supabase connection string before running this script}"
+
 TENANT_ID="drpradeepsinghmyintellx.onmicrosoft.com"
 SUBSCRIPTION_ID="9705dfa8-59ea-40ec-b5ab-f2b89e0c5d43"
 RESOURCE_GROUP="rg-mfe-formwork-prod"
@@ -57,8 +61,9 @@ az webapp config appsettings set \
   --name "$APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
   --settings \
-    PORT=3000 \
     NODE_ENV=production \
+    NPM_CONFIG_INCLUDE=dev \
+    DATABASE_URL="$DATABASE_URL" \
     JWT_SECRET="mfe-enterprise-jwt-prod-$(openssl rand -hex 16 2>/dev/null || echo '2026secretkey')" \
     SCM_DO_BUILD_DURING_DEPLOYMENT=true \
     AZURE_SUBSCRIPTION_ID="$SUBSCRIPTION_ID" \
