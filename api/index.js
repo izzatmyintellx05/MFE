@@ -700,7 +700,8 @@ __export(database_config_exports, {
   getSslConfig: () => getSslConfig
 });
 function getDatabaseUrl() {
-  return process.env.DATABASE_URL || "";
+  const url = process.env.DATABASE_URL || process.env.DATABASE_POSTGRES_URL || process.env.POSTGRES_URL || "";
+  return url.replace(/([?&]sslmode=)(require|prefer|verify-ca)\b/i, "$1no-verify");
 }
 function getSslConfig(url) {
   if (/sslmode=disable/i.test(url) || /@(localhost|127\.0\.0\.1)[:/]/i.test(url)) return false;
