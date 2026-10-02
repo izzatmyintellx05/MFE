@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient, RoleCode } from '@prisma/client';
 import { processAtomicWorkbookUpload } from './department.service';
+import { fetchActiveVersionForDepartment } from '../../db/supabase';
 import fs from 'fs';
 
 const prisma = new PrismaClient();
@@ -24,51 +25,18 @@ export async function getActiveDepartmentWorkbook(req: Request, res: Response) {
 
     let dept: any = null;
 
-    // 1. Check Supabase PostgreSQL directly if connected
-    try {
-      const { getDatabaseUrl, getSslConfig } = await import('../../config/database.config');
-      const { normalizeDatabaseUrl } = await import('../../db/prisma');
-      const { Pool } = await import('pg');
-      const dbUrl = normalizeDatabaseUrl(getDatabaseUrl()) || getDatabaseUrl();
-
-      if (dbUrl) {
-        const pool = new Pool({
-          connectionString: dbUrl,
-          ssl: getSslConfig(dbUrl),
-          connectionTimeoutMillis: 5000,
-        });
-
-        const deptRes = await pool.query(
-          'SELECT id, code, name, description, "activeVersionId" FROM "Department" WHERE code = $1 OR id = $2 LIMIT 1;',
-          [deptCode, rawParam]
-        );
-
-        if (deptRes.rows.length > 0) {
-          const d = deptRes.rows[0];
-          let activeVer: any = null;
-          if (d.activeVersionId) {
-            const verRes = await pool.query(
-              'SELECT id, "departmentId", "originalFilename", "storageKey", "fileSize", "mimeType", status, "parsedWorkbook", "uploadedAt", "processedAt" FROM "FileVersion" WHERE id = $1 LIMIT 1;',
-              [d.activeVersionId]
-            );
-            if (verRes.rows.length > 0) {
-              activeVer = verRes.rows[0];
-            }
-          }
-
-          dept = {
-            id: d.id,
-            code: d.code,
-            name: d.name,
-            description: d.description,
-            activeVersionId: d.activeVersionId,
-            activeVersion: activeVer,
-          };
-        }
-        await pool.end();
-      }
-    } catch (dbErr) {
-      console.warn('[DEPARTMENT] Supabase direct read notice:', dbErr);
+    // 1. The shared database holds the version users actually uploaded (any table layout)
+    const dbVersion = validRoleCodes.includes(deptCode) ? await fetchActiveVersionForDepartment(deptCode) : null;
+    if (dbVersion) {
+      const memDept = await prisma.department.findFirst({ where: { code: deptCode } });
+      dept = {
+        id: memDept?.id ?? dbVersion.departmentId,
+        code: deptCode,
+        name: memDept?.name ?? DEPT_NAMES[deptCode],
+        description: memDept?.description ?? null,
+        activeVersionId: dbVersion.id,
+        activeVersion: dbVersion,
+      };
     }
 
     // 2. Fallback to Prisma in-memory client

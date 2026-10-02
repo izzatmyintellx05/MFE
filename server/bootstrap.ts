@@ -3,7 +3,7 @@ import path from 'path';
 import { prisma, RoleCode } from './db/prisma';
 import { processAtomicWorkbookUpload } from './modules/departments/department.service';
 import { executeMr11Pipeline } from './modules/mr11/mr11.engine';
-import { hydrateActiveVersionsFromDb, fetchLatestMr11RunFromDb } from './db/supabase';
+import { hydrateActiveVersionsFromDb, fetchLatestMr11RunFromDb, isDatabaseConfigured } from './db/supabase';
 
 const deptKeywords: Record<RoleCode, string> = {
   [RoleCode.BD]: 'bd.xlsx',
@@ -28,14 +28,20 @@ export async function bootstrapSystem() {
       console.log(`[MFE Formwork MR11] Loaded active workbooks from database: ${[...dbCodes].join(', ') || 'none'}`);
     }
 
-    // 2. Bundled sample workbooks only fill departments Supabase has nothing for.
-    //    They stay in this instance's memory and are never written back to Supabase.
+    // 2. Bundled sample workbooks are only for running without a database. With a database
+    //    connected, a department with nothing uploaded stays empty instead of showing old samples.
     const uploadsStorageDir = path.resolve(process.cwd(), 'uploads_storage');
     const uploadsDir = path.resolve(process.cwd(), 'uploads');
 
-    const searchDirs = [uploadsStorageDir, uploadsDir].filter((d) => fs.existsSync(d));
+    const searchDirs = isDatabaseConfigured()
+      ? []
+      : [uploadsStorageDir, uploadsDir].filter((d) => fs.existsSync(d));
 
-    console.log('[MFE Formwork MR11] Checking department workbooks initialization...');
+    console.log(
+      isDatabaseConfigured()
+        ? '[MFE Formwork MR11] Database connected: sample workbooks are not loaded'
+        : '[MFE Formwork MR11] No database: loading sample workbooks...'
+    );
 
     for (const [codeStr, keyword] of Object.entries(deptKeywords)) {
       const code = codeStr as RoleCode;

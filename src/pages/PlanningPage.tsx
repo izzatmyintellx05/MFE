@@ -40,6 +40,9 @@ export const PlanningPage: React.FC = () => {
     try {
       await api.post('/departments/PLANNING/upload', formData);
       await fetchDepartmentData();
+    } catch (err: any) {
+      // Tell the uploader when the file was not saved, instead of failing silently
+      window.alert(err.response?.data?.error?.message || err.message || 'File upload failed');
     } finally {
       setUploading(false);
       e.target.value = '';

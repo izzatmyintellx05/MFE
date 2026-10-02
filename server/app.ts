@@ -57,6 +57,9 @@ app.get('/api/health/db', async (req, res) => {
     `);
     await pool.end();
 
+    const { describeDatabase } = await import('./db/supabase');
+    const contents = await describeDatabase();
+
     return res.json({
       status: 'CONNECTED',
       message: 'Successfully connected to the PostgreSQL database.',
@@ -64,6 +67,7 @@ app.get('/api/health/db', async (req, res) => {
       serverTime: result.rows[0]?.server_time,
       version: result.rows[0]?.version?.split(' ')?.[0],
       tables: tablesResult.rows.map((r: any) => r.table_name),
+      ...contents,
     });
   } catch (err: any) {
     return res.status(200).json({

@@ -1,5 +1,6 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
 import { MR11_ORDERED_COLUMNS, MR11_SOURCE_KEY_MAP, ORDERED_HEADER_LIST } from '../../config/mr11.config';
+import { saveMr11RunToDb } from '../../db/supabase';
 import { FortuneSheet } from '../../utils/excel-normalizer';
 
 export const Mr11Status = {
@@ -1813,35 +1814,13 @@ export async function executeMr11Pipeline(
     },
   });
 
-  // Sync to Supabase PostgreSQL database if connected
-  try {
-    const { getDatabaseUrl, getSslConfig } = await import('../../config/database.config');
-    const { normalizeDatabaseUrl } = await import('../../db/prisma');
-    const { Pool } = await import('pg');
-    const dbUrl = normalizeDatabaseUrl(getDatabaseUrl()) || getDatabaseUrl();
-
-    if (dbUrl && persist) {
-      const pool = new Pool({
-        connectionString: dbUrl,
-        ssl: getSslConfig(dbUrl),
-        connectionTimeoutMillis: 5000,
-      });
-
-      await pool.query(
-        `INSERT INTO "Mr11Run" ("id", "generatedAt", "status", "sourceSnapshot", "recordCount", "calculatedFields")
-         VALUES ($1, NOW(), 'READY', $2, $3, $4)
-         ON CONFLICT ("id") DO NOTHING;`,
-        [
-          run.id,
-          JSON.stringify(sourceSnapshot),
-          derivedMr11Rows.length,
-          JSON.stringify(derivedMr11Rows),
-        ]
-      );
-      await pool.end();
+  // Save to the shared database (works with either Mr11Run table layout)
+  if (persist) {
+    try {
+      await saveMr11RunToDb({ id: run.id, sourceSnapshot, records: derivedMr11Rows });
+    } catch (mr11DbErr: any) {
+      console.error('[MR11 ENGINE] Could not save MR11 to the database:', mr11DbErr?.message);
     }
-  } catch (mr11DbErr: any) {
-    console.warn('[MR11 ENGINE] Supabase sync notice:', mr11DbErr?.message);
   }
 
   return run.id;
