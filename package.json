@@ -15,7 +15,8 @@
     "db:status": "node scripts/localdb.mjs status",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:persistence": "npm run build && node scripts/persistence-test.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

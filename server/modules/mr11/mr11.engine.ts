@@ -1,6 +1,7 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
 import { MR11_ORDERED_COLUMNS, MR11_SOURCE_KEY_MAP, ORDERED_HEADER_LIST } from '../../config/mr11.config';
-import { saveMr11RunToDb } from '../../db/supabase';
+import { saveMr11RunToDb, fetchLatestMr11RunFromDb, restoreEngineHistory } from '../../db/supabase';
+import { exportEngineHistory } from '../../db/prisma';
 import { FortuneSheet } from '../../utils/excel-normalizer';
 
 export const Mr11Status = {
@@ -585,6 +586,12 @@ export async function executeMr11Pipeline(
   options: { persist?: boolean } = {}
 ): Promise<string> {
   const { persist = true } = options;
+
+  // Continue from the series history saved with the latest MR11 in the database, which may come
+  // from another instance or from before a restart, rather than from this instance's memory
+  const latestDbRun = await fetchLatestMr11RunFromDb();
+  restoreEngineHistory(latestDbRun);
+
   const activeDepartments = await prisma.department.findMany({
     include: { activeVersion: true },
   });
@@ -846,13 +853,15 @@ export async function executeMr11Pipeline(
     orderBy: { seriesNumber: 'asc' },
   });
 
-  const previousRun = await prisma.mr11Run.findFirst({
-    where: {
-      status: 'READY',
-      recordCount: { gt: 0 },
-    },
-    orderBy: { generatedAt: 'desc' },
-  });
+  const previousRun =
+    (latestDbRun?.records?.length > 0 ? latestDbRun : null) ??
+    (await prisma.mr11Run.findFirst({
+      where: {
+        status: 'READY',
+        recordCount: { gt: 0 },
+      },
+      orderBy: { generatedAt: 'desc' },
+    }));
 
   const prevDispatchHistory: Record<string, { quantity: number; date: string }> = {
     ...((previousRun?.sourceSnapshot as any)?.dispatchTracker || {}),
@@ -1817,7 +1826,11 @@ export async function executeMr11Pipeline(
   // Save to the shared database (works with either Mr11Run table layout)
   if (persist) {
     try {
-      await saveMr11RunToDb({ id: run.id, sourceSnapshot, records: derivedMr11Rows });
+      await saveMr11RunToDb({
+        id: run.id,
+        sourceSnapshot: { ...sourceSnapshot, dispatchTracker: newDispatchTracker, engineHistory: exportEngineHistory() },
+        records: derivedMr11Rows,
+      });
     } catch (mr11DbErr: any) {
       console.error('[MR11 ENGINE] Could not save MR11 to the database:', mr11DbErr?.message);
     }

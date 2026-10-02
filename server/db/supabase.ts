@@ -7,7 +7,7 @@
  * so reads use SELECT * and writes only fill the columns the live table actually has.
  */
 import { getDatabaseUrl, getSslConfig } from '../config/database.config';
-import { normalizeDatabaseUrl } from './prisma';
+import { normalizeDatabaseUrl, replaceUsers, importEngineHistory } from './prisma';
 
 const NOW = Symbol('now');
 
@@ -81,6 +81,36 @@ function workbookOf(row: any): any {
   return row?.parsedWorkbook ?? row?.rawDataJson ?? null;
 }
 
+/** JSON columns come back parsed (jsonb) or as text, depending on the table layout. */
+function parseJson(value: any): any {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+/** Runs fn inside one transaction; throws (after rolling back) when the database rejects it. */
+async function inTransaction(fn: (client: any) => Promise<void>): Promise<boolean> {
+  const pool = await openPool();
+  if (!pool) return false;
+  let client: any = null;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await fn(client);
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    await client?.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client?.release();
+    await pool.end().catch(() => {});
+  }
+}
+
 /** Active workbook version per department code, or null when the database is unreachable. */
 export async function fetchActiveVersionsFromDb(): Promise<Record<string, any> | null> {
   return withPool(async (pool) => {
@@ -114,11 +144,84 @@ export async function fetchLatestMr11RunFromDb(): Promise<any | null> {
       id: r.id,
       generatedAt: r.generatedAt,
       status: r.status,
-      sourceSnapshot: r.sourceSnapshot,
+      sourceSnapshot: parseJson(r.sourceSnapshot),
       recordCount: r.recordCount,
-      records: r.calculatedFields ?? r.records ?? [],
+      records: parseJson(r.calculatedFields ?? r.records) ?? [],
     };
   });
+}
+
+/** Active file per department code, without the workbook data (for the department list). */
+export async function fetchActiveFileSummariesFromDb(): Promise<Record<string, any> | null> {
+  return withPool(async (pool) => {
+    const result = await pool.query(
+      `SELECT d.code, f.id, f."originalFilename", f."uploadedAt"
+         FROM "Department" d
+         JOIN "FileVersion" f ON f.id = d."activeVersionId";`
+    );
+    const byCode: Record<string, any> = {};
+    for (const r of result.rows) {
+      byCode[r.code] = { id: r.id, originalFilename: r.originalFilename, status: 'READY', uploadedAt: r.uploadedAt };
+    }
+    return byCode;
+  });
+}
+
+/**
+ * Makes this instance's users and role links match the database, which every instance writes
+ * to. Returns false, keeping the built-in accounts, when there is no database, it cannot be
+ * reached, or it has no users yet.
+ */
+export async function hydrateUsersFromDb(): Promise<boolean> {
+  const rows = await withPool(async (pool) => ({
+    // Stable order: the seeded accounts share one createdAt, and edited rows move in the table
+    users: (await pool.query('SELECT * FROM "User" ORDER BY "createdAt", email;')).rows,
+    userRoles: (await pool.query('SELECT * FROM "UserRole";')).rows,
+  }));
+  if (!rows || rows.users.length === 0) return false;
+  replaceUsers(rows.users, rows.userRoles);
+  return true;
+}
+
+/** Saves a user and replaces their role links. Throws when the database rejects it. */
+export async function saveUserToDb(user: any, roleIds: string[]): Promise<boolean> {
+  return inTransaction(async (client) => {
+    await upsertRow(
+      client,
+      'User',
+      {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        passwordHash: user.passwordHash,
+        status: user.status || 'ACTIVE',
+        isActive: user.isActive ?? true,
+        createdAt: user.createdAt ?? NOW,
+        updatedAt: NOW,
+      },
+      ['email', 'fullName', 'passwordHash', 'status', 'isActive', 'updatedAt']
+    );
+    await client.query('DELETE FROM "UserRole" WHERE "userId" = $1;', [user.id]);
+    for (const roleId of roleIds) {
+      await upsertRow(client, 'UserRole', { id: `ur-${user.id}-${roleId}`, userId: user.id, roleId, createdAt: NOW }, []);
+    }
+  });
+}
+
+/** Deletes a user and their role links. Throws when the database rejects it. */
+export async function deleteUserFromDb(userId: string): Promise<boolean> {
+  return inTransaction(async (client) => {
+    await client.query('DELETE FROM "UserRole" WHERE "userId" = $1;', [userId]);
+    await client.query('DELETE FROM "User" WHERE id = $1;', [userId]);
+  });
+}
+
+/** Restores the MR11 engine history saved with a run; runs saved before it was stored have none. */
+export function restoreEngineHistory(run: any): boolean {
+  const history = run?.sourceSnapshot?.engineHistory;
+  if (!history) return false;
+  importEngineHistory(history);
+  return true;
 }
 
 /**
@@ -204,6 +307,17 @@ export async function saveMr11RunToDb(run: { id: string; sourceSnapshot: any; re
   const pool = await openPool();
   if (!pool) return false;
   try {
+    // A newer upload landed while this run was being built: keep the database's newer MR11
+    // instead of replacing it with one built from older workbooks
+    const active = await pool.query('SELECT code, "activeVersionId" FROM "Department" WHERE "activeVersionId" IS NOT NULL;');
+    const replaced = active.rows
+      .filter((d: any) => run.sourceSnapshot?.[d.code] && run.sourceSnapshot[d.code] !== d.activeVersionId)
+      .map((d: any) => d.code);
+    if (replaced.length > 0) {
+      console.warn(`[DATABASE] MR11 run ${run.id} not saved: newer workbooks were uploaded for ${replaced.join(', ')}`);
+      return false;
+    }
+
     const json = JSON.stringify(run.records);
     await upsertRow(
       pool,
@@ -255,6 +369,7 @@ export async function describeDatabase(): Promise<Record<string, any> | null> {
  * the database is unreachable. Codes in `skipCodes` are left untouched.
  */
 export async function hydrateActiveVersionsFromDb(prisma: any, skipCodes: string[] = []): Promise<Set<string> | null> {
+  const readStartedAt = Date.now();
   const dbVersions = await fetchActiveVersionsFromDb();
   if (!dbVersions) return null;
 
@@ -262,6 +377,8 @@ export async function hydrateActiveVersionsFromDb(prisma: any, skipCodes: string
     if (skipCodes.includes(code)) continue;
     const dept = await prisma.department.findFirst({ where: { code } });
     if (!dept || dept.activeVersionId === v.id) continue;
+    // Switched after this read began (an upload here, or a later refresh): this read is older
+    if (dept.activeSetAt && dept.activeSetAt > readStartedAt) continue;
 
     const existing = await prisma.fileVersion.findUnique({ where: { id: v.id } });
     if (!existing) {
@@ -281,7 +398,7 @@ export async function hydrateActiveVersionsFromDb(prisma: any, skipCodes: string
         },
       });
     }
-    await prisma.department.update({ where: { id: dept.id }, data: { activeVersionId: v.id } });
+    await prisma.department.update({ where: { id: dept.id }, data: { activeVersionId: v.id, activeSetAt: Date.now() } });
   }
 
   return new Set(Object.keys(dbVersions));

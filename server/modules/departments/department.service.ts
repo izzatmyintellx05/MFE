@@ -356,7 +356,7 @@ export async function processAtomicWorkbookUpload(
   // Only switch this instance to the new version once it is safely stored
   await prisma.department.update({
     where: { id: dept.id },
-    data: { activeVersionId: newVersion.id },
+    data: { activeVersionId: newVersion.id, activeSetAt: Date.now() },
   });
 
   try {

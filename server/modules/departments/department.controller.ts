@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient, RoleCode } from '@prisma/client';
 import { processAtomicWorkbookUpload } from './department.service';
-import { fetchActiveVersionForDepartment } from '../../db/supabase';
+import { fetchActiveVersionForDepartment, fetchActiveFileSummariesFromDb } from '../../db/supabase';
 import fs from 'fs';
 
 const prisma = new PrismaClient();
@@ -187,7 +187,13 @@ export async function listDepartments(req: Request, res: Response) {
         },
       },
     });
-    return res.json({ success: true, data: departments });
+
+    // Another instance may have taken a newer upload since this one loaded: the database knows
+    const dbFiles = await fetchActiveFileSummariesFromDb();
+    const data = departments.map((d: any) =>
+      dbFiles?.[d.code] ? { ...d, activeVersionId: dbFiles[d.code].id, activeVersion: dbFiles[d.code] } : d
+    );
+    return res.json({ success: true, data });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }

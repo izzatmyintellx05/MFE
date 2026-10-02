@@ -1,11 +1,5 @@
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
@@ -23,8 +17,11 @@ __export(prisma_exports, {
   PrismaClient: () => PrismaClient,
   RoleCode: () => RoleCode,
   default: () => prisma_default,
+  exportEngineHistory: () => exportEngineHistory,
+  importEngineHistory: () => importEngineHistory,
   normalizeDatabaseUrl: () => normalizeDatabaseUrl,
-  prisma: () => prisma
+  prisma: () => prisma,
+  replaceUsers: () => replaceUsers
 });
 import crypto from "crypto";
 function normalizeDatabaseUrl(rawUrl) {
@@ -47,6 +44,9 @@ function hashPassword(password) {
   const hash = crypto.pbkdf2Sync(password, salt, 1e3, 64, "sha512").toString("hex");
   return `pbkdf2$${salt}$${hash}`;
 }
+function isCompoundKey(item, key, val) {
+  return typeof val === "object" && val !== null && !(val instanceof Date) && !(key in item) && !Object.keys(val).some((k) => WHERE_OPERATORS.includes(k));
+}
 function matchesWhere(item, where) {
   if (!where || typeof where !== "object") return true;
   if (Array.isArray(where.OR)) {
@@ -56,6 +56,8 @@ function matchesWhere(item, where) {
     if (val === void 0) continue;
     if (key === "email" && typeof val === "string") {
       if (String(item.email || "").toLowerCase() !== val.toLowerCase()) return false;
+    } else if (isCompoundKey(item, key, val)) {
+      if (!matchesWhere(item, val)) return false;
     } else if (typeof val === "object" && val !== null) {
       const objVal = val;
       if (objVal.in && Array.isArray(objVal.in)) {
@@ -123,7 +125,29 @@ function populateDepartment(dept, include) {
   }
   return result;
 }
-var RoleCode, Mr11Status, FileVersionStatus, store, INITIAL_ROLES, INITIAL_DEPTS, adminId, adminEmail, adminUser, DEMO_USERS, MockPrismaClient, PrismaClient, prisma, prisma_default, g;
+function replaceUsers(users, userRoles) {
+  store.users.clear();
+  store.userRoles.clear();
+  for (const u of users) store.users.set(u.id, u);
+  for (const ur of userRoles) store.userRoles.set(ur.id, ur);
+}
+function exportEngineHistory() {
+  return {
+    planningSeriesHistory: [...store.planningSeriesHistory.values()],
+    planningProjectQuantityTrackers: [...store.planningProjectQuantityTrackers.values()],
+    productionSeriesHistory: [...store.productionSeriesHistory.values()]
+  };
+}
+function importEngineHistory(history) {
+  const load = (map, rows, keyOf) => {
+    map.clear();
+    for (const r of rows || []) map.set(keyOf(r), r);
+  };
+  load(store.planningSeriesHistory, history.planningSeriesHistory, (r) => `${r.projectNo}_${r.stream}_${r.fontColor}_${r.seriesNumber}`);
+  load(store.planningProjectQuantityTrackers, history.planningProjectQuantityTrackers, (r) => `${r.projectNo}_${r.stream}_${r.fontColor}`);
+  load(store.productionSeriesHistory, history.productionSeriesHistory, (r) => `${r.projectShortname}_${r.stream}_${r.fontColor}_${r.seriesNumber}`);
+}
+var RoleCode, Mr11Status, FileVersionStatus, store, INITIAL_ROLES, INITIAL_DEPTS, adminId, adminEmail, adminUser, DEMO_USERS, WHERE_OPERATORS, MockPrismaClient, PrismaClient, prisma, prisma_default, g;
 var init_prisma = __esm({
   "server/db/prisma.ts"() {
     RoleCode = /* @__PURE__ */ ((RoleCode4) => {
@@ -255,6 +279,7 @@ var init_prisma = __esm({
       visibleColumns: [],
       updatedAt: /* @__PURE__ */ new Date()
     });
+    WHERE_OPERATORS = ["in", "gt", "gte", "lt", "lte"];
     MockPrismaClient = class {
       constructor() {
         this.user = {
@@ -715,15 +740,20 @@ var init_database_config = __esm({
 // server/db/supabase.ts
 var supabase_exports = {};
 __export(supabase_exports, {
+  deleteUserFromDb: () => deleteUserFromDb,
   describeDatabase: () => describeDatabase,
+  fetchActiveFileSummariesFromDb: () => fetchActiveFileSummariesFromDb,
   fetchActiveVersionForDepartment: () => fetchActiveVersionForDepartment,
   fetchActiveVersionsFromDb: () => fetchActiveVersionsFromDb,
   fetchLatestMr11RunFromDb: () => fetchLatestMr11RunFromDb,
   getLatestMr11Run: () => getLatestMr11Run,
   hydrateActiveVersionsFromDb: () => hydrateActiveVersionsFromDb,
+  hydrateUsersFromDb: () => hydrateUsersFromDb,
   isDatabaseConfigured: () => isDatabaseConfigured,
+  restoreEngineHistory: () => restoreEngineHistory,
   saveFileVersionToDb: () => saveFileVersionToDb,
-  saveMr11RunToDb: () => saveMr11RunToDb
+  saveMr11RunToDb: () => saveMr11RunToDb,
+  saveUserToDb: () => saveUserToDb
 });
 function isDatabaseConfigured() {
   return Boolean(getDatabaseUrl());
@@ -784,6 +814,34 @@ async function upsertRow(pool, table, values, updateCols) {
 function workbookOf(row) {
   return row?.parsedWorkbook ?? row?.rawDataJson ?? null;
 }
+function parseJson(value) {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+async function inTransaction(fn) {
+  const pool = await openPool();
+  if (!pool) return false;
+  let client = null;
+  try {
+    client = await pool.connect();
+    await client.query("BEGIN");
+    await fn(client);
+    await client.query("COMMIT");
+    return true;
+  } catch (err) {
+    await client?.query("ROLLBACK").catch(() => {
+    });
+    throw err;
+  } finally {
+    client?.release();
+    await pool.end().catch(() => {
+    });
+  }
+}
 async function fetchActiveVersionsFromDb() {
   return withPool(async (pool) => {
     const result = await pool.query(
@@ -812,11 +870,70 @@ async function fetchLatestMr11RunFromDb() {
       id: r.id,
       generatedAt: r.generatedAt,
       status: r.status,
-      sourceSnapshot: r.sourceSnapshot,
+      sourceSnapshot: parseJson(r.sourceSnapshot),
       recordCount: r.recordCount,
-      records: r.calculatedFields ?? r.records ?? []
+      records: parseJson(r.calculatedFields ?? r.records) ?? []
     };
   });
+}
+async function fetchActiveFileSummariesFromDb() {
+  return withPool(async (pool) => {
+    const result = await pool.query(
+      `SELECT d.code, f.id, f."originalFilename", f."uploadedAt"
+         FROM "Department" d
+         JOIN "FileVersion" f ON f.id = d."activeVersionId";`
+    );
+    const byCode = {};
+    for (const r of result.rows) {
+      byCode[r.code] = { id: r.id, originalFilename: r.originalFilename, status: "READY", uploadedAt: r.uploadedAt };
+    }
+    return byCode;
+  });
+}
+async function hydrateUsersFromDb() {
+  const rows = await withPool(async (pool) => ({
+    // Stable order: the seeded accounts share one createdAt, and edited rows move in the table
+    users: (await pool.query('SELECT * FROM "User" ORDER BY "createdAt", email;')).rows,
+    userRoles: (await pool.query('SELECT * FROM "UserRole";')).rows
+  }));
+  if (!rows || rows.users.length === 0) return false;
+  replaceUsers(rows.users, rows.userRoles);
+  return true;
+}
+async function saveUserToDb(user, roleIds) {
+  return inTransaction(async (client) => {
+    await upsertRow(
+      client,
+      "User",
+      {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        passwordHash: user.passwordHash,
+        status: user.status || "ACTIVE",
+        isActive: user.isActive ?? true,
+        createdAt: user.createdAt ?? NOW,
+        updatedAt: NOW
+      },
+      ["email", "fullName", "passwordHash", "status", "isActive", "updatedAt"]
+    );
+    await client.query('DELETE FROM "UserRole" WHERE "userId" = $1;', [user.id]);
+    for (const roleId of roleIds) {
+      await upsertRow(client, "UserRole", { id: `ur-${user.id}-${roleId}`, userId: user.id, roleId, createdAt: NOW }, []);
+    }
+  });
+}
+async function deleteUserFromDb(userId) {
+  return inTransaction(async (client) => {
+    await client.query('DELETE FROM "UserRole" WHERE "userId" = $1;', [userId]);
+    await client.query('DELETE FROM "User" WHERE id = $1;', [userId]);
+  });
+}
+function restoreEngineHistory(run) {
+  const history = run?.sourceSnapshot?.engineHistory;
+  if (!history) return false;
+  importEngineHistory(history);
+  return true;
 }
 async function saveFileVersionToDb(v) {
   const pool = await openPool();
@@ -877,6 +994,12 @@ async function saveMr11RunToDb(run) {
   const pool = await openPool();
   if (!pool) return false;
   try {
+    const active = await pool.query('SELECT code, "activeVersionId" FROM "Department" WHERE "activeVersionId" IS NOT NULL;');
+    const replaced = active.rows.filter((d) => run.sourceSnapshot?.[d.code] && run.sourceSnapshot[d.code] !== d.activeVersionId).map((d) => d.code);
+    if (replaced.length > 0) {
+      console.warn(`[DATABASE] MR11 run ${run.id} not saved: newer workbooks were uploaded for ${replaced.join(", ")}`);
+      return false;
+    }
     const json = JSON.stringify(run.records);
     await upsertRow(
       pool,
@@ -921,12 +1044,14 @@ async function describeDatabase() {
   });
 }
 async function hydrateActiveVersionsFromDb(prisma8, skipCodes = []) {
+  const readStartedAt = Date.now();
   const dbVersions = await fetchActiveVersionsFromDb();
   if (!dbVersions) return null;
   for (const [code, v] of Object.entries(dbVersions)) {
     if (skipCodes.includes(code)) continue;
     const dept = await prisma8.department.findFirst({ where: { code } });
     if (!dept || dept.activeVersionId === v.id) continue;
+    if (dept.activeSetAt && dept.activeSetAt > readStartedAt) continue;
     const existing = await prisma8.fileVersion.findUnique({ where: { id: v.id } });
     if (!existing) {
       await prisma8.fileVersion.create({
@@ -945,7 +1070,7 @@ async function hydrateActiveVersionsFromDb(prisma8, skipCodes = []) {
         }
       });
     }
-    await prisma8.department.update({ where: { id: dept.id }, data: { activeVersionId: v.id } });
+    await prisma8.department.update({ where: { id: dept.id }, data: { activeVersionId: v.id, activeSetAt: Date.now() } });
   }
   return new Set(Object.keys(dbVersions));
 }
@@ -967,8 +1092,8 @@ var init_supabase = __esm({
 // server/app.ts
 import express from "express";
 import cors from "cors";
-import fs2 from "fs";
-import path from "path";
+import fs3 from "fs";
+import path2 from "path";
 import { fileURLToPath } from "url";
 
 // server/modules/auth/auth.routes.ts
@@ -981,8 +1106,10 @@ import { Router } from "express";
 
 // server/modules/auth/auth.controller.ts
 init_prisma();
+init_supabase();
 import crypto2 from "crypto";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 var prisma2 = new PrismaClient();
 var getJwtSecret = () => process.env.JWT_SECRET || "mfe-formwork-mr11-enterprise-secret-key-2026";
 function hashPassword2(password) {
@@ -1010,16 +1137,7 @@ function verifyPassword(password, storedHash) {
     }
   }
   if (storedHash.startsWith("$2")) {
-    try {
-      const bcrypt2 = __require("bcryptjs");
-      return bcrypt2.compareSync(password, storedHash);
-    } catch {
-      try {
-        const bcrypt2 = __require("bcrypt");
-        return bcrypt2.compareSync(password, storedHash);
-      } catch {
-      }
-    }
+    return bcrypt.compareSync(password, storedHash);
   }
   const sha = crypto2.createHash("sha256").update(password).digest("hex");
   if (storedHash === sha) return true;
@@ -1035,6 +1153,7 @@ async function login(req, res) {
       });
     }
     const cleanEmail = String(email).trim().toLowerCase();
+    await hydrateUsersFromDb();
     let user = await prisma2.user.findFirst({
       where: { email: cleanEmail },
       include: {
@@ -1113,7 +1232,7 @@ async function getMe(req, res) {
     const token = authHeader.split(" ")[1];
     const secret = getJwtSecret();
     const decoded = jwt.verify(token, secret);
-    const user = await prisma2.user.findUnique({
+    const findUser = () => prisma2.user.findUnique({
       where: { id: decoded.id },
       include: {
         roles: {
@@ -1123,6 +1242,8 @@ async function getMe(req, res) {
         }
       }
     });
+    let user = await findUser();
+    if (!user && await hydrateUsersFromDb()) user = await findUser();
     if (!user) {
       return res.status(404).json({ success: false, error: { message: "User not found" } });
     }
@@ -1541,6 +1662,7 @@ var MR11_ORDERED_COLUMNS = [
 
 // server/modules/mr11/mr11.engine.ts
 init_supabase();
+init_prisma();
 function parseNumeric(val) {
   if (typeof val === "number") return isNaN(val) ? 0 : val;
   if (!val) return 0;
@@ -1981,6 +2103,8 @@ function findCellValue(row, candidateHeader) {
 }
 async function executeMr11Pipeline(prisma8, options = {}) {
   const { persist = true } = options;
+  const latestDbRun = await fetchLatestMr11RunFromDb();
+  restoreEngineHistory(latestDbRun);
   const activeDepartments = await prisma8.department.findMany({
     include: { activeVersion: true }
   });
@@ -2178,7 +2302,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const allHistoricalPlanningSeries = await prisma8.planningSeriesHistory.findMany({
     orderBy: { seriesNumber: "asc" }
   });
-  const previousRun = await prisma8.mr11Run.findFirst({
+  const previousRun = (latestDbRun?.records?.length > 0 ? latestDbRun : null) ?? await prisma8.mr11Run.findFirst({
     where: {
       status: "READY",
       recordCount: { gt: 0 }
@@ -2829,7 +2953,11 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   });
   if (persist) {
     try {
-      await saveMr11RunToDb({ id: run.id, sourceSnapshot, records: derivedMr11Rows });
+      await saveMr11RunToDb({
+        id: run.id,
+        sourceSnapshot: { ...sourceSnapshot, dispatchTracker: newDispatchTracker, engineHistory: exportEngineHistory() },
+        records: derivedMr11Rows
+      });
     } catch (mr11DbErr) {
       console.error("[MR11 ENGINE] Could not save MR11 to the database:", mr11DbErr?.message);
     }
@@ -2899,7 +3027,7 @@ async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, 
   }
   await prisma8.department.update({
     where: { id: dept.id },
-    data: { activeVersionId: newVersion.id }
+    data: { activeVersionId: newVersion.id, activeSetAt: Date.now() }
   });
   try {
     await prisma8.auditLog.create({
@@ -3088,7 +3216,11 @@ async function listDepartments(req, res) {
         }
       }
     });
-    return res.json({ success: true, data: departments });
+    const dbFiles = await fetchActiveFileSummariesFromDb();
+    const data = departments.map(
+      (d) => dbFiles?.[d.code] ? { ...d, activeVersionId: dbFiles[d.code].id, activeVersion: dbFiles[d.code] } : d
+    );
+    return res.json({ success: true, data });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
@@ -3297,8 +3429,19 @@ import jwt2 from "jsonwebtoken";
 
 // server/modules/admin/admin.controller.ts
 init_prisma();
-import bcrypt from "bcryptjs";
+init_supabase();
+import bcrypt2 from "bcryptjs";
 var prisma6 = new PrismaClient();
+async function persistUser(userId) {
+  const user = await prisma6.user.findUnique({ where: { id: userId } });
+  const roleIds = (await prisma6.userRole.findMany({ where: { userId } })).map((ur) => ur.roleId);
+  try {
+    await saveUserToDb(user, roleIds);
+  } catch (err) {
+    await hydrateUsersFromDb();
+    throw new Error(`The change could not be saved to the database: ${err?.message || err}`);
+  }
+}
 var DEFAULT_PROFILE_TABS = {
   ADMIN: ["ADMIN", "BD", "FINANCE", "SHELLPLAN", "DESIGN", "PLANNING", "PRODUCTION", "DISPATCH"],
   BD: ["BD"],
@@ -3318,6 +3461,7 @@ function extractRoleCodes(user) {
 }
 async function getAllUsersWithPermissions(req, res) {
   try {
+    await hydrateUsersFromDb();
     const users = await prisma6.user.findMany({
       select: {
         id: true,
@@ -3358,10 +3502,14 @@ async function updateUserPermissions(req, res) {
     } else {
       return res.status(400).json({ success: false, error: { message: "Either roles array or valid primaryProfile is required" } });
     }
+    await hydrateUsersFromDb();
     const targetUser = await prisma6.user.findUnique({
       where: { id: userId },
       include: { roles: { include: { role: true } } }
     });
+    if (!targetUser) {
+      return res.status(404).json({ success: false, error: { message: "User account not found" } });
+    }
     if (targetUser?.email === "admin@mfeformwork.com" && !targetRoles.includes("ADMIN")) {
       targetRoles.push("ADMIN");
     }
@@ -3385,6 +3533,7 @@ async function updateUserPermissions(req, res) {
         });
       }
     });
+    await persistUser(userId);
     const updatedUser = await prisma6.user.findUnique({
       where: { id: userId },
       select: {
@@ -3421,6 +3570,7 @@ async function createUser(req, res) {
         error: { message: "Corporate Email and Password are required" }
       });
     }
+    await hydrateUsersFromDb();
     const existing = await prisma6.user.findUnique({
       where: { email: email.toLowerCase().trim() }
     });
@@ -3430,7 +3580,7 @@ async function createUser(req, res) {
         error: { message: "A user account with this email address already exists" }
       });
     }
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt2.hash(password, 10);
     const selectedProfile = primaryProfile || "CUSTOM";
     const targetRoles = DEFAULT_PROFILE_TABS[selectedProfile] || [];
     const allDbRoles = await prisma6.role.findMany();
@@ -3458,6 +3608,14 @@ async function createUser(req, res) {
       }
       return createdUser;
     });
+    try {
+      await persistUser(newUser.id);
+    } catch (err) {
+      if (await prisma6.user.findUnique({ where: { id: newUser.id } })) {
+        await prisma6.user.delete({ where: { id: newUser.id } });
+      }
+      throw err;
+    }
     return res.status(201).json({
       success: true,
       message: "New user created successfully",
@@ -3478,6 +3636,7 @@ async function createUser(req, res) {
 async function deleteUser(req, res) {
   try {
     const { userId } = req.params;
+    await hydrateUsersFromDb();
     const targetUser = await prisma6.user.findUnique({
       where: { id: userId }
     });
@@ -3493,6 +3652,7 @@ async function deleteUser(req, res) {
         error: { message: "The primary root administrator account cannot be deleted" }
       });
     }
+    await deleteUserFromDb(userId);
     await prisma6.$transaction(async (tx) => {
       await tx.userRole.deleteMany({
         where: { userId }
@@ -3658,9 +3818,101 @@ var router5 = Router5();
 router5.get("/", requireAuth, requireRoles("ADMIN" /* ADMIN */, "CEO" /* CEO */), getVisualizationData);
 var visualization_routes_default = router5;
 
+// server/bootstrap.ts
+init_prisma();
+import fs2 from "fs";
+import path from "path";
+init_supabase();
+var deptKeywords = {
+  ["BD" /* BD */]: "bd.xlsx",
+  ["FINANCE" /* FINANCE */]: "finance.xlsx",
+  ["SHELLPLAN" /* SHELLPLAN */]: "shellplan.xlsx",
+  ["DESIGN" /* DESIGN */]: "design.xlsx",
+  ["PLANNING" /* PLANNING */]: "planning.xlsx",
+  ["PRODUCTION" /* PRODUCTION */]: "production.xlsx",
+  ["DISPATCH" /* DISPATCH */]: "dispatch.xlsx",
+  ["ADMIN" /* ADMIN */]: "",
+  ["CEO" /* CEO */]: ""
+};
+var bootstrapping = null;
+function ensureBootstrapped() {
+  if (!bootstrapping) bootstrapping = bootstrapSystem();
+  return bootstrapping;
+}
+async function bootstrapSystem() {
+  try {
+    if (await hydrateUsersFromDb()) {
+      console.log("[MFE Formwork MR11] Loaded users from database");
+    }
+    const admin = await prisma.user.findFirst({ where: { email: "admin@mfeformwork.com" } });
+    const adminId2 = admin?.id || "user-admin-1";
+    const dbCodes = await hydrateActiveVersionsFromDb(prisma);
+    if (dbCodes) {
+      console.log(`[MFE Formwork MR11] Loaded active workbooks from database: ${[...dbCodes].join(", ") || "none"}`);
+    }
+    const uploadsStorageDir = path.resolve(process.cwd(), "uploads_storage");
+    const uploadsDir = path.resolve(process.cwd(), "uploads");
+    const searchDirs = isDatabaseConfigured() ? [] : [uploadsStorageDir, uploadsDir].filter((d) => fs2.existsSync(d));
+    console.log(
+      isDatabaseConfigured() ? "[MFE Formwork MR11] Database connected: sample workbooks are not loaded" : "[MFE Formwork MR11] No database: loading sample workbooks..."
+    );
+    for (const [codeStr, keyword] of Object.entries(deptKeywords)) {
+      const code = codeStr;
+      if (!keyword || dbCodes?.has(code)) continue;
+      let targetPath = null;
+      let targetFilename = null;
+      for (const dir of searchDirs) {
+        try {
+          const files = fs2.readdirSync(dir);
+          const matching = files.filter((f) => f.toLowerCase().endsWith(keyword)).sort((a, b) => b.localeCompare(a));
+          if (matching.length > 0) {
+            targetFilename = matching[0];
+            targetPath = path.join(dir, targetFilename);
+            break;
+          }
+        } catch {
+        }
+      }
+      if (targetPath && targetFilename && fs2.existsSync(targetPath)) {
+        try {
+          const stat = fs2.statSync(targetPath);
+          await processAtomicWorkbookUpload(
+            prisma,
+            code,
+            targetPath,
+            targetFilename,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            stat.size,
+            adminId2,
+            { persist: false, regenerate: false }
+          );
+          console.log(`[MFE Formwork MR11] Loaded active workbook for ${code} from ${targetFilename}`);
+        } catch (e) {
+          console.warn(`[MFE Formwork MR11] Note: Could not auto-load workbook for ${code}:`, e.message);
+        }
+      }
+    }
+    const dbRun = await fetchLatestMr11RunFromDb();
+    if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) {
+      await prisma.mr11Run.create({ data: dbRun });
+      restoreEngineHistory(dbRun);
+      console.log("[MFE Formwork MR11] Loaded latest MR11 Master from database");
+    } else {
+      try {
+        await executeMr11Pipeline(prisma, { persist: false });
+        console.log("[MFE Formwork MR11] Initial MR11 Master generation complete");
+      } catch (e) {
+        console.warn("[MFE Formwork MR11] Initial MR11 pipeline notice:", e.message);
+      }
+    }
+  } catch (err) {
+    console.error("[MFE Formwork MR11] Bootstrap notice:", err.message);
+  }
+}
+
 // server/app.ts
 var __filename = fileURLToPath(import.meta.url);
-var __dirname = path.dirname(__filename);
+var __dirname = path2.dirname(__filename);
 var app = express();
 app.use(cors({
   origin: true,
@@ -3670,6 +3922,9 @@ app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "MFE Formwork MR11 System" });
+});
+app.use((req, res, next) => {
+  ensureBootstrapped().then(() => next(), next);
 });
 app.get("/api/health/db", async (req, res) => {
   try {
@@ -3735,101 +3990,16 @@ app.use("/api/departments", deptR);
 app.use("/api/mr11", mr11R);
 app.use("/api/admin", adminR);
 app.use("/api/visualization", visualizationR);
-var webDir = path.resolve(process.env.WEB_DIR || path.join(__dirname, "../../public"));
-if (fs2.existsSync(path.join(webDir, "index.html"))) {
+var webDir = path2.resolve(process.env.WEB_DIR || path2.join(__dirname, "../../public"));
+if (fs3.existsSync(path2.join(webDir, "index.html"))) {
   app.use(express.static(webDir));
   app.get(/^\/(?!api(\/|$)|health$).*/, (req, res) => {
-    res.sendFile(path.join(webDir, "index.html"));
+    res.sendFile(path2.join(webDir, "index.html"));
   });
 }
 
-// server/bootstrap.ts
-init_prisma();
-import fs3 from "fs";
-import path2 from "path";
-init_supabase();
-var deptKeywords = {
-  ["BD" /* BD */]: "bd.xlsx",
-  ["FINANCE" /* FINANCE */]: "finance.xlsx",
-  ["SHELLPLAN" /* SHELLPLAN */]: "shellplan.xlsx",
-  ["DESIGN" /* DESIGN */]: "design.xlsx",
-  ["PLANNING" /* PLANNING */]: "planning.xlsx",
-  ["PRODUCTION" /* PRODUCTION */]: "production.xlsx",
-  ["DISPATCH" /* DISPATCH */]: "dispatch.xlsx",
-  ["ADMIN" /* ADMIN */]: "",
-  ["CEO" /* CEO */]: ""
-};
-async function bootstrapSystem() {
-  try {
-    const admin = await prisma.user.findFirst({ where: { email: "admin@mfeformwork.com" } });
-    const adminId2 = admin?.id || "user-admin-1";
-    const dbCodes = await hydrateActiveVersionsFromDb(prisma);
-    if (dbCodes) {
-      console.log(`[MFE Formwork MR11] Loaded active workbooks from database: ${[...dbCodes].join(", ") || "none"}`);
-    }
-    const uploadsStorageDir = path2.resolve(process.cwd(), "uploads_storage");
-    const uploadsDir = path2.resolve(process.cwd(), "uploads");
-    const searchDirs = isDatabaseConfigured() ? [] : [uploadsStorageDir, uploadsDir].filter((d) => fs3.existsSync(d));
-    console.log(
-      isDatabaseConfigured() ? "[MFE Formwork MR11] Database connected: sample workbooks are not loaded" : "[MFE Formwork MR11] No database: loading sample workbooks..."
-    );
-    for (const [codeStr, keyword] of Object.entries(deptKeywords)) {
-      const code = codeStr;
-      if (!keyword || dbCodes?.has(code)) continue;
-      let targetPath = null;
-      let targetFilename = null;
-      for (const dir of searchDirs) {
-        try {
-          const files = fs3.readdirSync(dir);
-          const matching = files.filter((f) => f.toLowerCase().endsWith(keyword)).sort((a, b) => b.localeCompare(a));
-          if (matching.length > 0) {
-            targetFilename = matching[0];
-            targetPath = path2.join(dir, targetFilename);
-            break;
-          }
-        } catch {
-        }
-      }
-      if (targetPath && targetFilename && fs3.existsSync(targetPath)) {
-        try {
-          const stat = fs3.statSync(targetPath);
-          await processAtomicWorkbookUpload(
-            prisma,
-            code,
-            targetPath,
-            targetFilename,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            stat.size,
-            adminId2,
-            { persist: false, regenerate: false }
-          );
-          console.log(`[MFE Formwork MR11] Loaded active workbook for ${code} from ${targetFilename}`);
-        } catch (e) {
-          console.warn(`[MFE Formwork MR11] Note: Could not auto-load workbook for ${code}:`, e.message);
-        }
-      }
-    }
-    const dbRun = await fetchLatestMr11RunFromDb();
-    if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) {
-      await prisma.mr11Run.create({ data: dbRun });
-      console.log("[MFE Formwork MR11] Loaded latest MR11 Master from database");
-    } else {
-      try {
-        await executeMr11Pipeline(prisma, { persist: false });
-        console.log("[MFE Formwork MR11] Initial MR11 Master generation complete");
-      } catch (e) {
-        console.warn("[MFE Formwork MR11] Initial MR11 pipeline notice:", e.message);
-      }
-    }
-  } catch (err) {
-    console.error("[MFE Formwork MR11] Bootstrap notice:", err.message);
-  }
-}
-
 // server/vercel.ts
-bootstrapSystem().catch((err) => {
-  console.warn("[Vercel Serverless Bootstrap Notice]:", err?.message || err);
-});
+ensureBootstrapped();
 var vercel_default = app;
 export {
   vercel_default as default

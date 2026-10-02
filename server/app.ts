@@ -11,6 +11,7 @@ import * as departmentModule from './modules/departments/department.routes';
 import * as mr11Module from './modules/mr11/mr11.routes';
 import * as adminModule from './modules/admin/admin.routes';
 import * as visualizationModule from './modules/visualization/visualization.routes';
+import { ensureBootstrapped } from './bootstrap';
 
 export const app = express();
 
@@ -25,6 +26,11 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 // Healthcheck
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'MFE Formwork MR11 System' });
+});
+
+// Everything else waits until this instance has loaded uploads, users and MR11 from the database
+app.use((req, res, next) => {
+  ensureBootstrapped().then(() => next(), next);
 });
 
 app.get('/api/health/db', async (req, res) => {

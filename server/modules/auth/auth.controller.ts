@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { PrismaClient, RoleCode } from '@prisma/client';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import { hydrateUsersFromDb } from '../../db/supabase';
 
 const prisma = new PrismaClient();
 const getJwtSecret = () => process.env.JWT_SECRET || 'mfe-formwork-mr11-enterprise-secret-key-2026';
@@ -36,16 +38,9 @@ function verifyPassword(password: string, storedHash: string): boolean {
     }
   }
 
+  // Accounts created in the Admin Console (bcrypt). `require` does not exist in this ES module.
   if (storedHash.startsWith('$2')) {
-    try {
-      const bcrypt = require('bcryptjs');
-      return bcrypt.compareSync(password, storedHash);
-    } catch {
-      try {
-        const bcrypt = require('bcrypt');
-        return bcrypt.compareSync(password, storedHash);
-      } catch {}
-    }
+    return bcrypt.compareSync(password, storedHash);
   }
 
   const sha = crypto.createHash('sha256').update(password).digest('hex');
@@ -66,6 +61,9 @@ export async function login(req: Request, res: Response) {
     }
 
     const cleanEmail = String(email).trim().toLowerCase();
+
+    // Accounts may have been added, changed or removed on another instance
+    await hydrateUsersFromDb();
 
     let user = await prisma.user.findFirst({
       where: { email: cleanEmail },
@@ -278,16 +276,20 @@ export async function getMe(req: Request, res: Response): Promise<Response> {
     const secret = getJwtSecret();
     const decoded = jwt.verify(token, secret) as any;
 
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      include: {
-        roles: {
-          include: {
-            role: true,
+    const findUser = () =>
+      prisma.user.findUnique({
+        where: { id: decoded.id },
+        include: {
+          roles: {
+            include: {
+              role: true,
+            },
           },
         },
-      },
-    });
+      });
+    let user = await findUser();
+    // Created on another instance since this one loaded its users
+    if (!user && (await hydrateUsersFromDb())) user = await findUser();
 
     if (!user) {
       return res.status(404).json({ success: false, error: { message: 'User not found' } });

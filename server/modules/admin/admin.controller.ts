@@ -1,8 +1,24 @@
 import { Request, Response } from 'express';
 import { PrismaClient, RoleCode } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { hydrateUsersFromDb, saveUserToDb, deleteUserFromDb } from '../../db/supabase';
 
 const prisma = new PrismaClient();
+
+/**
+ * Saves a user's account and roles to the database so they survive restarts and reach every
+ * instance. On failure the database's copy is reloaded, so memory never keeps an unsaved change.
+ */
+async function persistUser(userId: string): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const roleIds = (await prisma.userRole.findMany({ where: { userId } })).map((ur: any) => ur.roleId);
+  try {
+    await saveUserToDb(user, roleIds);
+  } catch (err: any) {
+    await hydrateUsersFromDb();
+    throw new Error(`The change could not be saved to the database: ${err?.message || err}`);
+  }
+}
 
 const DEFAULT_PROFILE_TABS: Record<string, RoleCode[]> = {
   ADMIN: ['ADMIN', 'BD', 'FINANCE', 'SHELLPLAN', 'DESIGN', 'PLANNING', 'PRODUCTION', 'DISPATCH'] as RoleCode[],
@@ -29,6 +45,7 @@ function extractRoleCodes(user: any): string[] {
 
 export async function getAllUsersWithPermissions(req: Request, res: Response): Promise<Response> {
   try {
+    await hydrateUsersFromDb();
     const users = await prisma.user.findMany({
       select: {
         id: true,
@@ -75,10 +92,15 @@ export async function updateUserPermissions(req: Request, res: Response): Promis
     }
 
     // Safety guard: Protect root admin from losing ADMIN role
+    await hydrateUsersFromDb();
     const targetUser = await prisma.user.findUnique({
       where: { id: userId },
       include: { roles: { include: { role: true } } },
     });
+
+    if (!targetUser) {
+      return res.status(404).json({ success: false, error: { message: 'User account not found' } });
+    }
 
     if (targetUser?.email === 'admin@mfeformwork.com' && !targetRoles.includes('ADMIN' as RoleCode)) {
       targetRoles.push('ADMIN' as RoleCode);
@@ -115,6 +137,7 @@ export async function updateUserPermissions(req: Request, res: Response): Promis
         });
       }
     });
+    await persistUser(userId);
 
     // Fetch the updated user with populated role objects
     const updatedUser = await prisma.user.findUnique({
@@ -158,7 +181,8 @@ export async function createUser(req: Request, res: Response): Promise<Response>
       });
     }
 
-    // Check if user already exists
+    // Check if user already exists (also on other instances)
+    await hydrateUsersFromDb();
     const existing = await prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
@@ -210,6 +234,15 @@ export async function createUser(req: Request, res: Response): Promise<Response>
 
       return createdUser;
     });
+    try {
+      await persistUser(newUser.id);
+    } catch (err) {
+      // Not saved, so it must not exist here either
+      if (await prisma.user.findUnique({ where: { id: newUser.id } })) {
+        await prisma.user.delete({ where: { id: newUser.id } });
+      }
+      throw err;
+    }
 
     return res.status(201).json({
       success: true,
@@ -234,6 +267,7 @@ export async function deleteUser(req: Request, res: Response): Promise<Response>
   try {
     const { userId } = req.params;
 
+    await hydrateUsersFromDb();
     const targetUser = await prisma.user.findUnique({
       where: { id: userId },
     });
@@ -252,6 +286,9 @@ export async function deleteUser(req: Request, res: Response): Promise<Response>
         error: { message: 'The primary root administrator account cannot be deleted' },
       });
     }
+
+    // Remove it from the database first; if that fails, nothing changes here either
+    await deleteUserFromDb(userId);
 
     // Delete relation links and user account within a transaction
     await prisma.$transaction(async (tx) => {

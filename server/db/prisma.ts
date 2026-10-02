@@ -186,6 +186,19 @@ store.mr11Config.set('singleton', {
   updatedAt: new Date(),
 });
 
+const WHERE_OPERATORS = ['in', 'gt', 'gte', 'lt', 'lte'];
+
+/** A Prisma compound unique key: not a field of the item, and its value lists the fields to match. */
+function isCompoundKey(item: any, key: string, val: any): boolean {
+  return (
+    typeof val === 'object' &&
+    val !== null &&
+    !(val instanceof Date) &&
+    !(key in item) &&
+    !Object.keys(val).some((k) => WHERE_OPERATORS.includes(k))
+  );
+}
+
 function matchesWhere(item: any, where: any): boolean {
   if (!where || typeof where !== 'object') return true;
 
@@ -198,6 +211,9 @@ function matchesWhere(item: any, where: any): boolean {
 
     if (key === 'email' && typeof val === 'string') {
       if (String(item.email || '').toLowerCase() !== val.toLowerCase()) return false;
+    } else if (isCompoundKey(item, key, val)) {
+      // e.g. { projectNo_stream_fontColor: { projectNo, stream, fontColor } }
+      if (!matchesWhere(item, val)) return false;
     } else if (typeof val === 'object' && val !== null) {
       const objVal = val as any;
       if (objVal.in && Array.isArray(objVal.in)) {
@@ -706,6 +722,34 @@ export class MockPrismaClient {
   }
 
   async $disconnect() {}
+}
+
+/** Replaces this instance's users and role links with the database's copy (server/db/supabase.ts). */
+export function replaceUsers(users: any[], userRoles: any[]): void {
+  store.users.clear();
+  store.userRoles.clear();
+  for (const u of users) store.users.set(u.id, u);
+  for (const ur of userRoles) store.userRoles.set(ur.id, ur);
+}
+
+/** The MR11 engine's running history, which is saved with each MR11 run. */
+export function exportEngineHistory() {
+  return {
+    planningSeriesHistory: [...store.planningSeriesHistory.values()],
+    planningProjectQuantityTrackers: [...store.planningProjectQuantityTrackers.values()],
+    productionSeriesHistory: [...store.productionSeriesHistory.values()],
+  };
+}
+
+/** Restores the history saved by exportEngineHistory, keyed the same way as the upserts above. */
+export function importEngineHistory(history: ReturnType<typeof exportEngineHistory>): void {
+  const load = (map: Map<string, any>, rows: any[] | undefined, keyOf: (r: any) => string) => {
+    map.clear();
+    for (const r of rows || []) map.set(keyOf(r), r);
+  };
+  load(store.planningSeriesHistory, history.planningSeriesHistory, (r) => `${r.projectNo}_${r.stream}_${r.fontColor}_${r.seriesNumber}`);
+  load(store.planningProjectQuantityTrackers, history.planningProjectQuantityTrackers, (r) => `${r.projectNo}_${r.stream}_${r.fontColor}`);
+  load(store.productionSeriesHistory, history.productionSeriesHistory, (r) => `${r.projectShortname}_${r.stream}_${r.fontColor}_${r.seriesNumber}`);
 }
 
 export const PrismaClient = MockPrismaClient;

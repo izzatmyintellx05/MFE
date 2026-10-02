@@ -9,7 +9,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import { app } from './server/app';
-import { bootstrapSystem } from './server/bootstrap';
+import { ensureBootstrapped } from './server/bootstrap';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,10 +46,8 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[MFE Formwork MR11] Server running on http://0.0.0.0:${PORT}`);
-    // Bootstrap data in background
-    bootstrapSystem().catch((err) => {
-      console.warn('[MFE Formwork MR11] Background bootstrap error:', err);
-    });
+    // Load data in the background; requests wait for it (server/app.ts)
+    ensureBootstrapped();
   });
 }
 

@@ -196,11 +196,34 @@ ON CONFLICT ("code") DO NOTHING;
 -- Seed Root Admin User: admin@mfeformwork.com / admin123 (PBKDF2 SHA512)
 INSERT INTO "User" ("id", "email", "fullName", "passwordHash", "status", "isActive") VALUES
     ('user-admin-1', 'admin@mfeformwork.com', 'System Administrator', 'admin123', 'ACTIVE', true)
-ON CONFLICT ("email") DO UPDATE SET "passwordHash" = 'admin123';
+ON CONFLICT ("email") DO NOTHING;
 
 -- Link Admin to ADMIN role
 INSERT INTO "UserRole" ("id", "userId", "roleId") VALUES
     ('ur-admin-admin', 'user-admin-1', 'role-admin')
+ON CONFLICT ("userId", "roleId") DO NOTHING;
+
+-- Seed department demo accounts (password: admin123, stored as the app's PBKDF2 hash)
+INSERT INTO "User" ("id", "email", "fullName", "passwordHash", "status", "isActive") VALUES
+    ('user-ceo-1', 'ceo@mfeformwork.com', 'Executive Director', 'pbkdf2$81d99ea7b1e74596d0ed4b7fd0a6381d$6113f46e1f1fd7186de02690717cef888badd155a861e6ca9540c29dc9856672162892cf9caf2b14ffd830f204627d0fbb403687d14315dc279d9d020d79af8f', 'ACTIVE', true),
+    ('user-bd-1', 'bd@mfeformwork.com', 'BD Lead Officer', 'pbkdf2$7c1d7d6ce3ab76a42268deea817b93b4$8c435744f5f6d10d92e8c7e0375cbd84294a23ee361b70440341060c97f6008290ad8e411368317fa37d994b028309956a2b02a2b4d0c831c24f70439d00b257', 'ACTIVE', true),
+    ('user-finance-1', 'finance@mfeformwork.com', 'Commercial Finance Lead', 'pbkdf2$62e6c52347a69bf035dfc8ff42b2adf2$71118ea100f55bb5bc27bba2c5a02ec824bdec3ff024e6a3c5689aa80a99ac300d959432b63a3c9a2aff68cb0247311479b3d094d0786cbc16684bc35c2fe1ae', 'ACTIVE', true),
+    ('user-shellplan-1', 'shellplan@mfeformwork.com', 'Shellplan Architect', 'pbkdf2$539ebe5a400312838cb467a0857c58f8$dc2de3b59db37e7032645911ebc3a576619251aef111032e6b6bcc5e9c6cc349e7d38320c7c3e5bb211baed32fe389a2330d27d088e7b189ee3454f0d7625035', 'ACTIVE', true),
+    ('user-design-1', 'design@mfeformwork.com', 'Lead Design Engineer', 'pbkdf2$1f293664cb454b70cf3c1bfbca570f48$8652f71282e3575c02dcef9bb5266e66aea3fce017eb52c284d377ec32f36649dea486fcffbb1964d4efb775ca32a2e358cc869563e5a92c1025edfbc9bbae02', 'ACTIVE', true),
+    ('user-planning-1', 'planning@mfeformwork.com', 'Planning & Series Lead', 'pbkdf2$369b0a8880e43f95a86613af36630a15$5c8d21d77176448c97f549aa380151e60eaebe6904231a09ef9c78e9ac24c75c46f504c29a6643582128fbd37c39fcf56120e93e5cc181c6042048a6f8c78f58', 'ACTIVE', true),
+    ('user-production-1', 'production@mfeformwork.com', 'Plant Operations Manager', 'pbkdf2$005aa7aa7278b2543728c2b9a059e51a$8f360db5bbcf11f9fae43706650431e4901f8ff390d5e7f8dacc8f828507d2034e09044ba22b92cd59c6cd3d682683ec8145a48e25b757f64071e922d4f015a7', 'ACTIVE', true),
+    ('user-dispatch-1', 'dispatch@mfeformwork.com', 'Dispatch & Logistics Lead', 'pbkdf2$951ae5272b9922df4d64220e99ae1e57$c2255298663b7c3dac4ac5b30bbf2c09a66edd0d7c270ee75eebd0c1d7e0c2f8806965e5f37bc2d4cf585b84a00e0dc9d86c82fa9090692bc80b425fb7328dac', 'ACTIVE', true)
+ON CONFLICT ("email") DO NOTHING;
+
+INSERT INTO "UserRole" ("id", "userId", "roleId") VALUES
+    ('ur-user-ceo-1-role-ceo', 'user-ceo-1', 'role-ceo'),
+    ('ur-user-bd-1-role-bd', 'user-bd-1', 'role-bd'),
+    ('ur-user-finance-1-role-finance', 'user-finance-1', 'role-finance'),
+    ('ur-user-shellplan-1-role-shellplan', 'user-shellplan-1', 'role-shellplan'),
+    ('ur-user-design-1-role-design', 'user-design-1', 'role-design'),
+    ('ur-user-planning-1-role-planning', 'user-planning-1', 'role-planning'),
+    ('ur-user-production-1-role-production', 'user-production-1', 'role-production'),
+    ('ur-user-dispatch-1-role-dispatch', 'user-dispatch-1', 'role-dispatch')
 ON CONFLICT ("userId", "roleId") DO NOTHING;
 
 -- Seed MR11 Config Singleton

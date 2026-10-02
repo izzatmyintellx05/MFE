@@ -3,7 +3,13 @@ import path from 'path';
 import { prisma, RoleCode } from './db/prisma';
 import { processAtomicWorkbookUpload } from './modules/departments/department.service';
 import { executeMr11Pipeline } from './modules/mr11/mr11.engine';
-import { hydrateActiveVersionsFromDb, fetchLatestMr11RunFromDb, isDatabaseConfigured } from './db/supabase';
+import {
+  hydrateActiveVersionsFromDb,
+  hydrateUsersFromDb,
+  fetchLatestMr11RunFromDb,
+  restoreEngineHistory,
+  isDatabaseConfigured,
+} from './db/supabase';
 
 const deptKeywords: Record<RoleCode, string> = {
   [RoleCode.BD]: 'bd.xlsx',
@@ -17,8 +23,24 @@ const deptKeywords: Record<RoleCode, string> = {
   [RoleCode.CEO]: '',
 };
 
+let bootstrapping: Promise<void> | null = null;
+
+/**
+ * Loads this instance's data once. Requests wait for it (server/app.ts), so a fresh instance
+ * never answers from empty memory or with workbooks older than the database's.
+ */
+export function ensureBootstrapped(): Promise<void> {
+  if (!bootstrapping) bootstrapping = bootstrapSystem();
+  return bootstrapping;
+}
+
 export async function bootstrapSystem() {
   try {
+    // 0. Users and their roles live in the database; the built-in accounts are only a fallback
+    if (await hydrateUsersFromDb()) {
+      console.log('[MFE Formwork MR11] Loaded users from database');
+    }
+
     const admin = await prisma.user.findFirst({ where: { email: 'admin@mfeformwork.com' } });
     const adminId = admin?.id || 'user-admin-1';
 
@@ -89,6 +111,7 @@ export async function bootstrapSystem() {
     const dbRun = await fetchLatestMr11RunFromDb();
     if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) {
       await prisma.mr11Run.create({ data: dbRun });
+      restoreEngineHistory(dbRun);
       console.log('[MFE Formwork MR11] Loaded latest MR11 Master from database');
     } else {
       try {
