@@ -27,14 +27,20 @@ let bootstrapping: Promise<void> | null = null;
 
 /**
  * Loads this instance's data once. Requests wait for it (server/app.ts), so a fresh instance
- * never answers from empty memory or with workbooks older than the database's.
+ * never answers from empty memory or with workbooks older than the database's. When the
+ * database could not be reached, the next request tries again.
  */
 export function ensureBootstrapped(): Promise<void> {
-  if (!bootstrapping) bootstrapping = bootstrapSystem();
+  if (!bootstrapping) {
+    bootstrapping = bootstrapSystem().then((complete) => {
+      if (!complete) bootstrapping = null;
+    });
+  }
   return bootstrapping;
 }
 
-export async function bootstrapSystem() {
+/** Returns false when a database is configured but its workbooks could not be loaded. */
+export async function bootstrapSystem(): Promise<boolean> {
   try {
     // 0. Users and their roles live in the database; the built-in accounts are only a fallback
     if (await hydrateUsersFromDb()) {
@@ -121,7 +127,9 @@ export async function bootstrapSystem() {
         console.warn('[MFE Formwork MR11] Initial MR11 pipeline notice:', e.message);
       }
     }
+    return !isDatabaseConfigured() || dbCodes !== null;
   } catch (err: any) {
     console.error('[MFE Formwork MR11] Bootstrap notice:', err.message);
+    return !isDatabaseConfigured();
   }
 }

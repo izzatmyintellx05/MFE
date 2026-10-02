@@ -768,17 +768,26 @@ async function openPool() {
     connectionTimeoutMillis: 5e3
   });
 }
+function isConnectionError(err) {
+  return /timeout|terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(`${err?.code} ${err?.message}`);
+}
 async function withPool(fn) {
-  const pool = await openPool();
-  if (!pool) return null;
-  try {
-    return await fn(pool);
-  } catch (err) {
-    console.warn("[DATABASE] read notice:", err?.message || err);
-    return null;
-  } finally {
-    await pool.end().catch(() => {
-    });
+  for (let attempt = 1; ; attempt++) {
+    const pool = await openPool();
+    if (!pool) return null;
+    try {
+      return await fn(pool);
+    } catch (err) {
+      if (attempt < 2 && isConnectionError(err)) {
+        console.warn("[DATABASE] retrying read after:", err?.message || err);
+        continue;
+      }
+      console.warn("[DATABASE] read notice:", err?.message || err);
+      return null;
+    } finally {
+      await pool.end().catch(() => {
+      });
+    }
   }
 }
 async function tableColumns(pool, table) {
@@ -994,10 +1003,12 @@ async function saveMr11RunToDb(run) {
   const pool = await openPool();
   if (!pool) return false;
   try {
-    const active = await pool.query('SELECT code, "activeVersionId" FROM "Department" WHERE "activeVersionId" IS NOT NULL;');
-    const replaced = active.rows.filter((d) => run.sourceSnapshot?.[d.code] && run.sourceSnapshot[d.code] !== d.activeVersionId).map((d) => d.code);
-    if (replaced.length > 0) {
-      console.warn(`[DATABASE] MR11 run ${run.id} not saved: newer workbooks were uploaded for ${replaced.join(", ")}`);
+    const active = await pool.query(
+      `SELECT d.code, d."activeVersionId" FROM "Department" d JOIN "FileVersion" f ON f.id = d."activeVersionId";`
+    );
+    const outdated = active.rows.filter((d) => run.sourceSnapshot?.[d.code] !== d.activeVersionId).map((d) => d.code);
+    if (outdated.length > 0) {
+      console.warn(`[DATABASE] MR11 run ${run.id} not saved: built without the latest workbooks for ${outdated.join(", ")}`);
       return false;
     }
     const json = JSON.stringify(run.records);
@@ -3836,7 +3847,11 @@ var deptKeywords = {
 };
 var bootstrapping = null;
 function ensureBootstrapped() {
-  if (!bootstrapping) bootstrapping = bootstrapSystem();
+  if (!bootstrapping) {
+    bootstrapping = bootstrapSystem().then((complete) => {
+      if (!complete) bootstrapping = null;
+    });
+  }
   return bootstrapping;
 }
 async function bootstrapSystem() {
@@ -3905,8 +3920,10 @@ async function bootstrapSystem() {
         console.warn("[MFE Formwork MR11] Initial MR11 pipeline notice:", e.message);
       }
     }
+    return !isDatabaseConfigured() || dbCodes !== null;
   } catch (err) {
     console.error("[MFE Formwork MR11] Bootstrap notice:", err.message);
+    return !isDatabaseConfigured();
   }
 }
 

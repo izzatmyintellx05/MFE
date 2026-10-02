@@ -26,17 +26,28 @@ async function openPool(): Promise<any | null> {
   });
 }
 
+/** A dropped or slow connection (worth one retry), as opposed to a failing query. */
+function isConnectionError(err: any): boolean {
+  return /timeout|terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(`${err?.code} ${err?.message}`);
+}
+
 /** Runs fn against the database; returns null when it is not configured or the read fails. */
 async function withPool<T>(fn: (pool: any) => Promise<T>): Promise<T | null> {
-  const pool = await openPool();
-  if (!pool) return null;
-  try {
-    return await fn(pool);
-  } catch (err: any) {
-    console.warn('[DATABASE] read notice:', err?.message || err);
-    return null;
-  } finally {
-    await pool.end().catch(() => {});
+  for (let attempt = 1; ; attempt++) {
+    const pool = await openPool();
+    if (!pool) return null;
+    try {
+      return await fn(pool);
+    } catch (err: any) {
+      if (attempt < 2 && isConnectionError(err)) {
+        console.warn('[DATABASE] retrying read after:', err?.message || err);
+        continue;
+      }
+      console.warn('[DATABASE] read notice:', err?.message || err);
+      return null;
+    } finally {
+      await pool.end().catch(() => {});
+    }
   }
 }
 
@@ -307,14 +318,16 @@ export async function saveMr11RunToDb(run: { id: string; sourceSnapshot: any; re
   const pool = await openPool();
   if (!pool) return false;
   try {
-    // A newer upload landed while this run was being built: keep the database's newer MR11
-    // instead of replacing it with one built from older workbooks
-    const active = await pool.query('SELECT code, "activeVersionId" FROM "Department" WHERE "activeVersionId" IS NOT NULL;');
-    const replaced = active.rows
-      .filter((d: any) => run.sourceSnapshot?.[d.code] && run.sourceSnapshot[d.code] !== d.activeVersionId)
+    // Built from older workbooks (a newer upload landed meanwhile) or without a department's
+    // workbook (a read failed): keep the database's MR11 instead of replacing it with this one
+    const active = await pool.query(
+      `SELECT d.code, d."activeVersionId" FROM "Department" d JOIN "FileVersion" f ON f.id = d."activeVersionId";`
+    );
+    const outdated = active.rows
+      .filter((d: any) => run.sourceSnapshot?.[d.code] !== d.activeVersionId)
       .map((d: any) => d.code);
-    if (replaced.length > 0) {
-      console.warn(`[DATABASE] MR11 run ${run.id} not saved: newer workbooks were uploaded for ${replaced.join(', ')}`);
+    if (outdated.length > 0) {
+      console.warn(`[DATABASE] MR11 run ${run.id} not saved: built without the latest workbooks for ${outdated.join(', ')}`);
       return false;
     }
 
