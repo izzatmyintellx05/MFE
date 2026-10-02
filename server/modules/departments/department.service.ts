@@ -1,7 +1,7 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
 import { parseAndNormalizeWorkbook } from '../../utils/excel-normalizer';
 import { executeMr11Pipeline } from '../mr11/mr11.engine';
-import { hydrateActiveVersionsFromDb } from '../../db/supabase';
+import { hydrateActiveVersionsFromDb, saveFileVersionToDb } from '../../db/supabase';
 
 const prisma = new PrismaClient();
 
@@ -331,53 +331,33 @@ export async function processAtomicWorkbookUpload(
     },
   });
 
+  // Save to the shared database. A failure is reported to the uploader instead of being
+  // logged quietly, because an unsaved upload is lost on the next restart.
+  if (persist) {
+    try {
+      await saveFileVersionToDb({
+        id: newVersion.id,
+        deptCode,
+        deptId: dept.id,
+        deptName: dept.name,
+        originalFilename,
+        storageKey,
+        fileSize,
+        mimeType: mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        parsedWorkbook,
+        uploadedById: validUserId,
+      });
+    } catch (dbErr: any) {
+      console.error('[DEPARTMENT SERVICE] Could not save upload to the database:', dbErr?.message);
+      throw new Error(`The workbook could not be saved to the database: ${dbErr?.message || dbErr}`);
+    }
+  }
+
+  // Only switch this instance to the new version once it is safely stored
   await prisma.department.update({
     where: { id: dept.id },
     data: { activeVersionId: newVersion.id },
   });
-
-  // Persist directly to Supabase PostgreSQL database if connected
-  try {
-    const { getDatabaseUrl, getSslConfig } = await import('../../config/database.config');
-    const { normalizeDatabaseUrl } = await import('../../db/prisma');
-    const { Pool } = await import('pg');
-    const dbUrl = normalizeDatabaseUrl(getDatabaseUrl()) || getDatabaseUrl();
-
-    if (dbUrl && persist) {
-      const pool = new Pool({
-        connectionString: dbUrl,
-        ssl: getSslConfig(dbUrl),
-        connectionTimeoutMillis: 5000,
-      });
-
-      // Same columns as scripts/seed-supabase-workbooks.ts (the Supabase table also has the
-      // NOT NULL "storagePath" / "rawDataJson" columns from supabase/schema.sql)
-      await pool.query(
-        `INSERT INTO "FileVersion" ("id", "departmentId", "originalFilename", "storageKey", "storagePath", "fileSize", "mimeType", "status", "isLatest", "parsedWorkbook", "rawDataJson", "uploadedById", "uploadedAt", "processedAt", "createdAt")
-         VALUES ($1, $2, $3, $4, $4, $5, $6, 'READY', true, $7, $7, $8, NOW(), NOW(), NOW())
-         ON CONFLICT ("id") DO UPDATE SET "parsedWorkbook" = EXCLUDED."parsedWorkbook", "rawDataJson" = EXCLUDED."rawDataJson", "status" = 'READY';`,
-        [
-          newVersion.id,
-          dept.id,
-          originalFilename,
-          storageKey,
-          fileSize || 0,
-          mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          JSON.stringify(parsedWorkbook),
-          validUserId,
-        ]
-      );
-
-      await pool.query(
-        'UPDATE "Department" SET "activeVersionId" = $1, "updatedAt" = NOW() WHERE id = $2;',
-        [newVersion.id, dept.id]
-      );
-
-      await pool.end();
-    }
-  } catch (pgSyncErr: any) {
-    console.warn('[DEPARTMENT SERVICE] Supabase sync notice:', pgSyncErr?.message);
-  }
 
   try {
     await prisma.auditLog.create({

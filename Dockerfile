@@ -4,7 +4,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Install dependencies
-COPY package*.json ./
+COPY package*.json .npmrc ./
 RUN npm install
 
 # Copy source files
@@ -21,7 +21,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-COPY package*.json ./
+COPY package*.json .npmrc ./
 RUN npm install --omit=dev
 
 # Copy compiled frontend and server source
@@ -30,7 +30,6 @@ COPY --from=builder /app/server ./server
 COPY --from=builder /app/server.ts ./server.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/uploads_storage ./uploads_storage
 
 # Non-root user for security
 RUN chown -R node:node /app

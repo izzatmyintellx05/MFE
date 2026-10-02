@@ -1,5 +1,6 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
 import { MR11_ORDERED_COLUMNS, MR11_SOURCE_KEY_MAP, ORDERED_HEADER_LIST } from '../../config/mr11.config';
+import { saveMr11RunToDb } from '../../db/supabase';
 import { FortuneSheet } from '../../utils/excel-normalizer';
 
 export const Mr11Status = {
@@ -522,9 +523,10 @@ function isUsableValue(val: any): boolean {
  * LME Adjusted and Final Selling Price for a BD row. BD's own (cached) values are used
  * when present; when a formula has no saved result or returns an Excel error, the value
  * is worked out with the same rules as the BD workbook formulas:
- *   LME Adjusted = Fixed -> 0, Freeze -> "Check", Variable -> LME rate (or "Check" if blank)
- *   Final Selling Price = Selling Price + Props + Aluminium + LME Adjusted + Freight,
- *                         or "Check" while LME Adjusted is "Check".
+ *   LME Adjusted = Fixed -> LME rate (0 if blank), Freeze -> "Check",
+ *                  Variable -> LME rate (or "Check" if blank)
+ *   Final Selling Price = Selling Price + Props + Aluminium + Freight
+ *                         + LME Adjusted when it is a number (a "Check" counts as 0)
  */
 export function resolveLmePricing(bdData: Record<string, any>): {
   lmeAdjusted: number | string | null;
@@ -537,27 +539,31 @@ export function resolveLmePricing(bdData: Record<string, any>): {
     .toLowerCase();
   const lmeRate = bdData[keyWhere((k) => k.startsWith('lme rate'))!];
 
+  const rateIsNumber = isUsableValue(lmeRate) && !isNaN(Number(lmeRate));
   let computedAdjusted: number | string | null = null;
-  if (lmeType === 'fixed') computedAdjusted = 0;
+  if (lmeType === 'fixed') computedAdjusted = rateIsNumber ? Number(lmeRate) : 0;
   else if (lmeType === 'freeze') computedAdjusted = 'Check';
-  else if (lmeType === 'variable') computedAdjusted = isUsableValue(lmeRate) ? parseNumeric(lmeRate) : 'Check';
+  else if (lmeType === 'variable') computedAdjusted = rateIsNumber ? Number(lmeRate) : 'Check';
 
-  const bdAdjusted = findCellValue(bdData, 'LME Adjusted (USD)');
+  // Strict lookups: a loose prefix match would take the "LME" column for "LME Adjusted"
+  const col = (prefix: string) => bdData[keyWhere((k) => k.startsWith(prefix))!];
+
+  const bdAdjusted = col('lme adjusted');
   const lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
 
-  const bdFinal = findCellValue(bdData, 'Final Selling Price (USD)');
+  const bdFinal = col('final selling price');
   if (isUsableValue(bdFinal)) return { lmeAdjusted, finalSellingPrice: bdFinal };
-  if (String(lmeAdjusted ?? '').trim().toLowerCase() === 'check') return { lmeAdjusted, finalSellingPrice: 'Check' };
 
+  const isNumber = (v: any) => isUsableValue(v) && !isNaN(Number(v));
   const parts = [
-    findCellValue(bdData, 'Selling Price (USD)'),
-    findCellValue(bdData, 'Props, WPB, Waler, Acc (USD)'),
-    findCellValue(bdData, 'Aluminium Weight Adjusted (USD)'),
+    col('selling price'),
+    col('props, wpb, waler'),
+    col('aluminium weight adjusted'),
     lmeAdjusted,
-    findCellValue(bdData, 'Freight Adjusted (USD)'),
+    col('freight adjusted'),
   ];
-  if (!parts.some(isUsableValue)) return { lmeAdjusted, finalSellingPrice: null };
-  const total = parts.reduce((sum: number, p) => sum + (isUsableValue(p) ? parseNumeric(p) : 0), 0);
+  if (!parts.some(isNumber)) return { lmeAdjusted, finalSellingPrice: null };
+  const total = parts.reduce((sum: number, p) => sum + (isNumber(p) ? Number(p) : 0), 0);
   return { lmeAdjusted, finalSellingPrice: Math.round(total * 1e6) / 1e6 };
 }
 
@@ -930,9 +936,14 @@ export async function executeMr11Pipeline(
     // 1. Populate defined BD columns directly from BD
     for (const mapping of MR11_ORDERED_COLUMNS) {
       if (mapping.sourceDept === RoleCode.BD) {
-        outRow[mapping.target] = mapping.exact
+        let value = mapping.exact
           ? bdData[mapping.sourceColumn] ?? null
           : findCellValue(bdData, mapping.sourceColumn);
+        for (const alias of mapping.aliases || []) {
+          if (value !== null && value !== undefined && value !== '') break;
+          value = findCellValue(bdData, alias);
+        }
+        outRow[mapping.target] = value;
       }
     }
     const lmePricing = resolveLmePricing(bdData);
@@ -1803,35 +1814,13 @@ export async function executeMr11Pipeline(
     },
   });
 
-  // Sync to Supabase PostgreSQL database if connected
-  try {
-    const { getDatabaseUrl, getSslConfig } = await import('../../config/database.config');
-    const { normalizeDatabaseUrl } = await import('../../db/prisma');
-    const { Pool } = await import('pg');
-    const dbUrl = normalizeDatabaseUrl(getDatabaseUrl()) || getDatabaseUrl();
-
-    if (dbUrl && persist) {
-      const pool = new Pool({
-        connectionString: dbUrl,
-        ssl: getSslConfig(dbUrl),
-        connectionTimeoutMillis: 5000,
-      });
-
-      await pool.query(
-        `INSERT INTO "Mr11Run" ("id", "generatedAt", "status", "sourceSnapshot", "recordCount", "calculatedFields")
-         VALUES ($1, NOW(), 'READY', $2, $3, $4)
-         ON CONFLICT ("id") DO NOTHING;`,
-        [
-          run.id,
-          JSON.stringify(sourceSnapshot),
-          derivedMr11Rows.length,
-          JSON.stringify(derivedMr11Rows),
-        ]
-      );
-      await pool.end();
+  // Save to the shared database (works with either Mr11Run table layout)
+  if (persist) {
+    try {
+      await saveMr11RunToDb({ id: run.id, sourceSnapshot, records: derivedMr11Rows });
+    } catch (mr11DbErr: any) {
+      console.error('[MR11 ENGINE] Could not save MR11 to the database:', mr11DbErr?.message);
     }
-  } catch (mr11DbErr: any) {
-    console.warn('[MR11 ENGINE] Supabase sync notice:', mr11DbErr?.message);
   }
 
   return run.id;

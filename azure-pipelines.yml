@@ -92,7 +92,6 @@ stages:
                     package: '$(System.ArtifactsDirectory)/drop/mfe-app-$(Build.BuildId).zip'
                     startUpCommand: 'npm start'
                     appSettings: |
-                      -PORT 3000
                       -NODE_ENV production
                       -JWT_SECRET "mfe-formwork-enterprise-jwt-prod-2026"
                       -AZURE_SUBSCRIPTION_ID $(AZURE_SUBSCRIPTION_ID)

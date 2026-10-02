@@ -711,6 +711,258 @@ var init_database_config = __esm({
   }
 });
 
+// server/db/supabase.ts
+var supabase_exports = {};
+__export(supabase_exports, {
+  describeDatabase: () => describeDatabase,
+  fetchActiveVersionForDepartment: () => fetchActiveVersionForDepartment,
+  fetchActiveVersionsFromDb: () => fetchActiveVersionsFromDb,
+  fetchLatestMr11RunFromDb: () => fetchLatestMr11RunFromDb,
+  getLatestMr11Run: () => getLatestMr11Run,
+  hydrateActiveVersionsFromDb: () => hydrateActiveVersionsFromDb,
+  isDatabaseConfigured: () => isDatabaseConfigured,
+  saveFileVersionToDb: () => saveFileVersionToDb,
+  saveMr11RunToDb: () => saveMr11RunToDb
+});
+function isDatabaseConfigured() {
+  return Boolean(getDatabaseUrl());
+}
+async function openPool() {
+  const rawUrl = getDatabaseUrl();
+  if (!rawUrl) return null;
+  const { Pool } = await import("pg");
+  return new Pool({
+    connectionString: normalizeDatabaseUrl(rawUrl) || rawUrl,
+    ssl: getSslConfig(rawUrl),
+    connectionTimeoutMillis: 5e3
+  });
+}
+async function withPool(fn) {
+  const pool = await openPool();
+  if (!pool) return null;
+  try {
+    return await fn(pool);
+  } catch (err) {
+    console.warn("[DATABASE] read notice:", err?.message || err);
+    return null;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+async function tableColumns(pool, table) {
+  if (columnCache[table]) return columnCache[table];
+  const result = await pool.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1;`,
+    [table]
+  );
+  const cols = new Set(result.rows.map((r) => r.column_name));
+  if (cols.size > 0) columnCache[table] = cols;
+  return cols;
+}
+async function upsertRow(pool, table, values, updateCols) {
+  const cols = await tableColumns(pool, table);
+  if (cols.size === 0) throw new Error(`Table "${table}" was not found in the database`);
+  const names = [];
+  const placeholders = [];
+  const params = [];
+  for (const [name, value] of Object.entries(values)) {
+    if (!cols.has(name) || value === void 0) continue;
+    names.push(`"${name}"`);
+    if (value === NOW) {
+      placeholders.push("NOW()");
+    } else {
+      params.push(value);
+      placeholders.push(`$${params.length}`);
+    }
+  }
+  const updates = updateCols.filter((c) => cols.has(c)).map((c) => `"${c}" = EXCLUDED."${c}"`);
+  const conflict = updates.length ? `ON CONFLICT ("id") DO UPDATE SET ${updates.join(", ")}` : 'ON CONFLICT ("id") DO NOTHING';
+  await pool.query(`INSERT INTO "${table}" (${names.join(", ")}) VALUES (${placeholders.join(", ")}) ${conflict};`, params);
+}
+function workbookOf(row) {
+  return row?.parsedWorkbook ?? row?.rawDataJson ?? null;
+}
+async function fetchActiveVersionsFromDb() {
+  return withPool(async (pool) => {
+    const result = await pool.query(
+      `SELECT d.code AS "deptCode", f.*
+         FROM "Department" d
+         JOIN "FileVersion" f ON f.id = d."activeVersionId";`
+    );
+    const byCode = {};
+    for (const row of result.rows) {
+      const parsedWorkbook = workbookOf(row);
+      if (parsedWorkbook) byCode[row.deptCode] = { ...row, parsedWorkbook };
+    }
+    return byCode;
+  });
+}
+async function fetchActiveVersionForDepartment(code) {
+  const all = await fetchActiveVersionsFromDb();
+  return all?.[code] ?? null;
+}
+async function fetchLatestMr11RunFromDb() {
+  return withPool(async (pool) => {
+    const result = await pool.query('SELECT * FROM "Mr11Run" ORDER BY "generatedAt" DESC LIMIT 1;');
+    const r = result.rows[0];
+    if (!r) return null;
+    return {
+      id: r.id,
+      generatedAt: r.generatedAt,
+      status: r.status,
+      sourceSnapshot: r.sourceSnapshot,
+      recordCount: r.recordCount,
+      records: r.calculatedFields ?? r.records ?? []
+    };
+  });
+}
+async function saveFileVersionToDb(v) {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    const found = await pool.query('SELECT id FROM "Department" WHERE code = $1 LIMIT 1;', [v.deptCode]);
+    let departmentId = found.rows[0]?.id;
+    if (!departmentId) {
+      departmentId = v.deptId;
+      await upsertRow(pool, "Department", { id: departmentId, code: v.deptCode, name: v.deptName, createdAt: NOW, updatedAt: NOW }, []);
+    }
+    let uploadedById = v.uploadedById ?? "user-admin-1";
+    const nullable = await pool.query(
+      `SELECT is_nullable FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'FileVersion' AND column_name = 'uploadedById';`
+    );
+    if (nullable.rows[0]?.is_nullable === "YES") {
+      const user = await pool.query('SELECT 1 FROM "User" WHERE id = $1 LIMIT 1;', [uploadedById]).catch(() => ({ rows: [] }));
+      if (user.rows.length === 0) uploadedById = null;
+    }
+    const json = JSON.stringify(v.parsedWorkbook);
+    await upsertRow(
+      pool,
+      "FileVersion",
+      {
+        id: v.id,
+        departmentId,
+        originalFilename: v.originalFilename,
+        storageKey: v.storageKey,
+        storagePath: v.storageKey,
+        fileSize: v.fileSize || 0,
+        mimeType: v.mimeType,
+        status: "READY",
+        isLatest: true,
+        parsedWorkbook: json,
+        rawDataJson: json,
+        uploadedById,
+        uploadedAt: NOW,
+        processedAt: NOW,
+        createdAt: NOW
+      },
+      ["parsedWorkbook", "rawDataJson", "status"]
+    );
+    const fvCols = await tableColumns(pool, "FileVersion");
+    if (fvCols.has("isLatest")) {
+      await pool.query('UPDATE "FileVersion" SET "isLatest" = false WHERE "departmentId" = $1 AND id <> $2;', [departmentId, v.id]);
+    }
+    const deptCols = await tableColumns(pool, "Department");
+    const touch = deptCols.has("updatedAt") ? ', "updatedAt" = NOW()' : "";
+    await pool.query(`UPDATE "Department" SET "activeVersionId" = $1${touch} WHERE id = $2;`, [v.id, departmentId]);
+    return true;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+async function saveMr11RunToDb(run) {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    const json = JSON.stringify(run.records);
+    await upsertRow(
+      pool,
+      "Mr11Run",
+      {
+        id: run.id,
+        generatedAt: NOW,
+        status: "READY",
+        sourceSnapshot: JSON.stringify(run.sourceSnapshot ?? {}),
+        recordCount: run.records.length,
+        calculatedFields: json,
+        records: json
+      },
+      []
+    );
+    return true;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+async function describeDatabase() {
+  return withPool(async (pool) => {
+    const columns = {};
+    for (const t of ["Department", "FileVersion", "Mr11Run"]) columns[t] = [...await tableColumns(pool, t)].sort();
+    const active = await pool.query(
+      `SELECT d.code, d."activeVersionId", f."originalFilename", f."uploadedAt"
+         FROM "Department" d LEFT JOIN "FileVersion" f ON f.id = d."activeVersionId" ORDER BY d.code;`
+    );
+    const counts = await pool.query(
+      `SELECT (SELECT count(*) FROM "FileVersion")::int AS "fileVersions", (SELECT count(*) FROM "Mr11Run")::int AS "mr11Runs";`
+    );
+    return {
+      columns,
+      activeFiles: active.rows.map((r) => ({
+        department: r.code,
+        file: r.originalFilename ?? (r.activeVersionId ? `missing version ${r.activeVersionId}` : null),
+        uploadedAt: r.uploadedAt ?? null
+      })),
+      ...counts.rows[0]
+    };
+  });
+}
+async function hydrateActiveVersionsFromDb(prisma8, skipCodes = []) {
+  const dbVersions = await fetchActiveVersionsFromDb();
+  if (!dbVersions) return null;
+  for (const [code, v] of Object.entries(dbVersions)) {
+    if (skipCodes.includes(code)) continue;
+    const dept = await prisma8.department.findFirst({ where: { code } });
+    if (!dept || dept.activeVersionId === v.id) continue;
+    const existing = await prisma8.fileVersion.findUnique({ where: { id: v.id } });
+    if (!existing) {
+      await prisma8.fileVersion.create({
+        data: {
+          id: v.id,
+          departmentId: dept.id,
+          originalFilename: v.originalFilename,
+          storageKey: v.storageKey ?? v.storagePath,
+          fileSize: v.fileSize,
+          mimeType: v.mimeType,
+          status: "READY",
+          parsedWorkbook: v.parsedWorkbook,
+          uploadedById: v.uploadedById,
+          uploadedAt: v.uploadedAt,
+          processedAt: v.processedAt
+        }
+      });
+    }
+    await prisma8.department.update({ where: { id: dept.id }, data: { activeVersionId: v.id } });
+  }
+  return new Set(Object.keys(dbVersions));
+}
+async function getLatestMr11Run(prisma8) {
+  const dbRun = await fetchLatestMr11RunFromDb();
+  if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) return dbRun;
+  return prisma8.mr11Run.findFirst({ orderBy: { generatedAt: "desc" } });
+}
+var NOW, columnCache;
+var init_supabase = __esm({
+  "server/db/supabase.ts"() {
+    init_database_config();
+    init_prisma();
+    NOW = Symbol("now");
+    columnCache = {};
+  }
+});
+
 // server/app.ts
 import express from "express";
 import cors from "cors";
@@ -1233,12 +1485,12 @@ var MR11_ORDERED_COLUMNS = [
   // BD / Pre-Shellplan Columns
   { target: "Customer & Project Name", sourceDept: "BD" /* BD */, sourceColumn: "Customer & Project Name", type: "string" },
   { target: "Project No", sourceDept: "BD" /* BD */, sourceColumn: "Project No", type: "string" },
-  { target: "Short Name", sourceDept: "BD" /* BD */, sourceColumn: "Short Name", type: "string" },
+  { target: "Short Name", sourceDept: "BD" /* BD */, sourceColumn: "Short Name", type: "string", aliases: ["Project Shortname", "Shortname"] },
   { target: "Stream", sourceDept: "BD" /* BD */, sourceColumn: "Stream", type: "string" },
   { target: "Countries", sourceDept: "BD" /* BD */, sourceColumn: "Countries", type: "string" },
   { target: "PIC", sourceDept: "BD" /* BD */, sourceColumn: "PIC", type: "string" },
   { target: "Status", sourceDept: "BD" /* BD */, sourceColumn: "Status", type: "string" },
-  { target: "Products type", sourceDept: "BD" /* BD */, sourceColumn: "Products type", type: "string" },
+  { target: "Products type", sourceDept: "BD" /* BD */, sourceColumn: "Products type", type: "string", aliases: ["Product Type"] },
   { target: "Formwork type", sourceDept: "BD" /* BD */, sourceColumn: "Formwork type", type: "string" },
   { target: "Remarks", sourceDept: "BD" /* BD */, sourceColumn: "Remarks", type: "string" },
   { target: "PO", sourceDept: "BD" /* BD */, sourceColumn: "PO", type: "string" },
@@ -1287,6 +1539,7 @@ var MR11_ORDERED_COLUMNS = [
 ];
 
 // server/modules/mr11/mr11.engine.ts
+init_supabase();
 function parseNumeric(val) {
   if (typeof val === "number") return isNaN(val) ? 0 : val;
   if (!val) return 0;
@@ -1691,24 +1944,26 @@ function resolveLmePricing(bdData) {
   const keyWhere = (test) => Object.keys(bdData).find((k) => test(k.toLowerCase().trim()));
   const lmeType = String(bdData[keyWhere((k) => k === "lme" || k.startsWith("lme ("))] ?? "").trim().toLowerCase();
   const lmeRate = bdData[keyWhere((k) => k.startsWith("lme rate"))];
+  const rateIsNumber = isUsableValue(lmeRate) && !isNaN(Number(lmeRate));
   let computedAdjusted = null;
-  if (lmeType === "fixed") computedAdjusted = 0;
+  if (lmeType === "fixed") computedAdjusted = rateIsNumber ? Number(lmeRate) : 0;
   else if (lmeType === "freeze") computedAdjusted = "Check";
-  else if (lmeType === "variable") computedAdjusted = isUsableValue(lmeRate) ? parseNumeric(lmeRate) : "Check";
-  const bdAdjusted = findCellValue(bdData, "LME Adjusted (USD)");
+  else if (lmeType === "variable") computedAdjusted = rateIsNumber ? Number(lmeRate) : "Check";
+  const col = (prefix) => bdData[keyWhere((k) => k.startsWith(prefix))];
+  const bdAdjusted = col("lme adjusted");
   const lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
-  const bdFinal = findCellValue(bdData, "Final Selling Price (USD)");
+  const bdFinal = col("final selling price");
   if (isUsableValue(bdFinal)) return { lmeAdjusted, finalSellingPrice: bdFinal };
-  if (String(lmeAdjusted ?? "").trim().toLowerCase() === "check") return { lmeAdjusted, finalSellingPrice: "Check" };
+  const isNumber = (v) => isUsableValue(v) && !isNaN(Number(v));
   const parts = [
-    findCellValue(bdData, "Selling Price (USD)"),
-    findCellValue(bdData, "Props, WPB, Waler, Acc (USD)"),
-    findCellValue(bdData, "Aluminium Weight Adjusted (USD)"),
+    col("selling price"),
+    col("props, wpb, waler"),
+    col("aluminium weight adjusted"),
     lmeAdjusted,
-    findCellValue(bdData, "Freight Adjusted (USD)")
+    col("freight adjusted")
   ];
-  if (!parts.some(isUsableValue)) return { lmeAdjusted, finalSellingPrice: null };
-  const total = parts.reduce((sum, p) => sum + (isUsableValue(p) ? parseNumeric(p) : 0), 0);
+  if (!parts.some(isNumber)) return { lmeAdjusted, finalSellingPrice: null };
+  const total = parts.reduce((sum, p) => sum + (isNumber(p) ? Number(p) : 0), 0);
   return { lmeAdjusted, finalSellingPrice: Math.round(total * 1e6) / 1e6 };
 }
 function findCellValue(row, candidateHeader) {
@@ -1991,7 +2246,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const cellColors = {};
     for (const mapping of MR11_ORDERED_COLUMNS) {
       if (mapping.sourceDept === "BD" /* BD */) {
-        outRow[mapping.target] = mapping.exact ? bdData[mapping.sourceColumn] ?? null : findCellValue(bdData, mapping.sourceColumn);
+        let value = mapping.exact ? bdData[mapping.sourceColumn] ?? null : findCellValue(bdData, mapping.sourceColumn);
+        for (const alias of mapping.aliases || []) {
+          if (value !== null && value !== void 0 && value !== "") break;
+          value = findCellValue(bdData, alias);
+        }
+        outRow[mapping.target] = value;
       }
     }
     const lmePricing = resolveLmePricing(bdData);
@@ -2566,126 +2826,18 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       records: derivedMr11Rows
     }
   });
-  try {
-    const { getDatabaseUrl: getDatabaseUrl2, getSslConfig: getSslConfig2 } = await Promise.resolve().then(() => (init_database_config(), database_config_exports));
-    const { normalizeDatabaseUrl: normalizeDatabaseUrl2 } = await Promise.resolve().then(() => (init_prisma(), prisma_exports));
-    const { Pool } = await import("pg");
-    const dbUrl = normalizeDatabaseUrl2(getDatabaseUrl2()) || getDatabaseUrl2();
-    if (dbUrl && persist) {
-      const pool = new Pool({
-        connectionString: dbUrl,
-        ssl: getSslConfig2(dbUrl),
-        connectionTimeoutMillis: 5e3
-      });
-      await pool.query(
-        `INSERT INTO "Mr11Run" ("id", "generatedAt", "status", "sourceSnapshot", "recordCount", "calculatedFields")
-         VALUES ($1, NOW(), 'READY', $2, $3, $4)
-         ON CONFLICT ("id") DO NOTHING;`,
-        [
-          run.id,
-          JSON.stringify(sourceSnapshot),
-          derivedMr11Rows.length,
-          JSON.stringify(derivedMr11Rows)
-        ]
-      );
-      await pool.end();
+  if (persist) {
+    try {
+      await saveMr11RunToDb({ id: run.id, sourceSnapshot, records: derivedMr11Rows });
+    } catch (mr11DbErr) {
+      console.error("[MR11 ENGINE] Could not save MR11 to the database:", mr11DbErr?.message);
     }
-  } catch (mr11DbErr) {
-    console.warn("[MR11 ENGINE] Supabase sync notice:", mr11DbErr?.message);
   }
   return run.id;
 }
 
-// server/db/supabase.ts
-init_database_config();
-init_prisma();
-async function withPool(fn) {
-  const rawUrl = getDatabaseUrl();
-  if (!rawUrl) return null;
-  const { Pool } = await import("pg");
-  const pool = new Pool({
-    connectionString: normalizeDatabaseUrl(rawUrl) || rawUrl,
-    ssl: getSslConfig(rawUrl),
-    connectionTimeoutMillis: 5e3
-  });
-  try {
-    return await fn(pool);
-  } catch (err) {
-    console.warn("[SUPABASE] read notice:", err?.message || err);
-    return null;
-  } finally {
-    await pool.end().catch(() => {
-    });
-  }
-}
-async function fetchActiveVersionsFromDb() {
-  return withPool(async (pool) => {
-    const result = await pool.query(
-      `SELECT d.code, f.id, f."originalFilename", f."storageKey", f."fileSize", f."mimeType",
-              f."parsedWorkbook", f."uploadedById", f."uploadedAt", f."processedAt"
-         FROM "Department" d
-         JOIN "FileVersion" f ON f.id = d."activeVersionId";`
-    );
-    const byCode = {};
-    for (const row of result.rows) {
-      if (row.parsedWorkbook) byCode[row.code] = row;
-    }
-    return byCode;
-  });
-}
-async function fetchLatestMr11RunFromDb() {
-  return withPool(async (pool) => {
-    const result = await pool.query(
-      'SELECT id, "generatedAt", status, "sourceSnapshot", "recordCount", "calculatedFields" FROM "Mr11Run" ORDER BY "generatedAt" DESC LIMIT 1;'
-    );
-    const r = result.rows[0];
-    if (!r) return null;
-    return {
-      id: r.id,
-      generatedAt: r.generatedAt,
-      status: r.status,
-      sourceSnapshot: r.sourceSnapshot,
-      recordCount: r.recordCount,
-      records: r.calculatedFields || []
-    };
-  });
-}
-async function hydrateActiveVersionsFromDb(prisma8, skipCodes = []) {
-  const dbVersions = await fetchActiveVersionsFromDb();
-  if (!dbVersions) return null;
-  for (const [code, v] of Object.entries(dbVersions)) {
-    if (skipCodes.includes(code)) continue;
-    const dept = await prisma8.department.findFirst({ where: { code } });
-    if (!dept || dept.activeVersionId === v.id) continue;
-    const existing = await prisma8.fileVersion.findUnique({ where: { id: v.id } });
-    if (!existing) {
-      await prisma8.fileVersion.create({
-        data: {
-          id: v.id,
-          departmentId: dept.id,
-          originalFilename: v.originalFilename,
-          storageKey: v.storageKey,
-          fileSize: v.fileSize,
-          mimeType: v.mimeType,
-          status: "READY",
-          parsedWorkbook: v.parsedWorkbook,
-          uploadedById: v.uploadedById,
-          uploadedAt: v.uploadedAt,
-          processedAt: v.processedAt
-        }
-      });
-    }
-    await prisma8.department.update({ where: { id: dept.id }, data: { activeVersionId: v.id } });
-  }
-  return new Set(Object.keys(dbVersions));
-}
-async function getLatestMr11Run(prisma8) {
-  const dbRun = await fetchLatestMr11RunFromDb();
-  if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) return dbRun;
-  return prisma8.mr11Run.findFirst({ orderBy: { generatedAt: "desc" } });
-}
-
 // server/modules/departments/department.service.ts
+init_supabase();
 var prisma3 = new PrismaClient();
 async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, originalFilename, mimeType, fileSize, userId, options = {}) {
   const { persist = true, regenerate = true } = options;
@@ -2725,45 +2877,29 @@ async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, 
       processedAt: /* @__PURE__ */ new Date()
     }
   });
+  if (persist) {
+    try {
+      await saveFileVersionToDb({
+        id: newVersion.id,
+        deptCode,
+        deptId: dept.id,
+        deptName: dept.name,
+        originalFilename,
+        storageKey,
+        fileSize,
+        mimeType: mimeType || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        parsedWorkbook,
+        uploadedById: validUserId
+      });
+    } catch (dbErr) {
+      console.error("[DEPARTMENT SERVICE] Could not save upload to the database:", dbErr?.message);
+      throw new Error(`The workbook could not be saved to the database: ${dbErr?.message || dbErr}`);
+    }
+  }
   await prisma8.department.update({
     where: { id: dept.id },
     data: { activeVersionId: newVersion.id }
   });
-  try {
-    const { getDatabaseUrl: getDatabaseUrl2, getSslConfig: getSslConfig2 } = await Promise.resolve().then(() => (init_database_config(), database_config_exports));
-    const { normalizeDatabaseUrl: normalizeDatabaseUrl2 } = await Promise.resolve().then(() => (init_prisma(), prisma_exports));
-    const { Pool } = await import("pg");
-    const dbUrl = normalizeDatabaseUrl2(getDatabaseUrl2()) || getDatabaseUrl2();
-    if (dbUrl && persist) {
-      const pool = new Pool({
-        connectionString: dbUrl,
-        ssl: getSslConfig2(dbUrl),
-        connectionTimeoutMillis: 5e3
-      });
-      await pool.query(
-        `INSERT INTO "FileVersion" ("id", "departmentId", "originalFilename", "storageKey", "storagePath", "fileSize", "mimeType", "status", "isLatest", "parsedWorkbook", "rawDataJson", "uploadedById", "uploadedAt", "processedAt", "createdAt")
-         VALUES ($1, $2, $3, $4, $4, $5, $6, 'READY', true, $7, $7, $8, NOW(), NOW(), NOW())
-         ON CONFLICT ("id") DO UPDATE SET "parsedWorkbook" = EXCLUDED."parsedWorkbook", "rawDataJson" = EXCLUDED."rawDataJson", "status" = 'READY';`,
-        [
-          newVersion.id,
-          dept.id,
-          originalFilename,
-          storageKey,
-          fileSize || 0,
-          mimeType || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          JSON.stringify(parsedWorkbook),
-          validUserId
-        ]
-      );
-      await pool.query(
-        'UPDATE "Department" SET "activeVersionId" = $1, "updatedAt" = NOW() WHERE id = $2;',
-        [newVersion.id, dept.id]
-      );
-      await pool.end();
-    }
-  } catch (pgSyncErr) {
-    console.warn("[DEPARTMENT SERVICE] Supabase sync notice:", pgSyncErr?.message);
-  }
   try {
     await prisma8.auditLog.create({
       data: {
@@ -2789,6 +2925,7 @@ async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, 
 }
 
 // server/modules/departments/department.controller.ts
+init_supabase();
 import fs from "fs";
 var prisma4 = new PrismaClient();
 var DEPT_NAMES = {
@@ -2806,46 +2943,17 @@ async function getActiveDepartmentWorkbook(req, res) {
     const deptCode = rawParam.toUpperCase();
     const validRoleCodes = Object.keys(DEPT_NAMES);
     let dept = null;
-    try {
-      const { getDatabaseUrl: getDatabaseUrl2, getSslConfig: getSslConfig2 } = await Promise.resolve().then(() => (init_database_config(), database_config_exports));
-      const { normalizeDatabaseUrl: normalizeDatabaseUrl2 } = await Promise.resolve().then(() => (init_prisma(), prisma_exports));
-      const { Pool } = await import("pg");
-      const dbUrl = normalizeDatabaseUrl2(getDatabaseUrl2()) || getDatabaseUrl2();
-      if (dbUrl) {
-        const pool = new Pool({
-          connectionString: dbUrl,
-          ssl: getSslConfig2(dbUrl),
-          connectionTimeoutMillis: 5e3
-        });
-        const deptRes = await pool.query(
-          'SELECT id, code, name, description, "activeVersionId" FROM "Department" WHERE code = $1 OR id = $2 LIMIT 1;',
-          [deptCode, rawParam]
-        );
-        if (deptRes.rows.length > 0) {
-          const d = deptRes.rows[0];
-          let activeVer = null;
-          if (d.activeVersionId) {
-            const verRes = await pool.query(
-              'SELECT id, "departmentId", "originalFilename", "storageKey", "fileSize", "mimeType", status, "parsedWorkbook", "uploadedAt", "processedAt" FROM "FileVersion" WHERE id = $1 LIMIT 1;',
-              [d.activeVersionId]
-            );
-            if (verRes.rows.length > 0) {
-              activeVer = verRes.rows[0];
-            }
-          }
-          dept = {
-            id: d.id,
-            code: d.code,
-            name: d.name,
-            description: d.description,
-            activeVersionId: d.activeVersionId,
-            activeVersion: activeVer
-          };
-        }
-        await pool.end();
-      }
-    } catch (dbErr) {
-      console.warn("[DEPARTMENT] Supabase direct read notice:", dbErr);
+    const dbVersion = validRoleCodes.includes(deptCode) ? await fetchActiveVersionForDepartment(deptCode) : null;
+    if (dbVersion) {
+      const memDept = await prisma4.department.findFirst({ where: { code: deptCode } });
+      dept = {
+        id: memDept?.id ?? dbVersion.departmentId,
+        code: deptCode,
+        name: memDept?.name ?? DEPT_NAMES[deptCode],
+        description: memDept?.description ?? null,
+        activeVersionId: dbVersion.id,
+        activeVersion: dbVersion
+      };
     }
     if (!dept || !dept.activeVersion) {
       const prismaDept = await prisma4.department.findFirst({
@@ -3013,6 +3121,7 @@ import { Router as Router3 } from "express";
 // server/modules/mr11/mr11.controller.ts
 init_prisma();
 import ExcelJS2 from "exceljs";
+init_supabase();
 var prisma5 = new PrismaClient();
 var ORDERED_HEADER_LIST2 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
 async function getLatestMr11(req, res) {
@@ -3499,6 +3608,7 @@ init_prisma();
 
 // server/modules/visualization/visualization.controller.ts
 init_prisma();
+init_supabase();
 var prisma7 = new PrismaClient();
 async function getVisualizationData(req, res) {
   const latestRun = await getLatestMr11Run(prisma7);
@@ -3584,13 +3694,16 @@ app.get("/api/health/db", async (req, res) => {
       ORDER BY table_name;
     `);
     await pool.end();
+    const { describeDatabase: describeDatabase2 } = await Promise.resolve().then(() => (init_supabase(), supabase_exports));
+    const contents = await describeDatabase2();
     return res.json({
       status: "CONNECTED",
       message: "Successfully connected to the PostgreSQL database.",
       endpoint: maskedUrl,
       serverTime: result.rows[0]?.server_time,
       version: result.rows[0]?.version?.split(" ")?.[0],
-      tables: tablesResult.rows.map((r) => r.table_name)
+      tables: tablesResult.rows.map((r) => r.table_name),
+      ...contents
     });
   } catch (err) {
     return res.status(200).json({
@@ -3633,6 +3746,7 @@ if (fs2.existsSync(path.join(webDir, "index.html"))) {
 init_prisma();
 import fs3 from "fs";
 import path2 from "path";
+init_supabase();
 var deptKeywords = {
   ["BD" /* BD */]: "bd.xlsx",
   ["FINANCE" /* FINANCE */]: "finance.xlsx",
@@ -3654,8 +3768,10 @@ async function bootstrapSystem() {
     }
     const uploadsStorageDir = path2.resolve(process.cwd(), "uploads_storage");
     const uploadsDir = path2.resolve(process.cwd(), "uploads");
-    const searchDirs = [uploadsStorageDir, uploadsDir].filter((d) => fs3.existsSync(d));
-    console.log("[MFE Formwork MR11] Checking department workbooks initialization...");
+    const searchDirs = isDatabaseConfigured() ? [] : [uploadsStorageDir, uploadsDir].filter((d) => fs3.existsSync(d));
+    console.log(
+      isDatabaseConfigured() ? "[MFE Formwork MR11] Database connected: sample workbooks are not loaded" : "[MFE Formwork MR11] No database: loading sample workbooks..."
+    );
     for (const [codeStr, keyword] of Object.entries(deptKeywords)) {
       const code = codeStr;
       if (!keyword || dbCodes?.has(code)) continue;
