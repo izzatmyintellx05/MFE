@@ -29,11 +29,20 @@ interface Mr11TableProps {
   records: any[];
   headers: string[];
   headerGroups?: HeaderGroup[];
+  /** Decimal places per column, e.g. { "LME Rate (USD)": 3 } */
+  numberFormats?: Record<string, number>;
   zoom: number;
 }
 
 // MR11 master ledger grid, shared by the MR11 page and the CEO dashboard's raw data view
-export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGroups = [], zoom }) => {
+export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGroups = [], numberFormats = {}, zoom }) => {
+  // A value as shown in a cell: numbers in a formatted column get their fixed decimals
+  const cellText = (h: string, v: any): string => {
+    if (v === null || v === undefined || v === '') return '—';
+    const places = numberFormats[h];
+    const n = Number(v);
+    return places !== undefined && String(v).trim() !== '' && !isNaN(n) ? n.toFixed(places) : String(v);
+  };
   const groupOf = (h: string) => headerGroups.find((g) => g.columns.some((c) => c.key === h));
   const subLabelOf = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
   const groupSpan = (idx: number) => {
@@ -132,9 +141,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                           rowSpan={streamSpan}
                           className="p-2 border-r border-stone-200 whitespace-nowrap text-center align-middle font-bold text-stone-900 bg-stone-50/80"
                         >
-                          {row?.[h] !== null && row?.[h] !== undefined && row?.[h] !== ''
-                            ? String(row[h])
-                            : '—'}
+                          {cellText(h, row?.[h])}
                         </td>
                       );
                     }
@@ -163,9 +170,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                           fontWeight: fontColor !== '#000000' && cIdx < 4 ? 'bold' : 'normal',
                         }}
                       >
-                        {row?.[h] !== null && row?.[h] !== undefined && row?.[h] !== ''
-                          ? String(row[h])
-                          : '—'}
+                        {cellText(h, row?.[h])}
                       </td>
                     );
                   })}

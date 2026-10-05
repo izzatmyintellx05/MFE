@@ -14,6 +14,7 @@ export const Mr11Dashboard: React.FC = () => {
   const [records, setRecords] = useState<any[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
+  const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +30,7 @@ export const Mr11Dashboard: React.FC = () => {
       setRecords(data?.run?.records || []);
       setHeaders(data?.orderedHeaders || []);
       setHeaderGroups(data?.headerGroups || []);
+      setNumberFormats(data?.numberFormats || {});
     } catch (err: any) {
       setError(err.response?.data?.error?.message || err.message || 'Failed to fetch MR11 records');
     } finally {
@@ -146,7 +148,7 @@ export const Mr11Dashboard: React.FC = () => {
             <p className="text-[11px] text-stone-400 mt-0.5">Upload the Business Development (BD) workbook to instantiate contracts</p>
           </div>
         ) : (
-          <Mr11Table records={filteredRecords} headers={headers} headerGroups={headerGroups} zoom={zoom} />
+          <Mr11Table records={filteredRecords} headers={headers} headerGroups={headerGroups} numberFormats={numberFormats} zoom={zoom} />
         )}
       </div>
     </div>

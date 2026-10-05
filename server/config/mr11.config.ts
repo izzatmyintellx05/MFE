@@ -34,6 +34,12 @@ export const MR11_HEADER_GROUPS: HeaderGroup[] = [
   },
 ];
 
+/** Decimal places shown for numeric MR11 columns (MR11 page and Excel export). */
+export const MR11_NUMBER_FORMATS: Record<string, number> = {
+  'LME Rate (USD)': 3,
+  'LME Adjusted (USD)': 3,
+};
+
 export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {
   BD: [
     'Customer & Project Name',
@@ -131,6 +137,7 @@ export const ORDERED_HEADER_LIST = [
   'Payment terms - Type 3',
   'Selling Price (USD)',
   'LME',
+  'LME Rate (USD)',
   'Incoterms',
   'Props, WPB, Waler, Acc (USD)',
   'Aluminium Weight Adjusted (USD)',
@@ -225,6 +232,8 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'Payment terms - Type 3', sourceDept: RoleCode.BD, sourceColumn: 'Type 3', type: 'string', exact: true },
   { target: 'Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Selling Price (USD)', type: 'number' },
   { target: 'LME', sourceDept: RoleCode.BD, sourceColumn: 'LME', type: 'number' },
+  // LME price from BD column Z
+  { target: 'LME Rate (USD)', sourceDept: RoleCode.BD, sourceColumn: 'LME Rate (USD)', type: 'number', aliases: ['LME rate (USD)', 'LME Rate'] },
   { target: 'Incoterms', sourceDept: RoleCode.BD, sourceColumn: 'Incoterms', type: 'string' },
   { target: 'Props, WPB, Waler, Acc (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Props, WPB, Waler, Acc (USD)', type: 'number' },
   { target: 'Aluminium Weight Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Aluminium Weight Adjusted (USD)', type: 'number' },

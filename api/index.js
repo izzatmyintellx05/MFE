@@ -1465,6 +1465,10 @@ var MR11_HEADER_GROUPS = [
     ]
   }
 ];
+var MR11_NUMBER_FORMATS = {
+  "LME Rate (USD)": 3,
+  "LME Adjusted (USD)": 3
+};
 var MR11_SOURCE_KEY_MAP = {
   BD: [
     "Customer & Project Name",
@@ -1558,6 +1562,7 @@ var ORDERED_HEADER_LIST = [
   "Payment terms - Type 3",
   "Selling Price (USD)",
   "LME",
+  "LME Rate (USD)",
   "Incoterms",
   "Props, WPB, Waler, Acc (USD)",
   "Aluminium Weight Adjusted (USD)",
@@ -1644,6 +1649,8 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Payment terms - Type 3", sourceDept: "BD" /* BD */, sourceColumn: "Type 3", type: "string", exact: true },
   { target: "Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Selling Price (USD)", type: "number" },
   { target: "LME", sourceDept: "BD" /* BD */, sourceColumn: "LME", type: "number" },
+  // LME price from BD column Z
+  { target: "LME Rate (USD)", sourceDept: "BD" /* BD */, sourceColumn: "LME Rate (USD)", type: "number", aliases: ["LME rate (USD)", "LME Rate"] },
   { target: "Incoterms", sourceDept: "BD" /* BD */, sourceColumn: "Incoterms", type: "string" },
   { target: "Props, WPB, Waler, Acc (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Props, WPB, Waler, Acc (USD)", type: "number" },
   { target: "Aluminium Weight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Aluminium Weight Adjusted (USD)", type: "number" },
@@ -2085,9 +2092,11 @@ function resolveLmePricing(bdData) {
   else if (lmeType === "variable") computedAdjusted = rateIsNumber ? Number(lmeRate) : "Check";
   const col = (prefix) => bdData[keyWhere((k) => k.startsWith(prefix))];
   const bdAdjusted = col("lme adjusted");
-  const lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
+  let lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
+  const replacedCheck = String(lmeAdjusted ?? "").trim().toLowerCase() === "check" && rateIsNumber;
+  if (replacedCheck) lmeAdjusted = Number(lmeRate);
   const bdFinal = col("final selling price");
-  if (isUsableValue(bdFinal)) return { lmeAdjusted, finalSellingPrice: bdFinal };
+  if (isUsableValue(bdFinal) && !replacedCheck) return { lmeAdjusted, finalSellingPrice: bdFinal };
   const isNumber = (v) => isUsableValue(v) && !isNaN(Number(v));
   const parts = [
     col("selling price"),
@@ -2159,9 +2168,16 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
   const planningRows = datasetMap["PLANNING" /* PLANNING */] || [];
   const incomingPlanningTotals = {};
+  const bdProjectNoByShort = {};
+  for (const bdRow of datasetMap["BD" /* BD */] || []) {
+    const s = cleanStr(findCellValue(bdRow.data, "Short Name") || findCellValue(bdRow.data, "Project Shortname"));
+    const n = cleanStr(findCellValue(bdRow.data, "Project No") || findCellValue(bdRow.data, "Project No."));
+    if (s && n && !bdProjectNoByShort[s]) bdProjectNoByShort[s] = n;
+  }
   for (const row of planningRows) {
-    const pNo = cleanStr(findCellValue(row.data, "Project No") || findCellValue(row.data, "Project No.") || findCellValue(row.data, "Project No. (from design column A)"));
     const pShort = cleanStr(findCellValue(row.data, "Short Name") || findCellValue(row.data, "Project Shortname") || findCellValue(row.data, "Project Shortname (from bd column C)"));
+    const pNoInFile = cleanStr(findCellValue(row.data, "Project No") || findCellValue(row.data, "Project No.") || findCellValue(row.data, "Project No. (from design column A)"));
+    const pNo = pShort && bdProjectNoByShort[pShort] || pNoInFile;
     const pName = findCellValue(row.data, "Customer & Project Name") || findCellValue(row.data, "Project Name") || findCellValue(row.data, "Project Name (from design column B)");
     let stream = "1";
     for (const sh of STREAM_HEADER_CANDIDATES) {
@@ -2280,7 +2296,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       seriesNumber = detectedProdSeries > 0 ? detectedProdSeries : 1;
     }
     const fontColor = normalizeColor(row.fontColor);
-    const rawProduced = row.rawCells?.[16] ?? findCellValue(row.data, "__COLUMN_Q__") ?? findCellValue(row.data, "Total Produced") ?? findCellValue(row.data, "Total Produced Quantity") ?? findCellValue(row.data, "Produced Quantity") ?? findCellValue(row.data, "Column Q") ?? findCellValue(row.data, "Produced (m2)");
+    const rawProduced = findCellValue(row.data, "Total Produced") ?? findCellValue(row.data, "Total Produced Quantity") ?? findCellValue(row.data, "Produced Quantity") ?? findCellValue(row.data, "Produced (m2)") ?? findCellValue(row.data, "Column Q") ?? row.rawCells?.[16] ?? findCellValue(row.data, "__COLUMN_Q__");
     const totalProduced = parseNumeric(rawProduced);
     if (pShort && seriesNumber > 0 && totalProduced > 0) {
       await prisma8.productionSeriesHistory.upsert({
@@ -2492,7 +2508,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     let directColumnKValue = 0;
     for (const dRow of matchedDispatchRows) {
       const val = parseNumeric(
-        dRow.rawCells?.[10] ?? findCellValue(dRow.data, "__COLUMN_K__") ?? findCellValue(dRow.data, "Column K") ?? findCellValue(dRow.data, "Total Dispatch") ?? findCellValue(dRow.data, "Total Dispatched") ?? findCellValue(dRow.data, "Total Dispatched Quantity") ?? findCellValue(dRow.data, "Dispatched Quantity") ?? findCellValue(dRow.data, "Total Dispatch (m2)") ?? findCellValue(dRow.data, "Total Dispatched (m2)")
+        findCellValue(dRow.data, "Total Dispatched") ?? findCellValue(dRow.data, "Total Dispatch") ?? findCellValue(dRow.data, "Total Dispatched Quantity") ?? findCellValue(dRow.data, "Dispatched Quantity") ?? findCellValue(dRow.data, "Total Dispatch (m2)") ?? findCellValue(dRow.data, "Total Dispatched (m2)") ?? findCellValue(dRow.data, "Column K") ?? dRow.rawCells?.[10] ?? findCellValue(dRow.data, "__COLUMN_K__")
       );
       if (val > directColumnKValue) {
         directColumnKValue = val;
@@ -2551,16 +2567,15 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     let latestDateWStr = null;
     let latestDatePV = null;
     let latestDatePVStr = null;
+    const atdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /^(atd|atd date|actual time of departure)$/i.test(String(h).trim())).map(([c]) => Number(c));
+    const etdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /\betd\b/i.test(String(h))).map(([c]) => Number(c));
+    const atdColumns = atdHeaderIdx.length ? atdHeaderIdx : [22];
+    const etdColumns = etdHeaderIdx.length ? etdHeaderIdx : [15, 16, 17, 18, 19, 20, 21];
     for (const dRow of matchedDispatchRows) {
-      const candidateWValues = [
-        dRow.rawCells?.[22],
-        findCellValue(dRow.data, "__COLUMN_W__"),
-        dispatchHeaders[22] ? dRow.data[dispatchHeaders[22]] : void 0,
-        findCellValue(dRow.data, "Column W"),
-        findCellValue(dRow.data, "ATD"),
-        findCellValue(dRow.data, "ATD Date"),
-        findCellValue(dRow.data, "Actual Time of Departure")
-      ];
+      const candidateWValues = atdColumns.flatMap((c) => [
+        dRow.rawCells?.[c],
+        dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
+      ]);
       for (const valW of candidateWValues) {
         if (valW !== void 0 && valW !== null && String(valW).trim() !== "") {
           const d = parseFlexibleDate(valW);
@@ -2577,7 +2592,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           }
         }
       }
-      for (let c = 15; c <= 21; c++) {
+      for (const c of etdColumns) {
         const candidatePVValues = [
           dRow.rawCells?.[c],
           dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
@@ -2786,11 +2801,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     }
     outRow["shellplan approval date"] = latestApprovedDateStr;
     outRow["Shell Plan Approved Date"] = latestApprovedDateStr;
+    const sameProject = (otherNo, otherShort) => shortName && otherShort ? otherShort === shortName : Boolean(projectNo && otherNo === projectNo);
     const matchedPlanningSeries = allHistoricalPlanningSeries.filter((s) => {
-      const pClean = cleanStr(s.projectNo);
-      const sClean = cleanStr(s.projectShortname);
-      const matchesId = pClean === projectNo || sClean === shortName || shortName && sClean.includes(shortName);
-      const matchesStream = s.stream === bdStream || s.stream === "1" || bdStream === "1";
+      const matchesId = sameProject(cleanStr(s.projectNo), cleanStr(s.projectShortname));
+      const matchesStream = normalizeStream(s.stream || "1") === bdStream;
       const sFont = normalizeColor(s.fontColor);
       return matchesId && matchesStream && sFont === bdFontColor;
     });
@@ -2800,15 +2814,14 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       outRow["Total Processed (m2)"] = sumProcessed;
     }
     const tracker = allQuantityTrackers.find(
-      (t) => (cleanStr(t.projectNo) === projectNo || shortName && cleanStr(t.projectShortname) === shortName) && (t.stream === bdStream || t.stream === "1" || bdStream === "1") && normalizeColor(t.fontColor) === bdFontColor
+      (t) => sameProject(cleanStr(t.projectNo), cleanStr(t.projectShortname)) && normalizeStream(t.stream || "1") === bdStream && normalizeColor(t.fontColor) === bdFontColor
     );
     let matchedPlanningRow = null;
     let highestPlanScore = -1;
     for (const p of planningRows) {
       const pNo = cleanStr(findCellValue(p.data, "Project No") || findCellValue(p.data, "Project No.") || findCellValue(p.data, "Project No. (from design column A)"));
       const pShort = cleanStr(findCellValue(p.data, "Short Name") || findCellValue(p.data, "Project Shortname") || findCellValue(p.data, "Project Shortname (from bd column C)"));
-      const idMatches = projectNo && pNo === projectNo || shortName && pShort === shortName;
-      if (!idMatches) continue;
+      if (!sameProject(pNo, pShort)) continue;
       let score = 1;
       let pStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
@@ -2835,6 +2848,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Closing Date"] = resolvedProcessedDate;
     let matchedProdRow = null;
     let highestProdScore = -1;
+    const prodScores = [];
     for (const pRow of productionRows) {
       const pShort = cleanStr(
         findCellValue(pRow.data, "Short Name") || findCellValue(pRow.data, "Project Shortname") || findCellValue(pRow.data, "Project Shortname (from planning column B)") || pRow.rawCells?.[1] || pRow.rawCells?.[0] || pRow.rawCells?.[2]
@@ -2858,13 +2872,15 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       const pFill = normalizeFillColor(pRow.fillColor);
       if (pColor === bdFontColor) score += 8;
       if (bdFillColor && pFill && pFill === bdFillColor) score += 10;
+      prodScores.push({ row: pRow, score });
       if (score > highestProdScore) {
         highestProdScore = score;
         matchedProdRow = pRow;
       }
     }
+    const bestProdRows = prodScores.filter((p) => p.score === highestProdScore).map((p) => p.row);
     const directColumnQValue = matchedProdRow ? parseNumeric(
-      matchedProdRow.rawCells?.[16] ?? findCellValue(matchedProdRow.data, "__COLUMN_Q__") ?? findCellValue(matchedProdRow.data, "Total Produced") ?? findCellValue(matchedProdRow.data, "Total Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced Quantity") ?? findCellValue(matchedProdRow.data, "Column Q") ?? findCellValue(matchedProdRow.data, "Produced (m2)")
+      findCellValue(matchedProdRow.data, "Total Produced") ?? findCellValue(matchedProdRow.data, "Total Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced (m2)") ?? findCellValue(matchedProdRow.data, "Column Q") ?? matchedProdRow.rawCells?.[16] ?? findCellValue(matchedProdRow.data, "__COLUMN_Q__")
     ) : 0;
     const finalColumnAQ = directColumnQValue > 0 ? directColumnQValue : null;
     outRow["Total Produced"] = finalColumnAQ;
@@ -2872,35 +2888,20 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["produced qty"] = finalColumnAQ;
     let latestFilledDate = null;
     if (matchedProdRow) {
-      const COL_R_INDEX = 17;
-      const COL_AV_INDEX = 47;
-      for (let c = COL_AV_INDEX; c >= COL_R_INDEX; c--) {
-        const cellVal = matchedProdRow.rawCells?.[c];
-        const headerName = productionHeaders[c];
-        const valFromHeader = headerName ? matchedProdRow.data[headerName] : void 0;
-        const targetVal = cellVal !== void 0 ? cellVal : valFromHeader;
-        if (isCellFilled(targetVal)) {
-          if (headerName) {
-            const formatted = formatDateString(headerName);
-            if (formatted) {
-              latestFilledDate = formatted;
-              break;
-            }
-          }
-          const cellAsDate = formatDateString(targetVal);
-          if (cellAsDate) {
-            latestFilledDate = cellAsDate;
-            break;
-          }
-          if (headerName) {
-            latestFilledDate = headerName;
-            break;
+      const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null })).filter((d) => Boolean(d.date));
+      for (const pRow of bestProdRows) {
+        for (const { c, date } of dayColumns) {
+          const headerName = productionHeaders[c];
+          const cellVal = pRow.rawCells?.[c];
+          const targetVal = cellVal !== void 0 ? cellVal : pRow.data[headerName];
+          if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
+            latestFilledDate = date;
           }
         }
       }
       if (!latestFilledDate) {
         const fallbackDate = findCellValue(matchedProdRow.data, "Day/Date") || findCellValue(matchedProdRow.data, "Date");
-        latestFilledDate = formatDateString(fallbackDate);
+        latestFilledDate = parseFlexibleDate(fallbackDate) ? formatDateString(fallbackDate) : null;
       }
     }
     outRow["Produced Date"] = latestFilledDate;
@@ -3278,7 +3279,8 @@ async function getLatestMr11(req, res) {
         run: latestRun,
         visibleColumns: config?.visibleColumns || [],
         orderedHeaders: ORDERED_HEADER_LIST2,
-        headerGroups: MR11_HEADER_GROUPS
+        headerGroups: MR11_HEADER_GROUPS,
+        numberFormats: MR11_NUMBER_FORMATS
       }
     });
   } catch (err) {
@@ -3334,7 +3336,8 @@ async function exportMr11ToExcel(req, res) {
     const headers = ORDERED_HEADER_LIST2;
     worksheet.columns = headers.map((header) => ({
       key: header,
-      width: Math.max(header.length + 4, 16)
+      width: Math.max(header.length + 4, 16),
+      ...MR11_NUMBER_FORMATS[header] !== void 0 ? { style: { numFmt: `0.${"0".repeat(MR11_NUMBER_FORMATS[header])}` } } : {}
     }));
     const groupOf = (h) => MR11_HEADER_GROUPS.find((g2) => g2.columns.some((c) => c.key === h));
     const subLabel = (h) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
@@ -3359,7 +3362,9 @@ async function exportMr11ToExcel(req, res) {
     records.forEach((row) => {
       const orderedRowData = {};
       headers.forEach((h) => {
-        orderedRowData[h] = row[h] ?? "";
+        const places = MR11_NUMBER_FORMATS[h];
+        const n = Number(row[h]);
+        orderedRowData[h] = places !== void 0 && row[h] !== null && row[h] !== "" && !isNaN(n) ? n : row[h] ?? "";
       });
       const addedRow = worksheet.addRow(orderedRowData);
       if (row["_fontColor"]) {

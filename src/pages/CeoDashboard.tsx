@@ -72,6 +72,7 @@ export const CeoDashboard: React.FC = () => {
   const [records, setRecords] = useState<any[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
+  const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [region, setRegion] = useState<RegionFilter>('ALL');
@@ -88,6 +89,7 @@ export const CeoDashboard: React.FC = () => {
       setRecords(data?.run?.records || []);
       setHeaders(data?.orderedHeaders || []);
       setHeaderGroups(data?.headerGroups || []);
+      setNumberFormats(data?.numberFormats || {});
     } catch (err: any) {
       console.error('Failed to load CEO telemetry:', err);
       setError(err.response?.data?.error?.message || err.message || 'Failed to load MR11 data');
@@ -591,7 +593,7 @@ export const CeoDashboard: React.FC = () => {
               </div>
             </div>
             <div className="flex-1 m-3 bg-white border border-stone-200/90 rounded-xl shadow-sm overflow-hidden flex flex-col">
-              <Mr11Table records={regionRows} headers={headers} headerGroups={headerGroups} zoom={rawZoom} />
+              <Mr11Table records={regionRows} headers={headers} headerGroups={headerGroups} numberFormats={numberFormats} zoom={rawZoom} />
             </div>
           </div>
         </div>

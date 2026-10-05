@@ -4,7 +4,7 @@ import ExcelJS from 'exceljs';
 import { executeMr11Pipeline } from './mr11.engine';
 import { getLatestMr11Run, hydrateActiveVersionsFromDb } from '../../db/supabase';
 import * as mr11ConfigModule from '../../config/mr11.config';
-import { MR11_HEADER_GROUPS } from '../../config/mr11.config';
+import { MR11_HEADER_GROUPS, MR11_NUMBER_FORMATS } from '../../config/mr11.config';
 
 const prisma = new PrismaClient();
 
@@ -26,6 +26,7 @@ export async function getLatestMr11(req: Request, res: Response) {
         visibleColumns: (config?.visibleColumns as string[]) || [],
         orderedHeaders: ORDERED_HEADER_LIST,
         headerGroups: MR11_HEADER_GROUPS,
+        numberFormats: MR11_NUMBER_FORMATS,
       },
     });
   } catch (err: any) {
@@ -89,6 +90,9 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     worksheet.columns = headers.map((header) => ({
       key: header,
       width: Math.max(header.length + 4, 16),
+      ...(MR11_NUMBER_FORMATS[header] !== undefined
+        ? { style: { numFmt: `0.${'0'.repeat(MR11_NUMBER_FORMATS[header])}` } }
+        : {}),
     }));
 
     // Two header rows: grouped columns (e.g. Payment terms) share a merged top cell with
@@ -119,7 +123,10 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     records.forEach((row) => {
       const orderedRowData: Record<string, any> = {};
       headers.forEach((h) => {
-        orderedRowData[h] = row[h] ?? '';
+        // Columns with fixed decimals are written as numbers so Excel can apply the format
+        const places = MR11_NUMBER_FORMATS[h];
+        const n = Number(row[h]);
+        orderedRowData[h] = places !== undefined && row[h] !== null && row[h] !== '' && !isNaN(n) ? n : row[h] ?? '';
       });
       const addedRow = worksheet.addRow(orderedRowData);
 
