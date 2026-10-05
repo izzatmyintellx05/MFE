@@ -31,6 +31,7 @@ import {
   DEFAULT_FORECAST_M2,
   RegionFilter,
   Stage,
+  averageSellingPrice,
   filterByRegion,
   firstRowPerProject,
   monthColumns,
@@ -48,6 +49,7 @@ const STAGE_COLORS: Record<Stage, string> = {
   processed: '#004B87', // Doka/MFE Deep Blue
   produced: '#38BDF8',
   dispatched: '#FFDA00', // Doka Yellow
+  sailed: '#10B981',
 };
 
 const REGION_COLORS: Record<string, string> = {
@@ -60,6 +62,8 @@ const ACTUAL_COLOR = '#004B87';
 const FORECAST_COLOR = '#FFDA00';
 const DEFAULT_FORECAST_COLOR = '#FEF3C7';
 
+const formatUsd = (n: number | null, digits = 2) =>
+  n === null ? '—' : `${n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 const formatM2 = (n: number) => `${Math.round(n).toLocaleString('en-US')} m²`;
 
 const chartTooltipM2 = {
@@ -118,6 +122,10 @@ export const CeoDashboard: React.FC = () => {
   const series = useMemo(() => monthlySeries(regionRows, months, today), [regionRows, months, today]);
   const selectedPoint = selectedMonth ? series.find((p) => p.key === selectedMonth.key) || null : null;
   const projectCount = useMemo(() => firstRowPerProject(regionRows).length, [regionRows]);
+  const avgPrice = useMemo(
+    () => averageSellingPrice(regionRows, months, selectedMonth?.key ?? null),
+    [regionRows, months, selectedMonth]
+  );
 
   const actualTotal = series.filter((p) => p.kind === 'actual').reduce((a, p) => a + p.value, 0);
   const forecastTotal = series.filter((p) => p.kind === 'forecast').reduce((a, p) => a + p.value, 0);
@@ -305,7 +313,7 @@ export const CeoDashboard: React.FC = () => {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
           <div className="flex items-center justify-between text-slate-400 mb-2">
             <span className="text-[10px] font-extrabold uppercase tracking-wider">
@@ -367,6 +375,17 @@ export const CeoDashboard: React.FC = () => {
           <div className="text-2xl font-black text-slate-900 font-mono">{projectCount}</div>
           <span className="text-[10px] text-slate-400 mt-1">{filterLabel}</span>
         </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
+          <div className="flex items-center justify-between text-slate-400 mb-2">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider">
+              Avg Selling Price {selectedMonth ? `· ${selectedMonth.key}` : ''}
+            </span>
+            <TrendingUp className="w-4 h-4 text-slate-500" />
+          </div>
+          <div className="text-2xl font-black text-slate-900 font-mono">{formatUsd(avgPrice)}</div>
+          <span className="text-[10px] text-slate-400 mt-1">USD per m², Final Selling Price weighted by m²</span>
+        </div>
       </div>
 
       {/* Pipeline: Design -> Processed -> Produced -> Dispatched */}
@@ -380,7 +399,7 @@ export const CeoDashboard: React.FC = () => {
             </p>
           </div>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
           {STAGES.map((s, idx) => {
             const base = totals.design || Math.max(...STAGES.map((x) => totals[x]), 0);
             const pct = base > 0 ? Math.min(100, (totals[s] / base) * 100) : 0;
@@ -452,7 +471,9 @@ export const CeoDashboard: React.FC = () => {
                     label: (ctx: any) => {
                       const p = series[ctx.dataIndex];
                       const kind = p.kind === 'actual' ? 'Actual' : p.isDefault ? 'Forecast (default, none entered)' : 'Forecast';
-                      return `${kind}: ${formatM2(p.value)}`;
+                      const price = averageSellingPrice(regionRows, months, p.key);
+                      const usd = price !== null && !p.isDefault ? ` · avg ${formatUsd(price)}/m² · ≈ ${formatUsd(price * p.value, 0)}` : '';
+                      return `${kind}: ${formatM2(p.value)}${usd}`;
                     },
                   },
                 },
