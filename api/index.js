@@ -1680,6 +1680,31 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Formwork Quantity Sailed (m2)", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "number" },
   { target: "ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "date" }
 ];
+var MR11_DEPARTMENT_COLORS = {
+  BD: "#2563EB",
+  // blue
+  FINANCE: "#16A34A",
+  // green
+  SHELLPLAN: "#9333EA",
+  // purple
+  DESIGN: "#EA580C",
+  // orange
+  PLANNING: "#0891B2",
+  // teal
+  PRODUCTION: "#DB2777",
+  // pink
+  DISPATCH: "#D97706"
+  // amber
+};
+var MR11_COLUMN_DEPARTMENTS = (() => {
+  const map = {};
+  for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
+  for (const h of ORDERED_HEADER_LIST) {
+    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "FINANCE" /* FINANCE */;
+  }
+  map["Final Selling Price (MYR)"] = "BD" /* BD */;
+  return map;
+})();
 
 // server/modules/mr11/mr11.engine.ts
 init_supabase();
@@ -3347,7 +3372,10 @@ async function getLatestMr11(req, res) {
         visibleColumns: config?.visibleColumns || [],
         orderedHeaders: ORDERED_HEADER_LIST2,
         headerGroups: MR11_HEADER_GROUPS,
-        numberFormats: MR11_NUMBER_FORMATS
+        numberFormats: MR11_NUMBER_FORMATS,
+        // Lets a department user's own columns be highlighted in their department colour
+        columnDepartments: MR11_COLUMN_DEPARTMENTS,
+        departmentColors: MR11_DEPARTMENT_COLORS
       }
     });
   } catch (err) {
