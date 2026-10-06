@@ -1488,71 +1488,6 @@ var MR11_NUMBER_FORMATS = {
   "LME Adjusted (USD)": 3,
   "Final Selling Price (USD)": 2
 };
-var MR11_SOURCE_KEY_MAP = {
-  BD: [
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No.",
-    "Short Name",
-    "Project Shortname"
-  ],
-  FINANCE: [
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No.",
-    "Short Name",
-    "Project Shortname"
-  ],
-  SHELLPLAN: [
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No.",
-    "Short Name",
-    "Project Shortname",
-    "Building Name"
-  ],
-  DESIGN: [
-    "Project No. (from design column A)",
-    "Project No",
-    "Project No.",
-    "Customer & Project Name",
-    "Project Name",
-    "Short Name",
-    "Project Shortname"
-  ],
-  PLANNING: [
-    "Project No. (from design column A)",
-    "Project No",
-    "Project No.",
-    "Project Shortname (from bd column C)",
-    "Project Shortname",
-    "Customer & Project Name",
-    "Project Name"
-  ],
-  PRODUCTION: [
-    "Project Shortname (from planning column B)",
-    "Project Shortname",
-    "Short Name",
-    "Project No",
-    "Project No."
-  ],
-  DISPATCH: [
-    "Project Shortname (from bd column C)",
-    "Project Shortname",
-    "Project Short Code",
-    "Short Code",
-    "Short Name",
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No."
-  ],
-  ADMIN: [],
-  CEO: []
-};
 var ORDERED_HEADER_LIST = [
   // --- BD & Commercial Columns (Col A to Col AI) ---
   "Customer & Project Name",
@@ -2599,47 +2534,27 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const lmePricing = resolveLmePricing(bdData);
     outRow["LME Adjusted (USD)"] = lmePricing.lmeAdjusted;
     outRow["Final Selling Price (USD)"] = lmePricing.finalSellingPrice;
-    const findBestDeptRow = (dept) => {
-      const deptDataset = datasetMap[dept] || [];
-      const possibleKeyNames = MR11_SOURCE_KEY_MAP[dept] || [];
-      let bestCandidate = null;
-      let highestScore = -1;
-      for (const candidate of deptDataset) {
-        const cData = candidate.data;
-        let idMatched = false;
-        for (const keyName of possibleKeyNames) {
-          const raw = cleanStr(findCellValue(cData, keyName));
-          if (raw && (raw === projectNo || raw === shortName || shortName && raw.includes(shortName))) {
-            idMatched = true;
-            break;
-          }
-        }
-        if (!idMatched) continue;
-        let score = 1;
-        let cStream = "1";
-        for (const sh of STREAM_HEADER_CANDIDATES) {
-          const v = findCellValue(cData, sh);
-          if (v !== null && v !== void 0 && v !== "") {
-            cStream = normalizeStream(v);
-            break;
-          }
-        }
-        if (cStream === bdStream) score += 4;
-        const cFont = normalizeColor(candidate.fontColor);
-        if (cFont === bdFontColor) score += 8;
-        const cFill = normalizeFillColor(candidate.fillColor);
-        if (bdFillColor && cFill && cFill === bdFillColor) score += 10;
-        if (score > highestScore) {
-          highestScore = score;
-          bestCandidate = cData;
+    const financeCandidates = (datasetMap["FINANCE" /* FINANCE */] || []).filter((f) => {
+      const fShort = cleanStr(findCellValue(f.data, "Project Shortname") || findCellValue(f.data, "Short Name"));
+      const fNo = cleanStr(findCellValue(f.data, "Project No") || findCellValue(f.data, "Project No."));
+      const idMatches = shortName && fShort ? fShort === shortName : Boolean(projectNo && fNo === projectNo);
+      if (!idMatches) return false;
+      let fStream = "1";
+      for (const sh of STREAM_HEADER_CANDIDATES) {
+        const v = findCellValue(f.data, sh);
+        if (v !== null && v !== void 0 && v !== "") {
+          fStream = normalizeStream(v);
+          break;
         }
       }
-      return bestCandidate;
-    };
+      return fStream === bdStream;
+    });
+    const financeGroup = closestColourGroup(financeCandidates, bdFontColor, bdFillColor);
+    const bdProductType = cleanStr(outRow["Products type"]);
+    const financeRow = financeGroup.find((f) => cleanStr(findCellValue(f.data, "Product Type") || findCellValue(f.data, "Products type")) === bdProductType) ?? financeGroup[0] ?? null;
     for (const mapping of MR11_ORDERED_COLUMNS) {
-      if (mapping.sourceDept !== "BD" /* BD */ && mapping.sourceDept !== "DESIGN" /* DESIGN */ && mapping.sourceDept !== "SHELLPLAN" /* SHELLPLAN */ && mapping.sourceDept !== "PLANNING" /* PLANNING */ && mapping.sourceDept !== "PRODUCTION" /* PRODUCTION */ && mapping.sourceDept !== "DISPATCH" /* DISPATCH */) {
-        const bestCandidate = findBestDeptRow(mapping.sourceDept);
-        outRow[mapping.target] = bestCandidate ? findCellValue(bestCandidate, mapping.sourceColumn) : null;
+      if (mapping.sourceDept === "FINANCE" /* FINANCE */) {
+        outRow[mapping.target] = financeRow ? findCellValue(financeRow.data, mapping.sourceColumn) : null;
       }
     }
     const dispatchCandidates = dispatchRows.filter((dRow) => {

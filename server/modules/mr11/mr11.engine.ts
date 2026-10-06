@@ -1,5 +1,5 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
-import { MR11_ORDERED_COLUMNS, MR11_SOURCE_KEY_MAP, ORDERED_HEADER_LIST } from '../../config/mr11.config';
+import { MR11_ORDERED_COLUMNS, ORDERED_HEADER_LIST } from '../../config/mr11.config';
 import { saveMr11RunToDb, fetchLatestMr11RunFromDb, restoreEngineHistory } from '../../db/supabase';
 import { exportEngineHistory } from '../../db/prisma';
 import { FortuneSheet } from '../../utils/excel-normalizer';
@@ -1112,63 +1112,32 @@ export async function executeMr11Pipeline(
     outRow['LME Adjusted (USD)'] = lmePricing.lmeAdjusted;
     outRow['Final Selling Price (USD)'] = lmePricing.finalSellingPrice;
 
-    // Best-matching row from a department: project id must match, then stream, font and fill colour add weight
-    const findBestDeptRow = (dept: RoleCode): Record<string, any> | null => {
-      const deptDataset = datasetMap[dept] || [];
-      const possibleKeyNames = MR11_SOURCE_KEY_MAP[dept] || [];
-
-      let bestCandidate: Record<string, any> | null = null;
-      let highestScore = -1;
-
-      for (const candidate of deptDataset) {
-        const cData = candidate.data;
-        let idMatched = false;
-        for (const keyName of possibleKeyNames) {
-          const raw = cleanStr(findCellValue(cData, keyName));
-          if (raw && (raw === projectNo || raw === shortName || (shortName && raw.includes(shortName)))) {
-            idMatched = true;
-            break;
-          }
-        }
-        if (!idMatched) continue;
-
-        let score = 1;
-        let cStream = '1';
-        for (const sh of STREAM_HEADER_CANDIDATES) {
-          const v = findCellValue(cData, sh);
-          if (v !== null && v !== undefined && v !== '') {
-            cStream = normalizeStream(v);
-            break;
-          }
-        }
-        if (cStream === bdStream) score += 4;
-
-        const cFont = normalizeColor(candidate.fontColor);
-        if (cFont === bdFontColor) score += 8;
-
-        const cFill = normalizeFillColor(candidate.fillColor);
-        if (bdFillColor && cFill && cFill === bdFillColor) score += 10;
-
-        if (score > highestScore) {
-          highestScore = score;
-          bestCandidate = cData;
+    // 2. FINANCE: the Finance row for this BD row - same project & stream, the closest font and
+    // fill colour (Finance may use its own shades, e.g. #FF9900 for #FF9933), then the same product type
+    const financeCandidates = (datasetMap[RoleCode.FINANCE] || []).filter((f) => {
+      const fShort = cleanStr(findCellValue(f.data, 'Project Shortname') || findCellValue(f.data, 'Short Name'));
+      const fNo = cleanStr(findCellValue(f.data, 'Project No') || findCellValue(f.data, 'Project No.'));
+      const idMatches = shortName && fShort ? fShort === shortName : Boolean(projectNo && fNo === projectNo);
+      if (!idMatches) return false;
+      let fStream = '1';
+      for (const sh of STREAM_HEADER_CANDIDATES) {
+        const v = findCellValue(f.data, sh);
+        if (v !== null && v !== undefined && v !== '') {
+          fStream = normalizeStream(v);
+          break;
         }
       }
-      return bestCandidate;
-    };
-
-    // 2. Generic Department Fallbacks
+      return fStream === bdStream;
+    });
+    const financeGroup = closestColourGroup(financeCandidates, bdFontColor, bdFillColor);
+    const bdProductType = cleanStr(outRow['Products type']);
+    const financeRow =
+      financeGroup.find((f) => cleanStr(findCellValue(f.data, 'Product Type') || findCellValue(f.data, 'Products type')) === bdProductType) ??
+      financeGroup[0] ??
+      null;
     for (const mapping of MR11_ORDERED_COLUMNS) {
-      if (
-        mapping.sourceDept !== RoleCode.BD &&
-        mapping.sourceDept !== RoleCode.DESIGN &&
-        mapping.sourceDept !== RoleCode.SHELLPLAN &&
-        mapping.sourceDept !== RoleCode.PLANNING &&
-        mapping.sourceDept !== RoleCode.PRODUCTION &&
-        mapping.sourceDept !== RoleCode.DISPATCH
-      ) {
-        const bestCandidate = findBestDeptRow(mapping.sourceDept);
-        outRow[mapping.target] = bestCandidate ? findCellValue(bestCandidate, mapping.sourceColumn) : null;
+      if (mapping.sourceDept === RoleCode.FINANCE) {
+        outRow[mapping.target] = financeRow ? findCellValue(financeRow.data, mapping.sourceColumn) : null;
       }
     }
 
