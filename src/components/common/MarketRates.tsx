@@ -19,7 +19,7 @@ export interface LmePrice {
   live: boolean;
 }
 
-const LiveBadge: React.FC<{ live: boolean }> = ({ live }) => (
+export const LiveBadge: React.FC<{ live: boolean }> = ({ live }) => (
   <span
     className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
       live ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'

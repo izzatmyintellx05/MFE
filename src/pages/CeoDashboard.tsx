@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../api/client';
 import { ZoomControls } from '../components/common/ZoomControls';
 import { Mr11Table, HeaderGroup } from '../components/workbook/Mr11Table';
-import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice } from '../components/common/MarketRates';
+import { LiveBadge, FxRate, LmePrice } from '../components/common/MarketRates';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -16,17 +16,7 @@ import {
   Legend,
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
-import {
-  TrendingUp,
-  Building2,
-  CheckCircle2,
-  CalendarClock,
-  RefreshCw,
-  AlertCircle,
-  FileSpreadsheet,
-  X,
-  ArrowRight,
-} from 'lucide-react';
+import { RefreshCw, AlertCircle, FileSpreadsheet, X, CalendarDays, ChevronDown } from 'lucide-react';
 import {
   REGIONS,
   REGION_LABELS,
@@ -48,6 +38,18 @@ import {
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Filler, Title, Tooltip, Legend);
 
+// Charts share the page's type and a quiet slate palette
+ChartJS.defaults.font.family = getComputedStyle(document.documentElement).fontFamily || 'sans-serif';
+ChartJS.defaults.font.size = 11;
+ChartJS.defaults.color = '#64748B';
+Object.assign(ChartJS.defaults.plugins.tooltip, {
+  backgroundColor: '#0F172A',
+  padding: 10,
+  cornerRadius: 8,
+  boxPadding: 4,
+  titleFont: { weight: '600' },
+});
+
 const STAGE_COLORS: Record<Stage, string> = {
   design: '#0F172A',
   processed: '#004B87', // Doka/MFE Deep Blue
@@ -64,18 +66,63 @@ const REGION_COLORS: Record<string, string> = {
 
 const ACTUAL_COLOR = '#004B87';
 const FORECAST_COLOR = '#F59E0B';
+const GRID_COLOR = '#F1F5F9';
 
 const formatUsd = (n: number | null, digits = 2) =>
   n === null ? '—' : `${n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
-const formatM2 = (n: number) => `${Math.round(n).toLocaleString('en-US')} m²`;
+const formatNum = (n: number) => Math.round(n).toLocaleString('en-US');
+const formatM2 = (n: number) => `${formatNum(n)} m²`;
 
 const axisM2 = { callback: (v: any) => Number(v).toLocaleString('en-US') };
 
 const chartTooltipM2 = {
   callbacks: {
-    label: (ctx: any) => `${ctx.dataset.label}: ${formatM2(ctx.parsed.y ?? 0)}`,
+    label: (ctx: any) => ` ${ctx.dataset.label}: ${formatM2(ctx.parsed.y ?? 0)}`,
   },
 };
+
+const chartLegend = {
+  position: 'bottom' as const,
+  labels: { usePointStyle: true, pointStyle: 'rectRounded', boxWidth: 8, boxHeight: 8, padding: 14 },
+};
+
+// Shared surface for every section on the page
+const PANEL = 'bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)]';
+const FOCUS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#004B87]/40 focus-visible:ring-offset-1';
+
+const SectionHeading: React.FC<{ title: string; description?: React.ReactNode; children?: React.ReactNode }> = ({
+  title,
+  description,
+  children,
+}) => (
+  <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+    <div className="min-w-0">
+      <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+      {description && <p className="mt-0.5 text-xs text-slate-500">{description}</p>}
+    </div>
+    {children}
+  </div>
+);
+
+const Stat: React.FC<{ label: string; value: string; unit?: string; note: string; color?: string }> = ({
+  label,
+  value,
+  unit,
+  note,
+  color,
+}) => (
+  <div className="min-w-0">
+    <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+      {color && <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />}
+      {label}
+    </div>
+    <div className="mt-1.5 font-mono text-[1.75rem] leading-none font-semibold tracking-tight text-slate-900 tabular-nums">
+      {value}
+      {unit && value !== '—' && <span className="ml-1.5 text-sm font-medium text-slate-400">{unit}</span>}
+    </div>
+    <p className="mt-2 text-xs text-slate-500">{note}</p>
+  </div>
+);
 
 export const CeoDashboard: React.FC = () => {
   const [records, setRecords] = useState<any[]>([]);
@@ -84,6 +131,7 @@ export const CeoDashboard: React.FC = () => {
   const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
   const [fxRate, setFxRate] = useState<FxRate | null>(null);
   const [lmePrice, setLmePrice] = useState<LmePrice | null>(null);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [region, setRegion] = useState<RegionFilter>('ALL');
@@ -103,6 +151,7 @@ export const CeoDashboard: React.FC = () => {
       setNumberFormats(data?.numberFormats || {});
       setFxRate(data?.fxRate || null);
       setLmePrice(data?.lmePrice || null);
+      setGeneratedAt(data?.run?.generatedAt || null);
     } catch (err: any) {
       console.error('Failed to load CEO telemetry:', err);
       setError(err.response?.data?.error?.message || err.message || 'Failed to load MR11 data');
@@ -148,6 +197,8 @@ export const CeoDashboard: React.FC = () => {
   const forecastTotal = series.filter((p) => p.kind === 'forecast').reduce((a, p) => a + p.value, 0);
   const defaultedCount = series.filter((p) => p.isDefault).length;
   const lastActual = [...series].reverse().find((p) => p.kind === 'actual');
+  const firstForecast = series.find((p) => p.kind === 'forecast');
+  const lastForecast = [...series].reverse().find((p) => p.kind === 'forecast');
 
   const visibleRegions = region === 'ALL' ? REGIONS : [region];
   const rowsOfRegion = (r: string) => records.filter((row) => regionOf(row) === r);
@@ -159,7 +210,7 @@ export const CeoDashboard: React.FC = () => {
   // Actual line covers completed months; the forecast line starts at the last actual
   // month so the two lines join up
   const lastActualIdx = series.findIndex((p) => p.kind === 'forecast') - 1;
-  const pointRadius = (i: number) => (selectedMonth && series[i]?.key === selectedMonth.key ? 7 : 4);
+  const pointRadius = (i: number) => (selectedMonth && series[i]?.key === selectedMonth.key ? 6 : 3);
   const monthlyChartData = {
     labels: series.map((p) => p.key),
     datasets: [
@@ -167,24 +218,29 @@ export const CeoDashboard: React.FC = () => {
         label: 'Actual',
         data: series.map((p) => (p.kind === 'actual' ? p.value : null)),
         borderColor: ACTUAL_COLOR,
-        backgroundColor: `${ACTUAL_COLOR}1A`,
+        borderWidth: 2,
+        backgroundColor: `${ACTUAL_COLOR}14`,
         pointBackgroundColor: ACTUAL_COLOR,
         pointRadius: series.map((_, i) => pointRadius(i)),
+        pointHoverRadius: 6,
         fill: true,
-        tension: 0.25,
+        tension: 0.3,
       },
       {
         label: 'Forecast',
         data: series.map((p, i) => (p.kind === 'forecast' || i === lastActualIdx ? p.value : null)),
         borderColor: FORECAST_COLOR,
-        backgroundColor: `${FORECAST_COLOR}14`,
+        borderWidth: 2,
+        backgroundColor: `${FORECAST_COLOR}10`,
         borderDash: [6, 4],
         // Hollow points mark months using the 100,000 m² default
         pointBackgroundColor: series.map((p) => (p.isDefault ? '#FFFFFF' : FORECAST_COLOR)),
         pointBorderColor: FORECAST_COLOR,
+        pointBorderWidth: 1.5,
         pointRadius: series.map((p, i) => (p.kind === 'forecast' ? pointRadius(i) : 0)),
+        pointHoverRadius: 6,
         fill: true,
-        tension: 0.25,
+        tension: 0.3,
       },
     ],
   };
@@ -196,6 +252,7 @@ export const CeoDashboard: React.FC = () => {
       data: regionStageTotals.map((t) => t[s]),
       backgroundColor: STAGE_COLORS[s],
       borderRadius: 4,
+      maxBarThickness: 22,
     })),
   };
 
@@ -207,12 +264,16 @@ export const CeoDashboard: React.FC = () => {
       backgroundColor: months.map((m) =>
         selectedMonth && m.key !== selectedMonth.key ? `${REGION_COLORS[r]}40` : REGION_COLORS[r]
       ),
-      borderRadius: 2,
+      borderRadius: 3,
+      maxBarThickness: 18,
     })),
   };
 
   const regionLabel = region === 'ALL' ? 'All regions' : REGION_LABELS[region];
   const filterLabel = `${regionLabel} · ${selectedMonth ? selectedMonth.key : 'All months'}`;
+  const generatedLabel = generatedAt
+    ? new Date(generatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
 
   const handleMonthClick = (_: any, elements: any[]) => {
     if (!elements.length) return;
@@ -220,389 +281,404 @@ export const CeoDashboard: React.FC = () => {
     if (key) setMonth((prev) => (prev === key ? 'ALL' : key));
   };
 
+  const lmeChange = lmePrice?.previousCash ? lmePrice.cash - lmePrice.previousCash : null;
+  const isInitialLoad = loading && records.length === 0;
+
   return (
-    <div className="flex flex-col h-full bg-[#F8FAFC] p-4 sm:p-6 overflow-y-auto select-none">
-      {/* Top Deck Header */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl px-5 py-4 mb-4 shadow-sm flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between flex-shrink-0">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-sm font-black text-slate-900 tracking-wider uppercase leading-none">
-              CEO Executive Intelligence Overview
-            </h1>
-            <span className="px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-widest bg-slate-900 text-amber-300">
-              C-Suite Access
-            </span>
-          </div>
-          <p className="text-[11px] text-slate-400 font-normal mt-0.5">
-            Production, pipeline and actual vs forecast m² derived from the MR11 master ledger.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowRawData(true)}
-            disabled={records.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer disabled:opacity-50"
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5" />
-            <span>Raw Data</span>
-          </button>
-          <button
-            type="button"
-            onClick={fetchDashboardData}
-            disabled={loading}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${loading ? 'animate-spin' : ''}`} />
-            <span>Refresh Data</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl px-5 py-3 mb-4 shadow-sm flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mr-1">Region</span>
-          {(['ALL', ...REGIONS] as RegionFilter[]).map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setRegion(r)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
-                region === r
-                  ? 'bg-[#004B87] border-[#004B87] text-white shadow-sm'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              {r === 'ALL' ? 'All' : REGION_LABELS[r]}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <label htmlFor="ceo-month" className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-            Month
-          </label>
-          <select
-            id="ceo-month"
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-            className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#004B87] cursor-pointer"
-          >
-            <option value="ALL">All months</option>
-            {months.map((m) => (
-              <option key={m.key} value={m.key}>
-                {m.key}
-              </option>
-            ))}
-          </select>
-          {(region !== 'ALL' || month !== 'ALL') && (
-            <button
-              type="button"
-              onClick={() => {
-                setRegion('ALL');
-                setMonth('ALL');
-              }}
-              className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 underline underline-offset-2 cursor-pointer"
-            >
-              Clear
-            </button>
-          )}
-        </div>
-      </div>
-
-      {error && (
-        <div className="flex items-center gap-2.5 bg-rose-50 border border-rose-200 text-rose-800 px-4 py-2.5 rounded-xl mb-4 text-xs font-medium shadow-sm">
-          <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider">
-              Actual m² {selectedMonth ? `· ${selectedMonth.key}` : ''}
-            </span>
-            <CheckCircle2 className="w-4 h-4 text-[#004B87]" />
-          </div>
-          <div className="text-2xl font-black text-slate-900 font-mono">
-            {selectedPoint ? (selectedPoint.kind === 'actual' ? formatM2(selectedPoint.value) : '—') : formatM2(actualTotal)}
-          </div>
-          <span className="text-[10px] text-slate-400 mt-1">
-            {selectedPoint
-              ? selectedPoint.kind === 'actual'
-                ? 'Completed month'
-                : 'Month not completed yet'
-              : lastActual
-              ? `Completed months, ${series[0]?.key} to ${lastActual.key}`
-              : 'No completed months yet'}
-          </span>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider">
-              Forecast m² {selectedMonth ? `· ${selectedMonth.key}` : ''}
-            </span>
-            <CalendarClock className="w-4 h-4 text-amber-500" />
-          </div>
-          <div className="text-2xl font-black text-slate-900 font-mono">
-            {selectedPoint ? (selectedPoint.kind === 'forecast' ? formatM2(selectedPoint.value) : '—') : formatM2(forecastTotal)}
-          </div>
-          <span className="text-[10px] text-slate-400 mt-1">
-            {selectedPoint
-              ? selectedPoint.kind === 'actual'
-                ? 'Month completed, see Actual'
-                : selectedPoint.isDefault
-                ? `No forecast entered, default ${formatM2(DEFAULT_FORECAST_M2)}`
-                : 'Forecast entered for this month'
-              : defaultedCount > 0
-              ? `Current and upcoming months · ${defaultedCount} use default ${formatM2(DEFAULT_FORECAST_M2)}`
-              : 'Current and upcoming months'}
-          </span>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider">Projects</span>
-            <Building2 className="w-4 h-4 text-slate-500" />
-          </div>
-          <div className="text-2xl font-black text-slate-900 font-mono">{projectCount}</div>
-          <span className="text-[10px] text-slate-400 mt-1">{regionLabel}</span>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider">
-              Avg Selling Price {selectedMonth ? `· ${selectedMonth.key}` : ''}
-            </span>
-            <TrendingUp className="w-4 h-4 text-slate-500" />
-          </div>
-          <div className="text-lg font-black text-slate-900 font-mono leading-tight">
-            <span className="whitespace-nowrap">
-              {formatUsd(avgPriceMyr)} <span className="text-xs text-slate-500">MYR</span>
-            </span>
-            <span className="text-slate-300"> / </span>
-            <span className="whitespace-nowrap">
-              {formatUsd(avgPriceUsd)} <span className="text-xs text-slate-500">USD</span>
-            </span>
-          </div>
-          <span className="text-[10px] text-slate-400 mt-1">Per m², Final Selling Price (USD) weighted by m², MYR at today's rate</span>
-        </div>
-      </div>
-
-      {/* Market rates and contract LME from MR11 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
-        <ExchangeRateCard fxRate={fxRate} className="rounded-2xl" />
-        <LmePriceCard lmePrice={lmePrice} className="rounded-2xl" />
-        <div className="flex items-center gap-3 bg-white border border-stone-200/80 rounded-2xl px-4 py-2.5 shadow-sm">
-          <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600 flex-shrink-0">
-            <FileSpreadsheet className="w-4 h-4" />
-          </div>
-          <div className="min-w-0">
-            <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">
-              Contract LME (MR11) {selectedMonth ? `· ${selectedMonth.key}` : ''}
-            </span>
-            <div className="text-sm font-extrabold text-stone-900 font-mono">
-              <span className="whitespace-nowrap">Rate {formatUsd(avgLmeRate)}</span>
-              <span className="text-stone-300"> · </span>
-              <span className="whitespace-nowrap">
-                Adjusted {formatUsd(avgLmeAdjusted)} <span className="text-[10px] text-stone-500">USD</span>
-              </span>
-            </div>
-            <div className="text-[10px] text-stone-400 truncate">
-              {lmeTypes.length ? lmeTypes.map((t) => `${t.count} ${t.type}`).join(' · ') : 'No projects'} · avg weighted by m²
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Pipeline: Design -> Processed -> Produced -> Dispatched -> Sailed */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm mb-4">
-        <div className="mb-4">
-          <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Production Pipeline (m²)</h2>
-          <p className="text-[10px] text-slate-400">
-            {filterLabel}
-            {selectedMonth ? ' · each stage counted by its own date column' : ''}
-          </p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-          {STAGES.map((s, idx) => {
-            const base = totals.design || Math.max(...STAGES.map((x) => totals[x]), 0);
-            const pct = base > 0 ? Math.min(100, (totals[s] / base) * 100) : 0;
-            const prev = idx > 0 ? totals[STAGES[idx - 1]] : 0;
-            return (
-              <div key={s} className="relative rounded-xl border border-slate-200 p-4 bg-slate-50/60">
-                {idx > 0 && (
-                  <ArrowRight className="hidden lg:block absolute -left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 bg-white rounded-full" />
-                )}
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className="w-2.5 h-2.5 rounded" style={{ backgroundColor: STAGE_COLORS[s] }} />
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
-                    {STAGE_LABELS[s]}
-                  </span>
-                </div>
-                <div className="text-xl font-black text-slate-900 font-mono">{formatM2(totals[s])}</div>
-                <div className="h-1.5 bg-slate-200 rounded-full mt-2 overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: STAGE_COLORS[s] }} />
-                </div>
-                <div className="text-[10px] text-slate-400 mt-1">
-                  {idx === 0
-                    ? 'Ordered quantity from Design'
-                    : prev > 0
-                    ? `${Math.round((totals[s] / prev) * 100)}% of ${STAGE_LABELS[STAGES[idx - 1]].replace('Total ', '').toLowerCase()}`
-                    : '—'}
-                </div>
+    <div className="h-full overflow-y-auto bg-[#F8FAFC] selection:bg-[#004B87]/15">
+      <div className="@container mx-auto flex max-w-[1600px] flex-col gap-6 p-4 sm:p-6 lg:p-8">
+        {/* Header and filters */}
+        <div className="flex flex-col gap-5">
+          <header className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="text-xl font-semibold tracking-tight text-slate-900">CEO Executive Intelligence Overview</h1>
+                <span className="rounded-md bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+                  C-Suite Access
+                </span>
               </div>
-            );
-          })}
-        </div>
-      </div>
+              <p className="mt-1 text-sm text-slate-500">
+                Production, pipeline and pricing from the MR11 master ledger
+                {generatedLabel ? ` · generated ${generatedLabel}` : ''}
+              </p>
+            </div>
 
-      {/* Actual vs Forecast by month */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm mb-4">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
-          <div>
-            <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Monthly m² · Actual vs Forecast</h2>
-            <p className="text-[10px] text-slate-400">
-              {regionLabel} · MR11 month columns · click a point to filter by that month
-            </p>
-          </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={fetchDashboardData}
+                disabled={loading}
+                className={`inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-50 cursor-pointer ${FOCUS}`}
+              >
+                <RefreshCw className={`h-4 w-4 text-slate-500 ${loading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowRawData(true)}
+                disabled={records.length === 0}
+                className={`inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-slate-800 disabled:opacity-50 cursor-pointer ${FOCUS}`}
+              >
+                <FileSpreadsheet className="h-4 w-4" />
+                Raw Data
+              </button>
+            </div>
+          </header>
+
           <div className="flex flex-wrap items-center gap-3">
-            <span className="flex items-center gap-1.5 text-[10px] text-slate-600 font-medium">
-              <span className="w-4 h-0.5 rounded" style={{ backgroundColor: ACTUAL_COLOR }} /> Actual
-            </span>
-            <span className="flex items-center gap-1.5 text-[10px] text-slate-600 font-medium">
-              <span className="w-4 border-t-2 border-dashed" style={{ borderColor: FORECAST_COLOR }} /> Forecast
-            </span>
-            <span className="flex items-center gap-1.5 text-[10px] text-slate-600 font-medium">
-              <span className="w-2.5 h-2.5 rounded-full border-2 bg-white" style={{ borderColor: FORECAST_COLOR }} />
-              Default forecast ({Math.round(DEFAULT_FORECAST_M2 / 1000)}k)
-            </span>
-          </div>
-        </div>
-        <div className="h-64">
-          <Line
-            data={monthlyChartData}
-            options={{
-              responsive: true,
-              maintainAspectRatio: false,
-              onClick: handleMonthClick,
-              interaction: { mode: 'index', intersect: false },
-              plugins: {
-                legend: { display: false },
-                tooltip: {
-                  filter: (ctx: any) => ctx.raw !== null && !(ctx.datasetIndex === 1 && series[ctx.dataIndex]?.kind === 'actual'),
-                  callbacks: {
-                    label: (ctx: any) => {
-                      const p = series[ctx.dataIndex];
-                      const kind = p.kind === 'actual' ? 'Actual' : p.isDefault ? 'Forecast (default, none entered)' : 'Forecast';
-                      const price = averageSellingPrice(regionRows, months, p.key);
-                      const priceMyr = toMyr(price);
-                      const usd =
-                        price !== null && !p.isDefault
-                          ? ` · avg ${formatUsd(priceMyr)} MYR / ${formatUsd(price)} USD per m² · ≈ ${formatUsd(price * p.value, 0)} USD`
-                          : '';
-                      return `${kind}: ${formatM2(p.value)}${usd}`;
-                    },
-                  },
-                },
-              },
-              scales: {
-                x: { grid: { display: false } },
-                y: { beginAtZero: true, grid: { color: '#F1F5F9' }, ticks: axisM2 },
-              },
-            }}
-          />
-        </div>
-      </div>
+            <div role="group" aria-label="Region" className="inline-flex flex-wrap rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+              {(['ALL', ...REGIONS] as RegionFilter[]).map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  aria-pressed={region === r}
+                  onClick={() => setRegion(r)}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors cursor-pointer ${FOCUS} ${
+                    region === r ? 'bg-[#004B87] text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  {r === 'ALL' ? 'All regions' : REGION_LABELS[r]}
+                </button>
+              ))}
+            </div>
 
-      {/* Breakdown by region */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm">
-          <div className="mb-4">
-            <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">
-              Total m² by Region {selectedMonth ? `· ${selectedMonth.key}` : ''}
-            </h2>
-            <p className="text-[10px] text-slate-400">
-              Design, processed, produced, dispatched and sailed
-              {selectedMonth ? ' · counted by each stage’s date in this month' : ''}
-            </p>
-          </div>
-          <div className="h-64">
-            <Bar
-              data={regionChartData}
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                  legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
-                  tooltip: chartTooltipM2,
-                },
-                scales: {
-                  x: { grid: { display: false } },
-                  y: { grid: { color: '#F1F5F9' }, ticks: axisM2 },
-                },
-              }}
-            />
-          </div>
-        </div>
+            <div className="relative">
+              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <select
+                id="ceo-month"
+                aria-label="Month"
+                value={month}
+                onChange={(e) => setMonth(e.target.value)}
+                className={`appearance-none rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-9 text-sm font-medium text-slate-800 shadow-sm transition-colors hover:bg-slate-50 cursor-pointer ${FOCUS}`}
+              >
+                <option value="ALL">All months</option>
+                {months.map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.key}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm">
-          <div className="mb-4">
-            <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Monthly Dispatched m² by Region</h2>
-            <p className="text-[10px] text-slate-400">
-              m² out of the warehouse, by Dispatched Date{selectedMonth ? ` · ${selectedMonth.key} highlighted` : ''}
-            </p>
-          </div>
-          <div className="h-64 relative">
-            <Bar
-              data={regionDispatchData}
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                onClick: handleMonthClick,
-                plugins: {
-                  legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
-                  tooltip: chartTooltipM2,
-                },
-                scales: {
-                  x: { stacked: true, grid: { display: false } },
-                  y: { stacked: true, grid: { color: '#F1F5F9' }, ticks: axisM2 },
-                },
-              }}
-            />
-            {!regionDispatchedHasData && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <p className="text-xs font-semibold text-slate-400 bg-white/90 px-3 py-1.5 rounded-lg">
-                  No dispatches with a Dispatched Date yet
-                </p>
-              </div>
+            {(region !== 'ALL' || month !== 'ALL') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRegion('ALL');
+                  setMonth('ALL');
+                }}
+                className={`rounded-lg px-2 py-1 text-sm font-medium text-slate-500 underline-offset-4 hover:text-slate-900 hover:underline cursor-pointer ${FOCUS}`}
+              >
+                Clear filters
+              </button>
             )}
           </div>
         </div>
+
+        {error && (
+          <div role="alert" className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-rose-600" />
+            <div>
+              <p className="font-medium">MR11 data could not be loaded</p>
+              <p className="text-rose-700">{error}</p>
+              <p className="mt-1 text-rose-700">Try Refresh. If it keeps failing, use Sync on the MR11 page to regenerate MR11.</p>
+            </div>
+          </div>
+        )}
+
+        {isInitialLoad ? (
+          <div className="flex flex-col gap-6" aria-busy="true" aria-label="Loading dashboard">
+            <div className="grid grid-cols-1 gap-6 @5xl:grid-cols-3">
+              <div className={`${PANEL} h-[28rem] animate-pulse bg-slate-100/60 @5xl:col-span-2`} />
+              <div className={`${PANEL} h-[28rem] animate-pulse bg-slate-100/60`} />
+            </div>
+            <div className={`${PANEL} h-44 animate-pulse bg-slate-100/60`} />
+          </div>
+        ) : (
+          <>
+            {/* Headline: actual vs forecast beside pricing and market */}
+            <div className="grid grid-cols-1 gap-6 @5xl:grid-cols-3">
+              <section className={`${PANEL} p-5 sm:p-6 @5xl:col-span-2`}>
+                <SectionHeading
+                  title="Monthly m² · Actual vs Forecast"
+                  description={`${regionLabel} · MR11 month columns · click a point to filter by that month`}
+                >
+                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-0.5 w-4 rounded" style={{ backgroundColor: ACTUAL_COLOR }} /> Actual
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-4 border-t-2 border-dashed" style={{ borderColor: FORECAST_COLOR }} /> Forecast
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-2.5 w-2.5 rounded-full border-2 bg-white" style={{ borderColor: FORECAST_COLOR }} />
+                      Default {formatNum(DEFAULT_FORECAST_M2)} m²
+                    </span>
+                  </div>
+                </SectionHeading>
+
+                <div className="mt-6 grid grid-cols-1 gap-6 @2xl:grid-cols-3 @2xl:gap-0 @2xl:divide-x @2xl:divide-slate-100">
+                  <div className="@2xl:pr-6">
+                    <Stat
+                      label={`Actual${selectedMonth ? ` · ${selectedMonth.key}` : ''}`}
+                      color={ACTUAL_COLOR}
+                      value={selectedPoint ? (selectedPoint.kind === 'actual' ? formatNum(selectedPoint.value) : '—') : formatNum(actualTotal)}
+                      unit="m²"
+                      note={
+                        selectedPoint
+                          ? selectedPoint.kind === 'actual'
+                            ? 'Completed month'
+                            : 'Month not completed yet'
+                          : lastActual
+                          ? `Completed months, ${series[0]?.key} to ${lastActual.key}`
+                          : 'No completed months yet'
+                      }
+                    />
+                  </div>
+                  <div className="@2xl:px-6">
+                    <Stat
+                      label={`Forecast${selectedMonth ? ` · ${selectedMonth.key}` : ''}`}
+                      color={FORECAST_COLOR}
+                      value={selectedPoint ? (selectedPoint.kind === 'forecast' ? formatNum(selectedPoint.value) : '—') : formatNum(forecastTotal)}
+                      unit="m²"
+                      note={
+                        selectedPoint
+                          ? selectedPoint.kind === 'actual'
+                            ? 'Month completed, see Actual'
+                            : selectedPoint.isDefault
+                            ? `No forecast entered, default ${formatM2(DEFAULT_FORECAST_M2)}`
+                            : 'Forecast entered for this month'
+                          : firstForecast && lastForecast
+                          ? `${firstForecast.key} to ${lastForecast.key}${defaultedCount > 0 ? ` · ${defaultedCount} at default` : ''}`
+                          : 'No upcoming months'
+                      }
+                    />
+                  </div>
+                  <div className="@2xl:pl-6">
+                    <Stat label="Projects" value={formatNum(projectCount)} note={regionLabel} />
+                  </div>
+                </div>
+
+                <div className="mt-6 h-72">
+                  <Line
+                    data={monthlyChartData}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      onClick: handleMonthClick,
+                      interaction: { mode: 'index', intersect: false },
+                      plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                          filter: (ctx: any) => ctx.raw !== null && !(ctx.datasetIndex === 1 && series[ctx.dataIndex]?.kind === 'actual'),
+                          callbacks: {
+                            label: (ctx: any) => {
+                              const p = series[ctx.dataIndex];
+                              const kind = p.kind === 'actual' ? 'Actual' : p.isDefault ? 'Forecast (default, none entered)' : 'Forecast';
+                              const price = averageSellingPrice(regionRows, months, p.key);
+                              const priceMyr = toMyr(price);
+                              const usd =
+                                price !== null && !p.isDefault
+                                  ? ` · avg ${formatUsd(priceMyr)} MYR / ${formatUsd(price)} USD per m² · ≈ ${formatUsd(price * p.value, 0)} USD`
+                                  : '';
+                              return ` ${kind}: ${formatM2(p.value)}${usd}`;
+                            },
+                          },
+                        },
+                      },
+                      scales: {
+                        x: { grid: { display: false }, border: { display: false } },
+                        y: { beginAtZero: true, grid: { color: GRID_COLOR }, border: { display: false }, ticks: axisM2 },
+                      },
+                    }}
+                  />
+                </div>
+              </section>
+
+              <section className={`${PANEL} flex flex-col p-5 sm:p-6`}>
+                <SectionHeading
+                  title="Pricing & Market"
+                  description={selectedMonth ? `${regionLabel} · ${selectedMonth.key}` : regionLabel}
+                />
+
+                <div className="mt-6">
+                  <div className="text-xs font-medium text-slate-500">Avg selling price per m²</div>
+                  <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono tabular-nums">
+                    <span className="whitespace-nowrap text-[1.75rem] leading-none font-semibold tracking-tight text-slate-900">
+                      {formatUsd(avgPriceMyr)}
+                      <span className="ml-1 text-sm font-medium text-slate-400">MYR</span>
+                    </span>
+                    <span className="whitespace-nowrap text-base font-semibold text-slate-600">
+                      / {formatUsd(avgPriceUsd)}
+                      <span className="ml-1 text-xs font-medium text-slate-400">USD</span>
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">Final Selling Price (USD) weighted by m², MYR at today's rate</p>
+                </div>
+
+                <dl className="mt-6 @5xl:mt-auto divide-y divide-slate-100 border-t border-slate-100 text-sm">
+                  <div className="flex items-baseline justify-between gap-3 py-2.5">
+                    <dt className="text-slate-500">Contract LME rate</dt>
+                    <dd className="font-mono font-medium text-slate-900 tabular-nums">{formatUsd(avgLmeRate)} USD</dd>
+                  </div>
+                  <div className="flex items-baseline justify-between gap-3 py-2.5">
+                    <dt className="text-slate-500">LME adjusted</dt>
+                    <dd className="font-mono font-medium text-slate-900 tabular-nums">{formatUsd(avgLmeAdjusted)} USD</dd>
+                  </div>
+                  <div className="flex items-baseline justify-between gap-3 py-2.5">
+                    <dt className="text-slate-500">LME terms</dt>
+                    <dd className="text-right font-medium text-slate-900">
+                      {lmeTypes.length ? lmeTypes.map((t) => `${t.count} ${t.type}`).join(' · ') : '—'}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 py-2.5">
+                    <dt className="flex items-center gap-2 text-slate-500">
+                      Exchange rate {fxRate && <LiveBadge live={fxRate.live} />}
+                    </dt>
+                    <dd
+                      className="font-mono font-medium text-slate-900 tabular-nums"
+                      title={fxRate ? `${fxRate.source}${fxRate.asOf ? ` · ${fxRate.asOf}` : ''}` : undefined}
+                    >
+                      {fxRate ? `1 USD = ${fxRate.rate.toFixed(4)} MYR` : 'Unavailable'}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 py-2.5">
+                    <dt className="flex items-center gap-2 text-slate-500">
+                      LME aluminium {lmePrice && <LiveBadge live={lmePrice.live} />}
+                    </dt>
+                    <dd className="text-right font-mono tabular-nums" title={lmePrice ? `${lmePrice.source} · ${lmePrice.asOf}` : undefined}>
+                      {lmePrice ? (
+                        <>
+                          <span className="font-medium text-slate-900">
+                            {lmePrice.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD/t
+                          </span>
+                          {lmeChange !== null && (
+                            <span className={`block text-xs ${lmeChange >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {lmeChange >= 0 ? '+' : ''}
+                              {lmeChange.toFixed(2)} ({((lmeChange / (lmePrice.previousCash as number)) * 100).toFixed(2)}%)
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="font-medium text-slate-900">Unavailable</span>
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+            </div>
+
+            {/* Pipeline: Design -> Processed -> Produced -> Dispatched -> Sailed */}
+            <section className={`${PANEL} p-5 sm:p-6`}>
+              <SectionHeading
+                title="Production Pipeline"
+                description={`${filterLabel} · m²${selectedMonth ? ' · each stage counted by its own date column' : ''}`}
+              />
+              <ol className="mt-6 grid grid-cols-1 gap-x-6 gap-y-6 @lg:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-5">
+                {STAGES.map((s, idx) => {
+                  const base = totals.design || Math.max(...STAGES.map((x) => totals[x]), 0);
+                  const pct = base > 0 ? Math.min(100, (totals[s] / base) * 100) : 0;
+                  const prev = idx > 0 ? totals[STAGES[idx - 1]] : 0;
+                  return (
+                    <li key={s} className="min-w-0">
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STAGE_COLORS[s] }} />
+                        {STAGE_LABELS[s]}
+                      </div>
+                      <div className="mt-1.5 font-mono text-xl font-semibold tracking-tight text-slate-900 tabular-nums">
+                        {formatNum(totals[s])}
+                        <span className="ml-1 text-xs font-medium text-slate-400">m²</span>
+                      </div>
+                      <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
+                        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: STAGE_COLORS[s] }} />
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        {idx === 0
+                          ? 'Ordered quantity from Design'
+                          : prev > 0
+                          ? `${Math.round((totals[s] / prev) * 100)}% of ${STAGE_LABELS[STAGES[idx - 1]].replace('Total ', '').toLowerCase()}`
+                          : '—'}
+                      </p>
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+
+            {/* Breakdown by region */}
+            <div className="grid grid-cols-1 gap-6 @4xl:grid-cols-2">
+              <section className={`${PANEL} p-5 sm:p-6`}>
+                <SectionHeading
+                  title={`Total m² by Region${selectedMonth ? ` · ${selectedMonth.key}` : ''}`}
+                  description={`Design, processed, produced, dispatched and sailed${
+                    selectedMonth ? ' · counted by each stage’s date in this month' : ''
+                  }`}
+                />
+                <div className="mt-5 h-72">
+                  <Bar
+                    data={regionChartData}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      plugins: { legend: chartLegend, tooltip: chartTooltipM2 },
+                      scales: {
+                        x: { grid: { display: false }, border: { display: false } },
+                        y: { grid: { color: GRID_COLOR }, border: { display: false }, ticks: axisM2 },
+                      },
+                    }}
+                  />
+                </div>
+              </section>
+
+              <section className={`${PANEL} p-5 sm:p-6`}>
+                <SectionHeading
+                  title="Monthly Dispatched m² by Region"
+                  description={`m² out of the warehouse, by Dispatched Date${selectedMonth ? ` · ${selectedMonth.key} highlighted` : ''}`}
+                />
+                <div className="relative mt-5 h-72">
+                  <Bar
+                    data={regionDispatchData}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      onClick: handleMonthClick,
+                      plugins: { legend: chartLegend, tooltip: chartTooltipM2 },
+                      scales: {
+                        x: { stacked: true, grid: { display: false }, border: { display: false } },
+                        y: { stacked: true, grid: { color: GRID_COLOR }, border: { display: false }, ticks: axisM2 },
+                      },
+                    }}
+                  />
+                  {!regionDispatchedHasData && (
+                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                      <p className="rounded-lg bg-white/90 px-3 py-1.5 text-sm text-slate-500">
+                        No dispatches with a Dispatched Date yet
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Raw data: the MR11 ledger, filtered by region */}
       {showRawData && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-stretch justify-center p-2 sm:p-6">
-          <div className="flex flex-col w-full bg-[#FAF9F6] rounded-xl shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between gap-3 bg-white border-b border-stone-200 px-5 py-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-8 h-8 rounded-lg bg-stone-900 flex items-center justify-center text-amber-200 flex-shrink-0">
-                  <FileSpreadsheet className="w-4 h-4" />
-                </div>
-                <div className="min-w-0">
-                  <h2 className="text-sm font-extrabold text-stone-900 tracking-tight uppercase truncate">
-                    MR11 Raw Data
-                  </h2>
-                  <p className="text-[11px] text-stone-400">
-                    {regionLabel} · {regionRows.length} rows
-                  </p>
-                </div>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="MR11 raw data"
+          className="fixed inset-0 z-50 flex items-stretch justify-center bg-slate-900/40 p-2 backdrop-blur-[2px] sm:p-6"
+        >
+          <div className="flex w-full flex-col overflow-hidden rounded-2xl bg-[#F8FAFC] shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-semibold text-slate-900">MR11 Raw Data</h2>
+                <p className="text-xs text-slate-500">
+                  {regionLabel} · {regionRows.length} rows
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <ZoomControls zoom={rawZoom} setZoom={setRawZoom} min={20} max={135} step={5} />
@@ -610,13 +686,13 @@ export const CeoDashboard: React.FC = () => {
                   type="button"
                   onClick={() => setShowRawData(false)}
                   aria-label="Close raw data"
-                  className="p-1.5 rounded-lg border border-stone-200 bg-white hover:bg-stone-50 text-stone-600 cursor-pointer"
+                  className={`rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-50 cursor-pointer ${FOCUS}`}
                 >
-                  <X className="w-4 h-4" />
+                  <X className="h-4 w-4" />
                 </button>
               </div>
             </div>
-            <div className="flex-1 m-3 bg-white border border-stone-200/90 rounded-xl shadow-sm overflow-hidden flex flex-col">
+            <div className="m-3 flex flex-1 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-sm">
               <Mr11Table records={regionRows} headers={headers} headerGroups={headerGroups} numberFormats={numberFormats} zoom={rawZoom} />
             </div>
           </div>
