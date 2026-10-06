@@ -1719,8 +1719,10 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Actual Formwork Order Completion Date", sourceDept: "DESIGN" /* DESIGN */, sourceColumn: "Actual Formwork Order Completion Date", type: "date" },
   { target: "Total Quantity Ordered m2", sourceDept: "DESIGN" /* DESIGN */, sourceColumn: "Total Quantity Ordered m2", type: "number" },
   // Planning & Production
-  { target: "Total Processed", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Total Processed", type: "number" },
-  { target: "Processed Date", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Closing Date", type: "date" },
+  // Sum of "Cumulative Processed (Project)" over the BD row's Planning blocks (same colours)
+  { target: "Total Processed", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Cumulative Processed (Project)", type: "number" },
+  // The upload date on which Total Processed last changed (not read from the file)
+  { target: "Processed Date", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Cumulative Processed (Project)", type: "date" },
   { target: "Total Produced", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Total Produced", type: "number" },
   { target: "Produced Date", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Day/Date", type: "date" },
   // Dispatch & ATD
@@ -1793,6 +1795,41 @@ function isBlueColor(color) {
   return hue >= 185 && hue <= 250;
 }
 var PRODUCTION_DISPATCH_COLUMN = /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
+function colourDistance(a, b) {
+  const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
+  const [x, y] = [rgb(a), rgb(b)];
+  return Math.sqrt(x.reduce((sum, v, i) => sum + (v - y[i]) ** 2, 0));
+}
+var SAME_COLOUR_DISTANCE = 100;
+function closestColourGroup(rows, font, fill) {
+  let best = [];
+  let bestScore = Infinity;
+  for (const row of rows) {
+    const rowFill = normalizeFillColor(row.fillColor);
+    if (Boolean(rowFill) !== Boolean(fill)) continue;
+    const fontGap = colourDistance(normalizeColor(row.fontColor), font);
+    const fillGap = fill ? colourDistance(rowFill, fill) : 0;
+    if (fontGap > SAME_COLOUR_DISTANCE || fillGap > SAME_COLOUR_DISTANCE) continue;
+    const score = fontGap + fillGap;
+    if (score < bestScore - 0.5) {
+      best = [row];
+      bestScore = score;
+    } else if (Math.abs(score - bestScore) <= 0.5) {
+      best.push(row);
+    }
+  }
+  return best;
+}
+function mr11RowKey(short, stream, font, fill, productType) {
+  return [cleanStr(short), normalizeStream(stream), normalizeColor(font), normalizeFillColor(fill), cleanStr(productType)].join("|");
+}
+function takePreviousRecord(byKey, key) {
+  const list = byKey[key];
+  return list && list.length > 0 ? list.shift() : null;
+}
+function malaysiaDate() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(/* @__PURE__ */ new Date());
+}
 function normalizeFillColor(color) {
   if (!color) return "";
   const s = String(color).trim().toUpperCase();
@@ -2105,11 +2142,21 @@ function sheetToRecordsWithStyles(sheet) {
       }
     }
   }
+  const mergeCopies = {};
+  for (const m of Object.values(merges)) {
+    if (!m) continue;
+    for (let rr = m.r; rr < m.r + m.rs; rr++) {
+      for (let cc = m.c; cc < m.c + m.cs; cc++) {
+        if ((rr !== m.r || cc !== m.c) && headers[cc]) (mergeCopies[rr] ||= /* @__PURE__ */ new Set()).add(headers[cc]);
+      }
+    }
+  }
   const rows = sortedRowKeys.map((rKey) => ({
     data: rowsMap[rKey],
     fontColor: normalizeColor(rowStyleMap[rKey]?.fontColor),
     fillColor: normalizeFillColor(rowStyleMap[rKey]?.fillColor),
-    rawCells: rawCellsMap[rKey]
+    rawCells: rawCellsMap[rKey],
+    mergedCopyHeaders: [...mergeCopies[rKey] || []]
   }));
   return { rows, detectedSeries, headers };
 }
@@ -2430,6 +2477,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     },
     orderBy: { generatedAt: "desc" }
   });
+  const uploadDateStr = malaysiaDate();
+  const previousRecordsByRow = {};
+  for (const r of previousRun?.records || []) {
+    const k = mr11RowKey(r["Short Name"] || r["Project Shortname"], r["Stream"], r["_fontColor"], r["_fillColor"], r["Products type"]);
+    (previousRecordsByRow[k] ||= []).push(r);
+  }
   const prevDispatchHistory = {
     ...previousRun?.sourceSnapshot?.dispatchTracker || {}
   };
@@ -2899,27 +2952,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["shellplan approval date"] = latestApprovedDateStr;
     outRow["Shell Plan Approved Date"] = latestApprovedDateStr;
     const sameProject = (otherNo, otherShort) => shortName && otherShort ? otherShort === shortName : Boolean(projectNo && otherNo === projectNo);
-    const matchedPlanningSeries = allHistoricalPlanningSeries.filter((s) => {
-      const matchesId = sameProject(cleanStr(s.projectNo), cleanStr(s.projectShortname));
-      const matchesStream = normalizeStream(s.stream || "1") === bdStream;
-      const sFont = normalizeColor(s.fontColor);
-      return matchesId && matchesStream && sFont === bdFontColor;
-    });
-    if (matchedPlanningSeries.length > 0) {
-      const sumProcessed = matchedPlanningSeries.reduce((acc, curr) => acc + (curr.totalProcessed || 0), 0);
-      outRow["Total Processed"] = sumProcessed;
-      outRow["Total Processed (m2)"] = sumProcessed;
-    }
-    const tracker = allQuantityTrackers.find(
-      (t) => sameProject(cleanStr(t.projectNo), cleanStr(t.projectShortname)) && normalizeStream(t.stream || "1") === bdStream && normalizeColor(t.fontColor) === bdFontColor
-    );
-    let matchedPlanningRow = null;
-    let highestPlanScore = -1;
-    for (const p of planningRows) {
+    const planningCandidates = planningRows.filter((p) => {
       const pNo = cleanStr(findCellValue(p.data, "Project No") || findCellValue(p.data, "Project No.") || findCellValue(p.data, "Project No. (from design column A)"));
       const pShort = cleanStr(findCellValue(p.data, "Short Name") || findCellValue(p.data, "Project Shortname") || findCellValue(p.data, "Project Shortname (from bd column C)"));
-      if (!sameProject(pNo, pShort)) continue;
-      let score = 1;
+      if (!sameProject(pNo, pShort)) return false;
       let pStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
         const v = findCellValue(p.data, sh);
@@ -2928,19 +2964,23 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           break;
         }
       }
-      if (pStream === bdStream) score += 4;
-      const pColor = normalizeColor(p.fontColor);
-      const pFill = normalizeFillColor(p.fillColor);
-      if (pColor === bdFontColor) score += 8;
-      if (bdFillColor && pFill && pFill === bdFillColor) score += 10;
-      if (score > highestPlanScore) {
-        highestPlanScore = score;
-        matchedPlanningRow = p;
-      }
+      return pStream === bdStream;
+    });
+    const planningMatches = closestColourGroup(planningCandidates, bdFontColor, bdFillColor);
+    let processedTotal = null;
+    for (const p of planningMatches) {
+      const key = Object.keys(p.data).find((k) => /^cumulative processed/i.test(k.trim()));
+      if (!key || p.mergedCopyHeaders?.includes(key) || !isCellFilled(p.data[key])) continue;
+      processedTotal = (processedTotal ?? 0) + parseNumeric(p.data[key]);
     }
-    const activeClosingDate = matchedPlanningRow ? findCellValue(matchedPlanningRow.data, "Closing Date ") || findCellValue(matchedPlanningRow.data, "Closing Date") || findCellValue(matchedPlanningRow.data, "Processed Date") : null;
-    const latestSeriesClosingDate = matchedPlanningSeries.length > 0 ? matchedPlanningSeries[matchedPlanningSeries.length - 1].closingDate : null;
-    const resolvedProcessedDate = activeClosingDate || latestSeriesClosingDate || (tracker ? tracker.lastChangedDate : null) || todayStr;
+    outRow["Total Processed"] = processedTotal;
+    outRow["Total Processed (m2)"] = processedTotal;
+    const previous = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]));
+    const previousTotal = previous && isCellFilled(previous["Total Processed"]) ? parseNumeric(previous["Total Processed"]) : null;
+    let resolvedProcessedDate = null;
+    if (processedTotal !== null) {
+      resolvedProcessedDate = previousTotal !== null && previousTotal === processedTotal && previous?.["Processed Date"] ? String(previous["Processed Date"]) : uploadDateStr;
+    }
     outRow["Processed Date"] = resolvedProcessedDate;
     outRow["Closing Date"] = resolvedProcessedDate;
     let matchedProdRow = null;

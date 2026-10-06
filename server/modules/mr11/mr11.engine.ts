@@ -18,6 +18,8 @@ interface ExtractedRow {
   fontColor?: string;
   fillColor?: string;
   rawCells?: Record<number, any>;
+  /** Headers whose value here is a copy from a merged cell above / to the left */
+  mergedCopyHeaders?: string[];
 }
 
 function parseNumeric(val: any): number {
@@ -67,6 +69,51 @@ function isBlueColor(color: any): boolean {
 // MR11 output columns that come from the Production and Dispatch files
 const PRODUCTION_DISPATCH_COLUMN =
   /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
+
+// Distance between two hex colours (0 = identical, ~441 = black vs white)
+function colourDistance(a: string, b: string): number {
+  const rgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
+  const [x, y] = [rgb(a), rgb(b)];
+  return Math.sqrt(x.reduce((sum, v, i) => sum + (v - y[i]) ** 2, 0));
+}
+
+// Rows whose font and fill colour are closest to the given ones, when close enough to be the
+// same colour in another shade (e.g. #FF0000 for #C00000). An empty fill only matches no fill.
+const SAME_COLOUR_DISTANCE = 100;
+function closestColourGroup<T extends { fontColor?: string; fillColor?: string }>(rows: T[], font: string, fill: string): T[] {
+  let best: T[] = [];
+  let bestScore = Infinity;
+  for (const row of rows) {
+    const rowFill = normalizeFillColor(row.fillColor);
+    if (Boolean(rowFill) !== Boolean(fill)) continue;
+    const fontGap = colourDistance(normalizeColor(row.fontColor), font);
+    const fillGap = fill ? colourDistance(rowFill, fill) : 0;
+    if (fontGap > SAME_COLOUR_DISTANCE || fillGap > SAME_COLOUR_DISTANCE) continue;
+    const score = fontGap + fillGap;
+    if (score < bestScore - 0.5) {
+      best = [row];
+      bestScore = score;
+    } else if (Math.abs(score - bestScore) <= 0.5) {
+      best.push(row);
+    }
+  }
+  return best;
+}
+
+// Identity of an MR11 row across runs (to compare with the previous MR11)
+function mr11RowKey(short: any, stream: any, font: any, fill: any, productType: any): string {
+  return [cleanStr(short), normalizeStream(stream), normalizeColor(font), normalizeFillColor(fill), cleanStr(productType)].join('|');
+}
+
+function takePreviousRecord(byKey: Record<string, Record<string, any>[]>, key: string): Record<string, any> | null {
+  const list = byKey[key];
+  return list && list.length > 0 ? list.shift()! : null;
+}
+
+// Today's date in Malaysia (YYYY-MM-DD), the date shown for an upload
+function malaysiaDate(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+}
 
 function normalizeFillColor(color: any): string {
   if (!color) return '';
@@ -474,11 +521,23 @@ export function sheetToRecordsWithStyles(sheet: FortuneSheet): {
     }
   }
 
+  // Cells covered by a merge (other than its top-left cell) carry a copy of the merged value
+  const mergeCopies: Record<number, Set<string>> = {};
+  for (const m of Object.values(merges)) {
+    if (!m) continue;
+    for (let rr = m.r; rr < m.r + m.rs; rr++) {
+      for (let cc = m.c; cc < m.c + m.cs; cc++) {
+        if ((rr !== m.r || cc !== m.c) && headers[cc]) (mergeCopies[rr] ||= new Set()).add(headers[cc]);
+      }
+    }
+  }
+
   const rows = sortedRowKeys.map((rKey) => ({
     data: rowsMap[rKey],
     fontColor: normalizeColor(rowStyleMap[rKey]?.fontColor),
     fillColor: normalizeFillColor(rowStyleMap[rKey]?.fillColor),
     rawCells: rawCellsMap[rKey],
+    mergedCopyHeaders: [...(mergeCopies[rKey] || [])],
   }));
 
   return { rows, detectedSeries, headers };
@@ -905,6 +964,14 @@ export async function executeMr11Pipeline(
       },
       orderBy: { generatedAt: 'desc' },
     }));
+
+  // Previous MR11 rows, for Processed Date (kept while Total Processed doesn't change)
+  const uploadDateStr = malaysiaDate();
+  const previousRecordsByRow: Record<string, Record<string, any>[]> = {};
+  for (const r of (previousRun?.records as Record<string, any>[]) || []) {
+    const k = mr11RowKey(r['Short Name'] || r['Project Shortname'], r['Stream'], r['_fontColor'], r['_fillColor'], r['Products type']);
+    (previousRecordsByRow[k] ||= []).push(r);
+  }
 
   const prevDispatchHistory: Record<string, { quantity: number; date: string }> = {
     ...((previousRun?.sourceSnapshot as any)?.dispatchTracker || {}),
@@ -1604,35 +1671,13 @@ export async function executeMr11Pipeline(
     const sameProject = (otherNo: string, otherShort: string): boolean =>
       shortName && otherShort ? otherShort === shortName : Boolean(projectNo && otherNo === projectNo);
 
-    const matchedPlanningSeries = allHistoricalPlanningSeries.filter((s: any) => {
-      const matchesId = sameProject(cleanStr(s.projectNo), cleanStr(s.projectShortname));
-      const matchesStream = normalizeStream(s.stream || '1') === bdStream;
-      const sFont = normalizeColor(s.fontColor);
-      return matchesId && matchesStream && sFont === bdFontColor;
-    });
-
-    if (matchedPlanningSeries.length > 0) {
-      const sumProcessed = matchedPlanningSeries.reduce((acc: number, curr: any) => acc + (curr.totalProcessed || 0), 0);
-      outRow['Total Processed'] = sumProcessed;
-      outRow['Total Processed (m2)'] = sumProcessed;
-    }
-
-    const tracker = allQuantityTrackers.find(
-      (t: any) =>
-        sameProject(cleanStr(t.projectNo), cleanStr(t.projectShortname)) &&
-        normalizeStream(t.stream || '1') === bdStream &&
-        normalizeColor(t.fontColor) === bdFontColor
-    );
-
-    let matchedPlanningRow: ExtractedRow | null = null;
-    let highestPlanScore = -1;
-
-    for (const p of planningRows) {
+    // Total Processed = the Planning file's "Cumulative Processed (Project)" summed over the
+    // blocks for this BD row: same project & stream, and the same font and fill colour. Planning
+    // uses its own shades (e.g. #FF0000 for BD's #C00000), so the closest colour counts as the same.
+    const planningCandidates = planningRows.filter((p) => {
       const pNo = cleanStr(findCellValue(p.data, 'Project No') || findCellValue(p.data, 'Project No.') || findCellValue(p.data, 'Project No. (from design column A)'));
       const pShort = cleanStr(findCellValue(p.data, 'Short Name') || findCellValue(p.data, 'Project Shortname') || findCellValue(p.data, 'Project Shortname (from bd column C)'));
-      if (!sameProject(pNo, pShort)) continue;
-
-      let score = 1;
+      if (!sameProject(pNo, pShort)) return false;
       let pStream = '1';
       for (const sh of STREAM_HEADER_CANDIDATES) {
         const v = findCellValue(p.data, sh);
@@ -1641,34 +1686,31 @@ export async function executeMr11Pipeline(
           break;
         }
       }
-      if (pStream === bdStream) score += 4;
+      return pStream === bdStream;
+    });
+    const planningMatches = closestColourGroup(planningCandidates, bdFontColor, bdFillColor);
 
-      const pColor = normalizeColor(p.fontColor);
-      const pFill = normalizeFillColor(p.fillColor);
-      if (pColor === bdFontColor) score += 8;
-      if (bdFillColor && pFill && pFill === bdFillColor) score += 10;
-
-      if (score > highestPlanScore) {
-        highestPlanScore = score;
-        matchedPlanningRow = p;
-      }
+    let processedTotal: number | null = null;
+    for (const p of planningMatches) {
+      const key = Object.keys(p.data).find((k) => /^cumulative processed/i.test(k.trim()));
+      // A merged cell's value is copied to every row it covers; count it once
+      if (!key || p.mergedCopyHeaders?.includes(key) || !isCellFilled(p.data[key])) continue;
+      processedTotal = (processedTotal ?? 0) + parseNumeric(p.data[key]);
     }
+    outRow['Total Processed'] = processedTotal;
+    outRow['Total Processed (m2)'] = processedTotal;
 
-    const activeClosingDate = matchedPlanningRow
-      ? findCellValue(matchedPlanningRow.data, 'Closing Date ') ||
-        findCellValue(matchedPlanningRow.data, 'Closing Date') ||
-        findCellValue(matchedPlanningRow.data, 'Processed Date')
-      : null;
-
-    const latestSeriesClosingDate = matchedPlanningSeries.length > 0
-      ? matchedPlanningSeries[matchedPlanningSeries.length - 1].closingDate
-      : null;
-
-    const resolvedProcessedDate =
-      activeClosingDate ||
-      latestSeriesClosingDate ||
-      (tracker ? tracker.lastChangedDate : null) ||
-      todayStr;
+    // Processed Date = the upload date on which Total Processed last changed: a new value takes
+    // today's date, an unchanged value keeps the date from the previous MR11
+    const previous = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']));
+    const previousTotal = previous && isCellFilled(previous['Total Processed']) ? parseNumeric(previous['Total Processed']) : null;
+    let resolvedProcessedDate: string | null = null;
+    if (processedTotal !== null) {
+      resolvedProcessedDate =
+        previousTotal !== null && previousTotal === processedTotal && previous?.['Processed Date']
+          ? String(previous['Processed Date'])
+          : uploadDateStr;
+    }
 
     outRow['Processed Date'] = resolvedProcessedDate;
     outRow['Closing Date'] = resolvedProcessedDate;
