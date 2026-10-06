@@ -1723,8 +1723,10 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Total Processed", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Cumulative Processed (Project)", type: "number" },
   // The upload date on which Total Processed last changed (not read from the file)
   { target: "Processed Date", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Cumulative Processed (Project)", type: "date" },
-  { target: "Total Produced", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Total Produced", type: "number" },
-  { target: "Produced Date", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Day/Date", type: "date" },
+  // Sum of "Cumulative Produced (Project)" over the BD row's Production blocks (same colours)
+  { target: "Total Produced", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Cumulative Produced (Project)", type: "number" },
+  // The latest daily (date-headed) column with a value in those blocks
+  { target: "Produced Date", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "daily date columns", type: "date" },
   // Dispatch & ATD
   { target: "Total Dispatch", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Column K", type: "number" },
   { target: "Dispatched Date", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Dispatched Date", type: "date" },
@@ -2983,68 +2985,45 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     }
     outRow["Processed Date"] = resolvedProcessedDate;
     outRow["Closing Date"] = resolvedProcessedDate;
-    let matchedProdRow = null;
-    let highestProdScore = -1;
-    const prodScores = [];
-    for (const pRow of productionRows) {
-      const pShort = cleanStr(
-        findCellValue(pRow.data, "Short Name") || findCellValue(pRow.data, "Project Shortname") || findCellValue(pRow.data, "Project Shortname (from planning column B)") || pRow.rawCells?.[1] || pRow.rawCells?.[0] || pRow.rawCells?.[2]
-      );
-      const pNo = cleanStr(
-        findCellValue(pRow.data, "Project No") || findCellValue(pRow.data, "Project No.") || pRow.rawCells?.[0]
-      );
-      const idMatches = shortName && pShort === shortName || projectNo && pNo === projectNo || shortName && pShort.includes(shortName) || projectNo && pShort.includes(projectNo) || projectName && pShort.includes(projectName);
-      if (!idMatches) continue;
-      let score = 1;
-      let stream = "1";
+    const productionCandidates = productionRows.filter((p) => {
+      const pShort = cleanStr(findCellValue(p.data, "Short Name") || findCellValue(p.data, "Project Shortname") || findCellValue(p.data, "Project Shortname (from planning column B)"));
+      const pNo = cleanStr(findCellValue(p.data, "Project No") || findCellValue(p.data, "Project No."));
+      if (!sameProject(pNo, pShort)) return false;
+      let pStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
-        const v = findCellValue(pRow.data, sh);
+        const v = findCellValue(p.data, sh);
         if (v !== null && v !== void 0 && v !== "") {
-          stream = normalizeStream(v);
+          pStream = normalizeStream(v);
           break;
         }
       }
-      if (stream === bdStream) score += 4;
-      const pColor = normalizeColor(pRow.fontColor);
-      const pFill = normalizeFillColor(pRow.fillColor);
-      if (pColor === bdFontColor) score += 8;
-      if (bdFillColor && pFill && pFill === bdFillColor) score += 10;
-      prodScores.push({ row: pRow, score });
-      if (score > highestProdScore) {
-        highestProdScore = score;
-        matchedProdRow = pRow;
-      }
+      return pStream === bdStream;
+    });
+    const productionMatches = closestColourGroup(productionCandidates, bdFontColor, bdFillColor);
+    let producedTotal = null;
+    for (const p of productionMatches) {
+      const key = Object.keys(p.data).find((k) => /^cumulative produced/i.test(k.trim()));
+      if (!key || p.mergedCopyHeaders?.includes(key) || !isCellFilled(p.data[key])) continue;
+      producedTotal = (producedTotal ?? 0) + parseNumeric(p.data[key]);
     }
-    const bestProdRows = prodScores.filter((p) => p.score === highestProdScore).map((p) => p.row);
-    const directColumnQValue = matchedProdRow ? parseNumeric(
-      findCellValue(matchedProdRow.data, "Total Produced") ?? findCellValue(matchedProdRow.data, "Total Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced (m2)") ?? findCellValue(matchedProdRow.data, "Column Q") ?? matchedProdRow.rawCells?.[16] ?? findCellValue(matchedProdRow.data, "__COLUMN_Q__")
-    ) : 0;
-    const finalColumnAQ = directColumnQValue > 0 ? directColumnQValue : null;
-    outRow["Total Produced"] = finalColumnAQ;
-    outRow["Total Produced Quantity"] = finalColumnAQ;
-    outRow["produced qty"] = finalColumnAQ;
+    outRow["Total Produced"] = producedTotal;
+    outRow["Total Produced Quantity"] = producedTotal;
+    outRow["produced qty"] = producedTotal;
     let latestFilledDate = null;
-    if (matchedProdRow) {
-      const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null })).filter((d) => Boolean(d.date));
-      for (const pRow of bestProdRows) {
-        for (const { c, date } of dayColumns) {
-          const headerName = productionHeaders[c];
-          const cellVal = pRow.rawCells?.[c];
-          const targetVal = cellVal !== void 0 ? cellVal : pRow.data[headerName];
-          if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
-            latestFilledDate = date;
-          }
+    const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null })).filter((d) => Boolean(d.date));
+    for (const pRow of productionMatches) {
+      for (const { c, date } of dayColumns) {
+        const cellVal = pRow.rawCells?.[c];
+        const targetVal = cellVal !== void 0 ? cellVal : pRow.data[productionHeaders[c]];
+        if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
+          latestFilledDate = date;
         }
-      }
-      if (!latestFilledDate) {
-        const fallbackDate = findCellValue(matchedProdRow.data, "Day/Date") || findCellValue(matchedProdRow.data, "Date");
-        latestFilledDate = parseFlexibleDate(fallbackDate) ? formatDateString(fallbackDate) : null;
       }
     }
     outRow["Produced Date"] = latestFilledDate;
     if (isBlueColor(bdFontColor)) {
       for (const key of Object.keys(outRow)) {
-        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = null;
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = "-";
       }
       for (const key of Object.keys(cellColors)) {
         if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) delete cellColors[key];

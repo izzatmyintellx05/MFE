@@ -258,8 +258,10 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'Total Processed', sourceDept: RoleCode.PLANNING, sourceColumn: 'Cumulative Processed (Project)', type: 'number' },
   // The upload date on which Total Processed last changed (not read from the file)
   { target: 'Processed Date', sourceDept: RoleCode.PLANNING, sourceColumn: 'Cumulative Processed (Project)', type: 'date' },
-  { target: 'Total Produced', sourceDept: RoleCode.PRODUCTION, sourceColumn: 'Total Produced', type: 'number' },
-  { target: 'Produced Date', sourceDept: RoleCode.PRODUCTION, sourceColumn: 'Day/Date', type: 'date' },
+  // Sum of "Cumulative Produced (Project)" over the BD row's Production blocks (same colours)
+  { target: 'Total Produced', sourceDept: RoleCode.PRODUCTION, sourceColumn: 'Cumulative Produced (Project)', type: 'number' },
+  // The latest daily (date-headed) column with a value in those blocks
+  { target: 'Produced Date', sourceDept: RoleCode.PRODUCTION, sourceColumn: 'daily date columns', type: 'date' },
 
   // Dispatch & ATD
   { target: 'Total Dispatch', sourceDept: RoleCode.DISPATCH, sourceColumn: 'Column K', type: 'number' },
