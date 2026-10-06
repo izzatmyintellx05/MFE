@@ -11,6 +11,7 @@ import {
   MR11_DEPARTMENT_COLORS,
 } from '../../config/mr11.config';
 import { getUsdToMyrRate, withMyrPrices } from '../../utils/fx';
+import { getLmeAluminiumPrice } from '../../utils/lme';
 
 const prisma = new PrismaClient();
 
@@ -26,7 +27,7 @@ export async function getLatestMr11(req: Request, res: Response) {
     const config = await prisma.mr11Config.findUnique({ where: { id: 'singleton' } });
 
     // Ringgit prices use today's live rate, not the rate when MR11 was generated
-    const fx = await getUsdToMyrRate();
+    const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
     const run =
       latestRun && Array.isArray(latestRun.records)
         ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) }
@@ -37,6 +38,7 @@ export async function getLatestMr11(req: Request, res: Response) {
       data: {
         run,
         fxRate: fx,
+        lmePrice,
         visibleColumns: (config?.visibleColumns as string[]) || [],
         orderedHeaders: ORDERED_HEADER_LIST,
         headerGroups: MR11_HEADER_GROUPS,

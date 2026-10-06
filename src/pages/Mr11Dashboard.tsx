@@ -9,7 +9,9 @@ import {
   RefreshCw, 
   AlertTriangle, 
   Search,
-  ArrowRightLeft
+  ArrowRightLeft,
+  TrendingUp,
+  TrendingDown
 } from 'lucide-react';
 
 export const Mr11Dashboard: React.FC = () => {
@@ -19,6 +21,15 @@ export const Mr11Dashboard: React.FC = () => {
   const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
   // Live USD -> MYR rate used for "Final Selling Price (MYR)"
   const [fxRate, setFxRate] = useState<{ rate: number; source: string; asOf: string; live: boolean } | null>(null);
+  // Latest LME aluminium price (USD per tonne), shown for reference
+  const [lmePrice, setLmePrice] = useState<{
+    cash: number;
+    threeMonth: number | null;
+    previousCash: number | null;
+    asOf: string;
+    source: string;
+    live: boolean;
+  } | null>(null);
   const [columnDepartments, setColumnDepartments] = useState<Record<string, string>>({});
   const [departmentColors, setDepartmentColors] = useState<Record<string, string>>({});
   const { active, toggle, highlightColumns } = useDepartmentHighlight(columnDepartments, departmentColors);
@@ -39,6 +50,7 @@ export const Mr11Dashboard: React.FC = () => {
       setHeaderGroups(data?.headerGroups || []);
       setNumberFormats(data?.numberFormats || {});
       setFxRate(data?.fxRate || null);
+      setLmePrice(data?.lmePrice || null);
       setColumnDepartments(data?.columnDepartments || {});
       setDepartmentColors(data?.departmentColors || {});
     } catch (err: any) {
@@ -166,6 +178,58 @@ export const Mr11Dashboard: React.FC = () => {
               </>
             ) : (
               <div className="text-xs font-semibold text-rose-600">Unavailable: MYR prices not shown</div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm">
+          <div className="w-8 h-8 rounded-lg bg-sky-50 flex items-center justify-center text-sky-600">
+            {lmePrice?.previousCash && lmePrice.cash < lmePrice.previousCash ? (
+              <TrendingDown className="w-4 h-4" />
+            ) : (
+              <TrendingUp className="w-4 h-4" />
+            )}
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">LME Aluminium</span>
+              {lmePrice && (
+                <span
+                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+                    lmePrice.live ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${lmePrice.live ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                  {lmePrice.live ? 'Live' : 'Last known'}
+                </span>
+              )}
+            </div>
+            {lmePrice ? (
+              <>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-sm font-extrabold text-stone-900 font-mono">
+                    USD {lmePrice.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / t
+                  </span>
+                  {lmePrice.previousCash && (
+                    <span
+                      className={`text-[10px] font-bold font-mono ${
+                        lmePrice.cash >= lmePrice.previousCash ? 'text-emerald-600' : 'text-rose-600'
+                      }`}
+                    >
+                      {lmePrice.cash >= lmePrice.previousCash ? '+' : ''}
+                      {(lmePrice.cash - lmePrice.previousCash).toFixed(2)} (
+                      {(((lmePrice.cash - lmePrice.previousCash) / lmePrice.previousCash) * 100).toFixed(2)}%)
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-stone-400" title={lmePrice.source}>
+                  Cash settlement
+                  {lmePrice.threeMonth ? ` · 3-month ${lmePrice.threeMonth.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : ''}
+                  {` · ${lmePrice.asOf}`}
+                </div>
+              </>
+            ) : (
+              <div className="text-xs font-semibold text-rose-600">Unavailable</div>
             )}
           </div>
         </div>

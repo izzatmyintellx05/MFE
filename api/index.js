@@ -3355,6 +3355,52 @@ function withMyrPrices(records, fx) {
   });
 }
 
+// server/utils/lme.ts
+var URL = "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Al_cash";
+var CACHE_MS2 = 60 * 60 * 1e3;
+var TIMEOUT_MS2 = 8e3;
+var cached2 = null;
+var toNumber = (s) => {
+  const n = Number(s.replace(/,/g, "").trim());
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+function parseWestmetallTable(html) {
+  const rows = [];
+  const rowRe = /<tr>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([^<]*)<\/td>\s*<td[^>]*>([^<]*)<\/td>/g;
+  let m;
+  while ((m = rowRe.exec(html)) && rows.length < 2) {
+    const date = /* @__PURE__ */ new Date(`${m[1].replace(".", "")} UTC`);
+    if (isNaN(date.getTime())) continue;
+    rows.push({ date: date.toISOString().slice(0, 10), cash: toNumber(m[2]), threeMonth: toNumber(m[3]) });
+  }
+  const latest = rows[0];
+  if (!latest?.cash) throw new Error("no LME aluminium price in the table");
+  return {
+    cash: latest.cash,
+    threeMonth: latest.threeMonth,
+    previousCash: rows[1]?.cash ?? null,
+    asOf: latest.date,
+    source: "LME official prices (via Westmetall)",
+    live: true
+  };
+}
+async function getLmeAluminiumPrice() {
+  if (cached2 && Date.now() - cached2.fetchedAt < CACHE_MS2) return cached2.value;
+  try {
+    const res = await fetch(URL, {
+      signal: AbortSignal.timeout(TIMEOUT_MS2),
+      headers: { "User-Agent": "Mozilla/5.0 (MFE MR11)" }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const value = parseWestmetallTable(await res.text());
+    cached2 = { value, fetchedAt: Date.now() };
+    return value;
+  } catch (err) {
+    console.warn("[LME] price unavailable:", err?.message || err);
+    return cached2 ? { ...cached2.value, live: false } : null;
+  }
+}
+
 // server/modules/mr11/mr11.controller.ts
 var prisma5 = new PrismaClient();
 var ORDERED_HEADER_LIST2 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
@@ -3362,13 +3408,14 @@ async function getLatestMr11(req, res) {
   try {
     const latestRun = await getLatestMr11Run(prisma5);
     const config = await prisma5.mr11Config.findUnique({ where: { id: "singleton" } });
-    const fx = await getUsdToMyrRate();
+    const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
     const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) } : latestRun;
     return res.json({
       success: true,
       data: {
         run,
         fxRate: fx,
+        lmePrice,
         visibleColumns: config?.visibleColumns || [],
         orderedHeaders: ORDERED_HEADER_LIST2,
         headerGroups: MR11_HEADER_GROUPS,
