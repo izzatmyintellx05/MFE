@@ -176,14 +176,20 @@ export function dispatchedByMonth(rows: any[], months: MonthColumn[]): number[] 
   return months.map((col) => stageTotals(rows, col.key).dispatched);
 }
 
-// Average Final Selling Price (USD per m²), weighted by each project's m² in the month
-// (or across all months); projects without m² count equally when nothing is weighted.
-export function averageSellingPrice(rows: any[], months: MonthColumn[], monthKey: string | null): number | null {
+// Average of a per-m² price column (default Final Selling Price (USD)), weighted by each
+// project's m² in the month (or across all months); projects without m² count equally
+// when nothing is weighted.
+export function averageSellingPrice(
+  rows: any[],
+  months: MonthColumn[],
+  monthKey: string | null,
+  column = 'Final Selling Price (USD)'
+): number | null {
   let weighted = 0;
   let weight = 0;
   const plain: number[] = [];
   for (const r of firstRowPerProject(rows)) {
-    const price = toNumber(r?.['Final Selling Price (USD)']);
+    const price = toNumber(r?.[column]);
     if (price <= 0) continue;
     const m2 = monthKey ? toNumber(r?.[monthKey]) : months.reduce((a, m) => a + toNumber(r?.[m.key]), 0);
     plain.push(price);
@@ -194,4 +200,17 @@ export function averageSellingPrice(rows: any[], months: MonthColumn[], monthKey
   }
   if (weight > 0) return weighted / weight;
   return plain.length ? plain.reduce((a, b) => a + b, 0) / plain.length : null;
+}
+
+// Number of projects per LME pricing type in MR11's "LME" column (Fixed, Freeze, Variable)
+export function lmeTypeCounts(rows: any[]): { type: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const r of firstRowPerProject(rows)) {
+    const raw = String(r?.['LME'] ?? '').trim();
+    const type = raw ? raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase() : 'Not set';
+    counts.set(type, (counts.get(type) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count);
 }

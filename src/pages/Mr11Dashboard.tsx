@@ -8,11 +8,9 @@ import {
   Download, 
   RefreshCw, 
   AlertTriangle, 
-  Search,
-  ArrowRightLeft,
-  TrendingUp,
-  TrendingDown
+  Search
 } from 'lucide-react';
+import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice } from '../components/common/MarketRates';
 
 export const Mr11Dashboard: React.FC = () => {
   const [records, setRecords] = useState<any[]>([]);
@@ -20,16 +18,9 @@ export const Mr11Dashboard: React.FC = () => {
   const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
   const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
   // Live USD -> MYR rate used for "Final Selling Price (MYR)"
-  const [fxRate, setFxRate] = useState<{ rate: number; source: string; asOf: string; live: boolean } | null>(null);
+  const [fxRate, setFxRate] = useState<FxRate | null>(null);
   // Latest LME aluminium price (USD per tonne), shown for reference
-  const [lmePrice, setLmePrice] = useState<{
-    cash: number;
-    threeMonth: number | null;
-    previousCash: number | null;
-    asOf: string;
-    source: string;
-    live: boolean;
-  } | null>(null);
+  const [lmePrice, setLmePrice] = useState<LmePrice | null>(null);
   const [columnDepartments, setColumnDepartments] = useState<Record<string, string>>({});
   const [departmentColors, setDepartmentColors] = useState<Record<string, string>>({});
   const { active, toggle, highlightColumns } = useDepartmentHighlight(columnDepartments, departmentColors);
@@ -148,91 +139,9 @@ export const Mr11Dashboard: React.FC = () => {
 
       {/* Exchange rate box and department highlight key */}
       <div className="flex items-stretch gap-3 mb-3.5 flex-shrink-0">
-        <div className="flex items-center gap-3 bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm">
-          <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600">
-            <ArrowRightLeft className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">Exchange Rate</span>
-              {fxRate && (
-                <span
-                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
-                    fxRate.live ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                  }`}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${fxRate.live ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-                  {fxRate.live ? 'Live' : 'Last known'}
-                </span>
-              )}
-            </div>
-            {fxRate ? (
-              <>
-                <div className="text-sm font-extrabold text-stone-900 font-mono">
-                  1 USD = {fxRate.rate.toFixed(4)} MYR
-                </div>
-                <div className="text-[10px] text-stone-400">
-                  {fxRate.source}
-                  {fxRate.asOf ? ` · ${fxRate.asOf}` : ''}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs font-semibold text-rose-600">Unavailable: MYR prices not shown</div>
-            )}
-          </div>
-        </div>
+        <ExchangeRateCard fxRate={fxRate} />
 
-        <div className="flex items-center gap-3 bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm">
-          <div className="w-8 h-8 rounded-lg bg-sky-50 flex items-center justify-center text-sky-600">
-            {lmePrice?.previousCash && lmePrice.cash < lmePrice.previousCash ? (
-              <TrendingDown className="w-4 h-4" />
-            ) : (
-              <TrendingUp className="w-4 h-4" />
-            )}
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">LME Aluminium</span>
-              {lmePrice && (
-                <span
-                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
-                    lmePrice.live ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                  }`}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${lmePrice.live ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-                  {lmePrice.live ? 'Live' : 'Last known'}
-                </span>
-              )}
-            </div>
-            {lmePrice ? (
-              <>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-sm font-extrabold text-stone-900 font-mono">
-                    USD {lmePrice.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / t
-                  </span>
-                  {lmePrice.previousCash && (
-                    <span
-                      className={`text-[10px] font-bold font-mono ${
-                        lmePrice.cash >= lmePrice.previousCash ? 'text-emerald-600' : 'text-rose-600'
-                      }`}
-                    >
-                      {lmePrice.cash >= lmePrice.previousCash ? '+' : ''}
-                      {(lmePrice.cash - lmePrice.previousCash).toFixed(2)} (
-                      {(((lmePrice.cash - lmePrice.previousCash) / lmePrice.previousCash) * 100).toFixed(2)}%)
-                    </span>
-                  )}
-                </div>
-                <div className="text-[10px] text-stone-400" title={lmePrice.source}>
-                  Cash settlement
-                  {lmePrice.threeMonth ? ` · 3-month ${lmePrice.threeMonth.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : ''}
-                  {` · ${lmePrice.asOf}`}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs font-semibold text-rose-600">Unavailable</div>
-            )}
-          </div>
-        </div>
+        <LmePriceCard lmePrice={lmePrice} />
 
         <div className="flex-1 flex items-center bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm">
           <DepartmentLegend departmentColors={departmentColors} active={active} onToggle={toggle} />

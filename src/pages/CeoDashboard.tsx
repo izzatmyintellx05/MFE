@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../api/client';
 import { ZoomControls } from '../components/common/ZoomControls';
 import { Mr11Table, HeaderGroup } from '../components/workbook/Mr11Table';
+import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice } from '../components/common/MarketRates';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -38,6 +39,7 @@ import {
   dispatchedByMonth,
   filterByRegion,
   firstRowPerProject,
+  lmeTypeCounts,
   monthColumns,
   monthlySeries,
   regionOf,
@@ -80,6 +82,8 @@ export const CeoDashboard: React.FC = () => {
   const [headers, setHeaders] = useState<string[]>([]);
   const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
   const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
+  const [fxRate, setFxRate] = useState<FxRate | null>(null);
+  const [lmePrice, setLmePrice] = useState<LmePrice | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [region, setRegion] = useState<RegionFilter>('ALL');
@@ -97,6 +101,8 @@ export const CeoDashboard: React.FC = () => {
       setHeaders(data?.orderedHeaders || []);
       setHeaderGroups(data?.headerGroups || []);
       setNumberFormats(data?.numberFormats || {});
+      setFxRate(data?.fxRate || null);
+      setLmePrice(data?.lmePrice || null);
     } catch (err: any) {
       console.error('Failed to load CEO telemetry:', err);
       setError(err.response?.data?.error?.message || err.message || 'Failed to load MR11 data');
@@ -126,9 +132,18 @@ export const CeoDashboard: React.FC = () => {
   const series = useMemo(() => monthlySeries(regionRows, months, today), [regionRows, months, today]);
   const selectedPoint = selectedMonth ? series.find((p) => p.key === selectedMonth.key) || null : null;
   const projectCount = useMemo(() => firstRowPerProject(regionRows).length, [regionRows]);
-  const avgPrice = useMemo(
-    () => averageSellingPrice(regionRows, months, selectedMonth?.key ?? null),
-    [regionRows, months, selectedMonth]
+  // Final Selling Price per m², weighted by m²: MYR column (at today's rate) and USD column
+  const avgPriceUsd = useMemo(() => averageSellingPrice(regionRows, months, monthKey), [regionRows, months, monthKey]);
+  const avgPriceMyr = useMemo(
+    () => averageSellingPrice(regionRows, months, monthKey, 'Final Selling Price (MYR)'),
+    [regionRows, months, monthKey]
+  );
+  // Contract LME from MR11: LME type, LME Rate (USD) and LME Adjusted (USD)
+  const lmeTypes = useMemo(() => lmeTypeCounts(regionRows), [regionRows]);
+  const avgLmeRate = useMemo(() => averageSellingPrice(regionRows, months, monthKey, 'LME Rate (USD)'), [regionRows, months, monthKey]);
+  const avgLmeAdjusted = useMemo(
+    () => averageSellingPrice(regionRows, months, monthKey, 'LME Adjusted (USD)'),
+    [regionRows, months, monthKey]
   );
 
   const actualTotal = series.filter((p) => p.kind === 'actual').reduce((a, p) => a + p.value, 0);
@@ -307,7 +322,7 @@ export const CeoDashboard: React.FC = () => {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
           <div className="flex items-center justify-between text-slate-400 mb-2">
             <span className="text-[10px] font-extrabold uppercase tracking-wider">
@@ -368,8 +383,42 @@ export const CeoDashboard: React.FC = () => {
             </span>
             <TrendingUp className="w-4 h-4 text-slate-500" />
           </div>
-          <div className="text-2xl font-black text-slate-900 font-mono">{formatUsd(avgPrice)}</div>
-          <span className="text-[10px] text-slate-400 mt-1">USD per m², Final Selling Price weighted by m²</span>
+          <div className="text-lg font-black text-slate-900 font-mono leading-tight">
+            <span className="whitespace-nowrap">
+              {formatUsd(avgPriceMyr)} <span className="text-xs text-slate-500">MYR</span>
+            </span>
+            <span className="text-slate-300"> / </span>
+            <span className="whitespace-nowrap">
+              {formatUsd(avgPriceUsd)} <span className="text-xs text-slate-500">USD</span>
+            </span>
+          </div>
+          <span className="text-[10px] text-slate-400 mt-1">Per m², Final Selling Price (MYR) and (USD) weighted by m²</span>
+        </div>
+      </div>
+
+      {/* Market rates and contract LME from MR11 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
+        <ExchangeRateCard fxRate={fxRate} className="rounded-2xl" />
+        <LmePriceCard lmePrice={lmePrice} className="rounded-2xl" />
+        <div className="flex items-center gap-3 bg-white border border-stone-200/80 rounded-2xl px-4 py-2.5 shadow-sm">
+          <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600 flex-shrink-0">
+            <FileSpreadsheet className="w-4 h-4" />
+          </div>
+          <div className="min-w-0">
+            <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">
+              Contract LME (MR11) {selectedMonth ? `· ${selectedMonth.key}` : ''}
+            </span>
+            <div className="text-sm font-extrabold text-stone-900 font-mono">
+              <span className="whitespace-nowrap">Rate {formatUsd(avgLmeRate)}</span>
+              <span className="text-stone-300"> · </span>
+              <span className="whitespace-nowrap">
+                Adjusted {formatUsd(avgLmeAdjusted)} <span className="text-[10px] text-stone-500">USD</span>
+              </span>
+            </div>
+            <div className="text-[10px] text-stone-400 truncate">
+              {lmeTypes.length ? lmeTypes.map((t) => `${t.count} ${t.type}`).join(' · ') : 'No projects'} · avg weighted by m²
+            </div>
+          </div>
         </div>
       </div>
 
@@ -454,7 +503,11 @@ export const CeoDashboard: React.FC = () => {
                       const p = series[ctx.dataIndex];
                       const kind = p.kind === 'actual' ? 'Actual' : p.isDefault ? 'Forecast (default, none entered)' : 'Forecast';
                       const price = averageSellingPrice(regionRows, months, p.key);
-                      const usd = price !== null && !p.isDefault ? ` · avg ${formatUsd(price)}/m² · ≈ ${formatUsd(price * p.value, 0)}` : '';
+                      const priceMyr = averageSellingPrice(regionRows, months, p.key, 'Final Selling Price (MYR)');
+                      const usd =
+                        price !== null && !p.isDefault
+                          ? ` · avg ${formatUsd(priceMyr)} MYR / ${formatUsd(price)} USD per m² · ≈ ${formatUsd(price * p.value, 0)} USD`
+                          : '';
                       return `${kind}: ${formatM2(p.value)}${usd}`;
                     },
                   },
