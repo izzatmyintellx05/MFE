@@ -19,7 +19,7 @@ export const Mr11Dashboard: React.FC = () => {
   const [headers, setHeaders] = useState<string[]>([]);
   const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
   const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
-  // Live USD -> MYR rate used for "Final Selling Price (MYR)"
+  // Live USD -> MYR exchange rate, shown in its own box
   const [fxRate, setFxRate] = useState<{ rate: number; source: string; asOf: string; live: boolean } | null>(null);
   // Latest LME aluminium price (USD per tonne), shown for reference
   const [lmePrice, setLmePrice] = useState<{
@@ -177,7 +177,7 @@ export const Mr11Dashboard: React.FC = () => {
                 </div>
               </>
             ) : (
-              <div className="text-xs font-semibold text-rose-600">Unavailable: MYR prices not shown</div>
+              <div className="text-xs font-semibold text-rose-600">Unavailable</div>
             )}
           </div>
         </div>

@@ -975,7 +975,6 @@ export async function executeMr11Pipeline(
     const lmePricing = resolveLmePricing(bdData);
     outRow['LME Adjusted (USD)'] = lmePricing.lmeAdjusted;
     outRow['Final Selling Price (USD)'] = lmePricing.finalSellingPrice;
-    // "Final Selling Price (MYR)" is added when MR11 is read, at the live exchange rate
 
     // Best-matching row from a department: project id must match, then stream, font and fill colour add weight
     const findBestDeptRow = (dept: RoleCode): Record<string, any> | null => {

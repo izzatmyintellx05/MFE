@@ -10,7 +10,7 @@ import {
   MR11_COLUMN_DEPARTMENTS,
   MR11_DEPARTMENT_COLORS,
 } from '../../config/mr11.config';
-import { getUsdToMyrRate, withMyrPrices } from '../../utils/fx';
+import { getUsdToMyrRate } from '../../utils/fx';
 import { getLmeAluminiumPrice } from '../../utils/lme';
 
 const prisma = new PrismaClient();
@@ -26,12 +26,9 @@ export async function getLatestMr11(req: Request, res: Response) {
 
     const config = await prisma.mr11Config.findUnique({ where: { id: 'singleton' } });
 
-    // Ringgit prices use today's live rate, not the rate when MR11 was generated
+    // Today's USD -> MYR rate and LME aluminium price, shown above the ledger
     const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
-    const run =
-      latestRun && Array.isArray(latestRun.records)
-        ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) }
-        : latestRun;
+    const run = latestRun;
 
     return res.json({
       success: true,
@@ -101,7 +98,7 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: { message: 'No MR11 records to export' } });
     }
 
-    const records = withMyrPrices(latestRun.records as Record<string, any>[], await getUsdToMyrRate());
+    const records = latestRun.records as Record<string, any>[];
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('MR11 Master');
 

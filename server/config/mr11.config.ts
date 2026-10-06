@@ -39,7 +39,6 @@ export const MR11_NUMBER_FORMATS: Record<string, number> = {
   'LME Rate (USD)': 3,
   'LME Adjusted (USD)': 3,
   'Final Selling Price (USD)': 2,
-  'Final Selling Price (MYR)': 2,
 };
 
 export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {
@@ -146,7 +145,6 @@ export const ORDERED_HEADER_LIST = [
   'LME Adjusted (USD)',
   'Freight Adjusted (USD)',
   'Final Selling Price (USD)',
-  'Final Selling Price (MYR)',
   'Advance Received / Payment Status',
   'Actual Received',
   'Payment Date',
@@ -279,7 +277,7 @@ export const MR11_DEPARTMENT_COLORS: Record<string, string> = {
 
 /**
  * Which department's file each MR11 column comes from. Mapped columns use their source;
- * the monthly columns come from Finance, and the ringgit price is BD's price converted.
+ * the monthly columns come from Finance.
  */
 export const MR11_COLUMN_DEPARTMENTS: Record<string, string> = (() => {
   const map: Record<string, string> = {};
@@ -287,6 +285,5 @@ export const MR11_COLUMN_DEPARTMENTS: Record<string, string> = (() => {
   for (const h of ORDERED_HEADER_LIST) {
     if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = RoleCode.FINANCE;
   }
-  map['Final Selling Price (MYR)'] = RoleCode.BD;
   return map;
 })();

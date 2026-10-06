@@ -1468,8 +1468,7 @@ var MR11_HEADER_GROUPS = [
 var MR11_NUMBER_FORMATS = {
   "LME Rate (USD)": 3,
   "LME Adjusted (USD)": 3,
-  "Final Selling Price (USD)": 2,
-  "Final Selling Price (MYR)": 2
+  "Final Selling Price (USD)": 2
 };
 var MR11_SOURCE_KEY_MAP = {
   BD: [
@@ -1571,7 +1570,6 @@ var ORDERED_HEADER_LIST = [
   "LME Adjusted (USD)",
   "Freight Adjusted (USD)",
   "Final Selling Price (USD)",
-  "Final Selling Price (MYR)",
   "Advance Received / Payment Status",
   "Actual Received",
   "Payment Date",
@@ -1702,7 +1700,6 @@ var MR11_COLUMN_DEPARTMENTS = (() => {
   for (const h of ORDERED_HEADER_LIST) {
     if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "FINANCE" /* FINANCE */;
   }
-  map["Final Selling Price (MYR)"] = "BD" /* BD */;
   return map;
 })();
 
@@ -3344,16 +3341,6 @@ async function getUsdToMyrRate() {
   if (cached) return { ...cached.value, live: false };
   return fixedSettingRate();
 }
-function withMyrPrices(records, fx) {
-  return records.map((r) => {
-    const usd = Number(r?.["Final Selling Price (USD)"]);
-    const hasUsd = r?.["Final Selling Price (USD)"] !== null && r?.["Final Selling Price (USD)"] !== "" && Number.isFinite(usd);
-    return {
-      ...r,
-      "Final Selling Price (MYR)": fx && hasUsd ? Math.round(usd * fx.rate * 100) / 100 : null
-    };
-  });
-}
 
 // server/utils/lme.ts
 var URL = "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Al_cash";
@@ -3409,7 +3396,7 @@ async function getLatestMr11(req, res) {
     const latestRun = await getLatestMr11Run(prisma5);
     const config = await prisma5.mr11Config.findUnique({ where: { id: "singleton" } });
     const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
-    const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) } : latestRun;
+    const run = latestRun;
     return res.json({
       success: true,
       data: {
@@ -3472,7 +3459,7 @@ async function exportMr11ToExcel(req, res) {
     if (!latestRun || !Array.isArray(latestRun.records) || latestRun.records.length === 0) {
       return res.status(400).json({ success: false, error: { message: "No MR11 records to export" } });
     }
-    const records = withMyrPrices(latestRun.records, await getUsdToMyrRate());
+    const records = latestRun.records;
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
     const headers = ORDERED_HEADER_LIST2;
