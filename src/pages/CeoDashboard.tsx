@@ -14,9 +14,26 @@ import {
   Title,
   Tooltip,
   Legend,
+  type ChartType,
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
-import { RefreshCw, AlertCircle, FileSpreadsheet, X, CalendarDays, ChevronDown } from 'lucide-react';
+import {
+  RefreshCw,
+  AlertCircle,
+  FileSpreadsheet,
+  X,
+  CalendarDays,
+  ChevronDown,
+  ChartSpline,
+  Wallet,
+  Workflow,
+  Globe,
+  Truck,
+  ArrowRightLeft,
+  TrendingUp,
+  TrendingDown,
+  type LucideIcon,
+} from 'lucide-react';
 import {
   REGIONS,
   REGION_LABELS,
@@ -29,7 +46,6 @@ import {
   dispatchedByMonth,
   filterByRegion,
   firstRowPerProject,
-  lmeTypeCounts,
   monthColumns,
   monthlySeries,
   regionOf,
@@ -73,7 +89,54 @@ const formatUsd = (n: number | null, digits = 2) =>
 const formatNum = (n: number) => Math.round(n).toLocaleString('en-US');
 const formatM2 = (n: number) => `${formatNum(n)} m²`;
 
-const axisM2 = { callback: (v: any) => Number(v).toLocaleString('en-US') };
+// Axis labels in short form: 100000 -> 100k
+const compactNum = (v: number) =>
+  Math.abs(v) >= 1e6 ? `${+(v / 1e6).toFixed(1)}M` : Math.abs(v) >= 1e3 ? `${+(v / 1e3).toFixed(1)}k` : `${v}`;
+const axisM2 = { callback: (v: any) => compactNum(Number(v)), maxTicksLimit: 6 };
+
+// Vertical fill that fades out towards the axis
+const fadeFill = (hex: string, alpha: string) => (ctx: any) => {
+  const { chart } = ctx;
+  if (!chart.chartArea) return 'transparent';
+  const g = chart.ctx.createLinearGradient(0, chart.chartArea.top, 0, chart.chartArea.bottom);
+  g.addColorStop(0, `${hex}${alpha}`);
+  g.addColorStop(1, `${hex}00`);
+  return g;
+};
+
+// Dashed "Today" divider between the last actual month and the first forecast month
+declare module 'chart.js' {
+  interface PluginOptionsByType<TType extends ChartType> {
+    todayDivider?: { index?: number };
+  }
+}
+
+const todayDivider = {
+  id: 'todayDivider',
+  afterDatasetsDraw(chart: any, _args: any, opts: { index?: number }) {
+    const idx = opts?.index;
+    const x = chart.scales?.x;
+    if (idx === undefined || idx < 0 || !x || idx + 1 >= chart.data.labels.length) return;
+    const px = (x.getPixelForValue(idx) + x.getPixelForValue(idx + 1)) / 2;
+    const { top, bottom } = chart.chartArea;
+    const c = chart.ctx;
+    c.save();
+    c.strokeStyle = '#94A3B8';
+    c.lineWidth = 1;
+    c.setLineDash([3, 3]);
+    c.beginPath();
+    c.moveTo(px, top - 2);
+    c.lineTo(px, bottom);
+    c.stroke();
+    c.setLineDash([]);
+    c.font = `600 10px ${ChartJS.defaults.font.family}`;
+    c.fillStyle = '#475569';
+    c.textAlign = 'center';
+    c.textBaseline = 'top';
+    c.fillText('TODAY', px, top - 16);
+    c.restore();
+  },
+};
 
 const chartTooltipM2 = {
   callbacks: {
@@ -90,15 +153,23 @@ const chartLegend = {
 const PANEL = 'bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)]';
 const FOCUS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#004B87]/40 focus-visible:ring-offset-1';
 
-const SectionHeading: React.FC<{ title: string; description?: React.ReactNode; children?: React.ReactNode }> = ({
-  title,
-  description,
-  children,
-}) => (
-  <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
-    <div className="min-w-0">
-      <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
-      {description && <p className="mt-0.5 text-xs text-slate-500">{description}</p>}
+const SectionHeading: React.FC<{
+  title: string;
+  icon?: LucideIcon;
+  description?: React.ReactNode;
+  children?: React.ReactNode;
+}> = ({ title, icon: Icon, description, children }) => (
+  <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+    <div className="flex min-w-0 items-start gap-3">
+      {Icon && (
+        <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-[#004B87]/[0.07] text-[#004B87]" aria-hidden="true">
+          <Icon className="h-4 w-4" />
+        </span>
+      )}
+      <div className="min-w-0">
+        <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+        {description && <p className="mt-0.5 text-xs text-slate-500">{description}</p>}
+      </div>
     </div>
     {children}
   </div>
@@ -118,7 +189,7 @@ const Stat: React.FC<{ label: string; value: string; unit?: string; note: string
     </div>
     <div className="mt-1.5 font-mono text-[1.75rem] leading-none font-semibold tracking-tight text-slate-900 tabular-nums">
       {value}
-      {unit && value !== '—' && <span className="ml-1.5 text-sm font-medium text-slate-400">{unit}</span>}
+      {unit && value !== '—' && <span className="ml-1.5 text-sm font-medium text-slate-500">{unit}</span>}
     </div>
     <p className="mt-2 text-xs text-slate-500">{note}</p>
   </div>
@@ -185,13 +256,6 @@ export const CeoDashboard: React.FC = () => {
   const avgPriceUsd = useMemo(() => averageSellingPrice(regionRows, months, monthKey), [regionRows, months, monthKey]);
   const toMyr = (usd: number | null) => (usd !== null && fxRate ? usd * fxRate.rate : null);
   const avgPriceMyr = toMyr(avgPriceUsd);
-  // Contract LME from MR11: LME type, LME Rate (USD) and LME Adjusted (USD)
-  const lmeTypes = useMemo(() => lmeTypeCounts(regionRows), [regionRows]);
-  const avgLmeRate = useMemo(() => averageSellingPrice(regionRows, months, monthKey, 'LME Rate (USD)'), [regionRows, months, monthKey]);
-  const avgLmeAdjusted = useMemo(
-    () => averageSellingPrice(regionRows, months, monthKey, 'LME Adjusted (USD)'),
-    [regionRows, months, monthKey]
-  );
 
   const actualTotal = series.filter((p) => p.kind === 'actual').reduce((a, p) => a + p.value, 0);
   const forecastTotal = series.filter((p) => p.kind === 'forecast').reduce((a, p) => a + p.value, 0);
@@ -219,7 +283,7 @@ export const CeoDashboard: React.FC = () => {
         data: series.map((p) => (p.kind === 'actual' ? p.value : null)),
         borderColor: ACTUAL_COLOR,
         borderWidth: 2,
-        backgroundColor: `${ACTUAL_COLOR}14`,
+        backgroundColor: fadeFill(ACTUAL_COLOR, '2E'),
         pointBackgroundColor: ACTUAL_COLOR,
         pointRadius: series.map((_, i) => pointRadius(i)),
         pointHoverRadius: 6,
@@ -231,7 +295,7 @@ export const CeoDashboard: React.FC = () => {
         data: series.map((p, i) => (p.kind === 'forecast' || i === lastActualIdx ? p.value : null)),
         borderColor: FORECAST_COLOR,
         borderWidth: 2,
-        backgroundColor: `${FORECAST_COLOR}10`,
+        backgroundColor: fadeFill(FORECAST_COLOR, '1F'),
         borderDash: [6, 4],
         // Hollow points mark months using the 100,000 m² default
         pointBackgroundColor: series.map((p) => (p.isDefault ? '#FFFFFF' : FORECAST_COLOR)),
@@ -343,7 +407,7 @@ export const CeoDashboard: React.FC = () => {
             </div>
 
             <div className="relative">
-              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
               <select
                 id="ceo-month"
                 aria-label="Month"
@@ -358,7 +422,7 @@ export const CeoDashboard: React.FC = () => {
                   </option>
                 ))}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
             </div>
 
             {(region !== 'ALL' || month !== 'ALL') && (
@@ -396,12 +460,13 @@ export const CeoDashboard: React.FC = () => {
             <div className={`${PANEL} h-44 animate-pulse bg-slate-100/60`} />
           </div>
         ) : (
-          <>
+          <div className="ceo-fade-up flex flex-col gap-6">
             {/* Headline: actual vs forecast beside pricing and market */}
             <div className="grid grid-cols-1 gap-6 @5xl:grid-cols-3">
               <section className={`${PANEL} p-5 sm:p-6 @5xl:col-span-2`}>
                 <SectionHeading
                   title="Monthly m² · Actual vs Forecast"
+                  icon={ChartSpline}
                   description={`${regionLabel} · MR11 month columns · click a point to filter by that month`}
                 >
                   <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
@@ -463,12 +528,19 @@ export const CeoDashboard: React.FC = () => {
                 <div className="mt-6 h-72">
                   <Line
                     data={monthlyChartData}
+                    plugins={[todayDivider]}
+                    role="img"
+                    aria-label={`Monthly m² line chart for ${regionLabel}: actual ${formatM2(actualTotal)}${
+                      lastActual ? ` up to ${lastActual.key}` : ''
+                    }, forecast ${formatM2(forecastTotal)}${firstForecast ? ` from ${firstForecast.key}` : ''}`}
                     options={{
                       responsive: true,
                       maintainAspectRatio: false,
                       onClick: handleMonthClick,
                       interaction: { mode: 'index', intersect: false },
+                      layout: { padding: { top: 18 } },
                       plugins: {
+                        todayDivider: { index: lastActualIdx },
                         legend: { display: false },
                         tooltip: {
                           filter: (ctx: any) => ctx.raw !== null && !(ctx.datasetIndex === 1 && series[ctx.dataIndex]?.kind === 'actual'),
@@ -499,73 +571,79 @@ export const CeoDashboard: React.FC = () => {
               <section className={`${PANEL} flex flex-col p-5 sm:p-6`}>
                 <SectionHeading
                   title="Pricing & Market"
+                  icon={Wallet}
                   description={selectedMonth ? `${regionLabel} · ${selectedMonth.key}` : regionLabel}
                 />
 
-                <div className="mt-6">
-                  <div className="text-xs font-medium text-slate-500">Avg selling price per m²</div>
-                  <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono tabular-nums">
+                <div className="mt-6 rounded-xl bg-[#004B87]/[0.04] p-4 ring-1 ring-[#004B87]/10">
+                  <div className="text-xs font-medium text-slate-600">Avg selling price per m²</div>
+                  <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono tabular-nums">
                     <span className="whitespace-nowrap text-[1.75rem] leading-none font-semibold tracking-tight text-slate-900">
                       {formatUsd(avgPriceMyr)}
-                      <span className="ml-1 text-sm font-medium text-slate-400">MYR</span>
+                      <span className="ml-1 text-sm font-medium text-slate-500">MYR</span>
                     </span>
                     <span className="whitespace-nowrap text-base font-semibold text-slate-600">
                       / {formatUsd(avgPriceUsd)}
-                      <span className="ml-1 text-xs font-medium text-slate-400">USD</span>
+                      <span className="ml-1 text-xs font-medium text-slate-500">USD</span>
                     </span>
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">Final Selling Price (USD) weighted by m², MYR at today's rate</p>
+                  <p className="mt-2 text-xs text-slate-600">Final Selling Price (USD) weighted by m², MYR at today's rate</p>
                 </div>
 
-                <dl className="mt-6 @5xl:mt-auto divide-y divide-slate-100 border-t border-slate-100 text-sm">
-                  <div className="flex items-baseline justify-between gap-3 py-2.5">
-                    <dt className="text-slate-500">Contract LME rate</dt>
-                    <dd className="font-mono font-medium text-slate-900 tabular-nums">{formatUsd(avgLmeRate)} USD</dd>
+                <div className="mt-4 grid grid-cols-1 gap-3 @lg:grid-cols-2 @5xl:mt-auto @5xl:grid-cols-1 @5xl:pt-4">
+                  <div
+                    className="rounded-xl border border-slate-200/80 p-3.5"
+                    title={fxRate ? `${fxRate.source}${fxRate.asOf ? ` · ${fxRate.asOf}` : ''}` : undefined}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                        <ArrowRightLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                        USD to MYR
+                      </span>
+                      {fxRate && <LiveBadge live={fxRate.live} />}
+                    </div>
+                    <div className="mt-2 font-mono text-lg font-semibold text-slate-900 tabular-nums">
+                      {fxRate ? fxRate.rate.toFixed(4) : '—'}
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-slate-500">
+                      {fxRate ? `Exchange rate · ${fxRate.asOf || fxRate.source}` : 'Exchange rate unavailable'}
+                    </p>
                   </div>
-                  <div className="flex items-baseline justify-between gap-3 py-2.5">
-                    <dt className="text-slate-500">LME adjusted</dt>
-                    <dd className="font-mono font-medium text-slate-900 tabular-nums">{formatUsd(avgLmeAdjusted)} USD</dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3 py-2.5">
-                    <dt className="text-slate-500">LME terms</dt>
-                    <dd className="text-right font-medium text-slate-900">
-                      {lmeTypes.length ? lmeTypes.map((t) => `${t.count} ${t.type}`).join(' · ') : '—'}
-                    </dd>
-                  </div>
-                  <div className="flex items-center justify-between gap-3 py-2.5">
-                    <dt className="flex items-center gap-2 text-slate-500">
-                      Exchange rate {fxRate && <LiveBadge live={fxRate.live} />}
-                    </dt>
-                    <dd
-                      className="font-mono font-medium text-slate-900 tabular-nums"
-                      title={fxRate ? `${fxRate.source}${fxRate.asOf ? ` · ${fxRate.asOf}` : ''}` : undefined}
+
+                  <div
+                    className="rounded-xl border border-slate-200/80 p-3.5"
+                    title={lmePrice ? `${lmePrice.source} · ${lmePrice.asOf}` : undefined}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                        {lmeChange !== null && lmeChange < 0 ? (
+                          <TrendingDown className="h-3.5 w-3.5" aria-hidden="true" />
+                        ) : (
+                          <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
+                        )}
+                        LME aluminium
+                      </span>
+                      {lmePrice && <LiveBadge live={lmePrice.live} />}
+                    </div>
+                    <div className="mt-2 font-mono text-lg font-semibold text-slate-900 tabular-nums">
+                      {lmePrice
+                        ? lmePrice.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                        : '—'}
+                      {lmePrice && <span className="ml-1 text-xs font-medium text-slate-500">USD/t</span>}
+                    </div>
+                    <p
+                      className={`mt-0.5 truncate font-mono text-xs tabular-nums ${
+                        lmeChange === null ? 'text-slate-500' : lmeChange >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                      }`}
                     >
-                      {fxRate ? `1 USD = ${fxRate.rate.toFixed(4)} MYR` : 'Unavailable'}
-                    </dd>
+                      {lmeChange !== null && lmePrice?.previousCash
+                        ? `${lmeChange >= 0 ? '+' : ''}${lmeChange.toFixed(2)} (${((lmeChange / lmePrice.previousCash) * 100).toFixed(2)}%)`
+                        : lmePrice
+                        ? `Cash · ${lmePrice.asOf}`
+                        : 'LME price unavailable'}
+                    </p>
                   </div>
-                  <div className="flex items-center justify-between gap-3 py-2.5">
-                    <dt className="flex items-center gap-2 text-slate-500">
-                      LME aluminium {lmePrice && <LiveBadge live={lmePrice.live} />}
-                    </dt>
-                    <dd className="text-right font-mono tabular-nums" title={lmePrice ? `${lmePrice.source} · ${lmePrice.asOf}` : undefined}>
-                      {lmePrice ? (
-                        <>
-                          <span className="font-medium text-slate-900">
-                            {lmePrice.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD/t
-                          </span>
-                          {lmeChange !== null && (
-                            <span className={`block text-xs ${lmeChange >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                              {lmeChange >= 0 ? '+' : ''}
-                              {lmeChange.toFixed(2)} ({((lmeChange / (lmePrice.previousCash as number)) * 100).toFixed(2)}%)
-                            </span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="font-medium text-slate-900">Unavailable</span>
-                      )}
-                    </dd>
-                  </div>
-                </dl>
+                </div>
               </section>
             </div>
 
@@ -573,25 +651,46 @@ export const CeoDashboard: React.FC = () => {
             <section className={`${PANEL} p-5 sm:p-6`}>
               <SectionHeading
                 title="Production Pipeline"
+                icon={Workflow}
                 description={`${filterLabel} · m²${selectedMonth ? ' · each stage counted by its own date column' : ''}`}
               />
-              <ol className="mt-6 grid grid-cols-1 gap-x-6 gap-y-6 @lg:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-5">
+              <ol className="mt-6 grid grid-cols-1 gap-x-4 gap-y-6 @lg:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-5">
                 {STAGES.map((s, idx) => {
                   const base = totals.design || Math.max(...STAGES.map((x) => totals[x]), 0);
                   const pct = base > 0 ? Math.min(100, (totals[s] / base) * 100) : 0;
                   const prev = idx > 0 ? totals[STAGES[idx - 1]] : 0;
+                  const next = STAGES[idx + 1];
+                  const conversion = next && totals[s] > 0 ? `${Math.round((totals[next] / totals[s]) * 100)}%` : '—';
                   return (
                     <li key={s} className="min-w-0">
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STAGE_COLORS[s] }} />
-                        {STAGE_LABELS[s]}
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="grid h-6 w-6 flex-shrink-0 place-items-center rounded-full bg-white"
+                          style={{ boxShadow: `0 0 0 2px ${STAGE_COLORS[s]}` }}
+                          aria-hidden="true"
+                        >
+                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STAGE_COLORS[s] }} />
+                        </span>
+                        {next && (
+                          <span className="hidden min-w-0 flex-1 items-center gap-1.5 @4xl:flex" aria-hidden="true">
+                            <span className="h-px flex-1 bg-slate-200" />
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-600 tabular-nums">
+                              {conversion}
+                            </span>
+                            <span className="h-px flex-1 bg-slate-200" />
+                          </span>
+                        )}
                       </div>
-                      <div className="mt-1.5 font-mono text-xl font-semibold tracking-tight text-slate-900 tabular-nums">
+                      <div className="mt-3 text-xs font-medium text-slate-500">{STAGE_LABELS[s]}</div>
+                      <div className="mt-1 font-mono text-xl font-semibold tracking-tight text-slate-900 tabular-nums">
                         {formatNum(totals[s])}
-                        <span className="ml-1 text-xs font-medium text-slate-400">m²</span>
+                        <span className="ml-1 text-xs font-medium text-slate-500">m²</span>
                       </div>
                       <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
-                        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: STAGE_COLORS[s] }} />
+                        <div
+                          className="h-full rounded-full transition-[width] duration-300"
+                          style={{ width: `${pct}%`, backgroundColor: STAGE_COLORS[s] }}
+                        />
                       </div>
                       <p className="mt-2 text-xs text-slate-500">
                         {idx === 0
@@ -611,6 +710,7 @@ export const CeoDashboard: React.FC = () => {
               <section className={`${PANEL} p-5 sm:p-6`}>
                 <SectionHeading
                   title={`Total m² by Region${selectedMonth ? ` · ${selectedMonth.key}` : ''}`}
+                  icon={Globe}
                   description={`Design, processed, produced, dispatched and sailed${
                     selectedMonth ? ' · counted by each stage’s date in this month' : ''
                   }`}
@@ -618,6 +718,8 @@ export const CeoDashboard: React.FC = () => {
                 <div className="mt-5 h-72">
                   <Bar
                     data={regionChartData}
+                    role="img"
+                    aria-label={`Bar chart of m² by stage for ${visibleRegions.map((r) => REGION_LABELS[r]).join(', ')}`}
                     options={{
                       responsive: true,
                       maintainAspectRatio: false,
@@ -634,11 +736,14 @@ export const CeoDashboard: React.FC = () => {
               <section className={`${PANEL} p-5 sm:p-6`}>
                 <SectionHeading
                   title="Monthly Dispatched m² by Region"
+                  icon={Truck}
                   description={`m² out of the warehouse, by Dispatched Date${selectedMonth ? ` · ${selectedMonth.key} highlighted` : ''}`}
                 />
                 <div className="relative mt-5 h-72">
                   <Bar
                     data={regionDispatchData}
+                    role="img"
+                    aria-label={`Stacked bar chart of dispatched m² per month for ${visibleRegions.map((r) => REGION_LABELS[r]).join(', ')}`}
                     options={{
                       responsive: true,
                       maintainAspectRatio: false,
@@ -660,7 +765,7 @@ export const CeoDashboard: React.FC = () => {
                 </div>
               </section>
             </div>
-          </>
+          </div>
         )}
       </div>
 

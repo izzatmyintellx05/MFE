@@ -123,8 +123,8 @@ export function filterByRegion(rows: any[], region: RegionFilter): any[] {
   return rows.filter((r) => regionOf(r) === region);
 }
 
-// One row per project. Monthly m2 values come from the Finance row matched to the
-// project, so they repeat on every series row of that project and must be counted once.
+// One row per project, for counting projects. Every other figure is per row: each MR11
+// row comes from its own BD row, with its own monthly m2 and prices.
 export function firstRowPerProject(rows: any[]): any[] {
   const seen = new Set<string>();
   const result: any[] = [];
@@ -157,9 +157,9 @@ export function stageTotals(rows: any[], monthKey: string | null): StageTotals {
   return totals;
 }
 
-// Sum of a month column across projects (each project counted once)
+// Sum of a month column across all MR11 rows
 export function monthValue(rows: any[], monthKey: string): number {
-  return firstRowPerProject(rows).reduce((acc, r) => acc + toNumber(r?.[monthKey]), 0);
+  return rows.reduce((acc, r) => acc + toNumber(r?.[monthKey]), 0);
 }
 
 export function monthlySeries(rows: any[], months: MonthColumn[], today: Date): MonthPoint[] {
@@ -177,8 +177,8 @@ export function dispatchedByMonth(rows: any[], months: MonthColumn[]): number[] 
 }
 
 // Average of a per-m² price column (default Final Selling Price (USD)), weighted by each
-// project's m² in the month (or across all months); projects without m² count equally
-// when nothing is weighted.
+// row's m² in the month (or across all months); rows without m² count equally when
+// nothing is weighted.
 export function averageSellingPrice(
   rows: any[],
   months: MonthColumn[],
@@ -188,7 +188,7 @@ export function averageSellingPrice(
   let weighted = 0;
   let weight = 0;
   const plain: number[] = [];
-  for (const r of firstRowPerProject(rows)) {
+  for (const r of rows) {
     const price = toNumber(r?.[column]);
     if (price <= 0) continue;
     const m2 = monthKey ? toNumber(r?.[monthKey]) : months.reduce((a, m) => a + toNumber(r?.[m.key]), 0);
@@ -200,17 +200,4 @@ export function averageSellingPrice(
   }
   if (weight > 0) return weighted / weight;
   return plain.length ? plain.reduce((a, b) => a + b, 0) / plain.length : null;
-}
-
-// Number of projects per LME pricing type in MR11's "LME" column (Fixed, Freeze, Variable)
-export function lmeTypeCounts(rows: any[]): { type: string; count: number }[] {
-  const counts = new Map<string, number>();
-  for (const r of firstRowPerProject(rows)) {
-    const raw = String(r?.['LME'] ?? '').trim();
-    const type = raw ? raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase() : 'Not set';
-    counts.set(type, (counts.get(type) || 0) + 1);
-  }
-  return Array.from(counts.entries())
-    .map(([type, count]) => ({ type, count }))
-    .sort((a, b) => b.count - a.count);
 }
