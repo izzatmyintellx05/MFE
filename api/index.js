@@ -1467,8 +1467,14 @@ var MR11_HEADER_GROUPS = [
 ];
 var MR11_NUMBER_FORMATS = {
   "LME Rate (USD)": 3,
-  "LME Adjusted (USD)": 3
+  "LME Adjusted (USD)": 3,
+  "Final Selling Price (USD)": 2,
+  "Final Selling Price (MYR)": 2
 };
+function usdToMyrRate() {
+  const rate = Number(process.env.USD_TO_MYR_RATE);
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
 var MR11_SOURCE_KEY_MAP = {
   BD: [
     "Customer & Project Name",
@@ -1569,6 +1575,7 @@ var ORDERED_HEADER_LIST = [
   "LME Adjusted (USD)",
   "Freight Adjusted (USD)",
   "Final Selling Price (USD)",
+  "Final Selling Price (MYR)",
   "Advance Received / Payment Status",
   "Actual Received",
   "Payment Date",
@@ -2409,6 +2416,9 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const lmePricing = resolveLmePricing(bdData);
     outRow["LME Adjusted (USD)"] = lmePricing.lmeAdjusted;
     outRow["Final Selling Price (USD)"] = lmePricing.finalSellingPrice;
+    const myrRate = usdToMyrRate();
+    const finalUsd = Number(lmePricing.finalSellingPrice);
+    outRow["Final Selling Price (MYR)"] = myrRate !== null && isUsableValue(lmePricing.finalSellingPrice) && Number.isFinite(finalUsd) ? Math.round(finalUsd * myrRate * 100) / 100 : null;
     const findBestDeptRow = (dept) => {
       const deptDataset = datasetMap[dept] || [];
       const possibleKeyNames = MR11_SOURCE_KEY_MAP[dept] || [];

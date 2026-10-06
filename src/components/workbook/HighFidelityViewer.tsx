@@ -1,5 +1,17 @@
 import React, { useState } from 'react';
 
+// Excel column letters for a 0-based index: A..Z, then AA..AZ, BA..BZ, ...
+export function columnLetter(index: number): string {
+  let n = index + 1;
+  let letters = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letters = String.fromCharCode(65 + rem) + letters;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letters;
+}
+
 interface HighFidelityViewerProps {
   data: any[];
 }
@@ -53,7 +65,7 @@ export const HighFidelityViewer: React.FC<HighFidelityViewerProps> = ({ data }) 
                 #
               </th>
               {colIndices.map((colIdx) => {
-                const colLetter = String.fromCharCode(65 + (colIdx % 26));
+                const colLetter = columnLetter(colIdx);
                 return (
                   <th
                     key={colIdx}
