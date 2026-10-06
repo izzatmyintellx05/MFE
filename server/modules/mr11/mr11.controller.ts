@@ -147,12 +147,11 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       const addedRow = worksheet.addRow(orderedRowData);
 
       if (row['_fontColor']) {
+        // The BD row's font colour runs across the whole row (project columns in bold)
         const hex = String(row['_fontColor']).replace('#', '');
-        const projCell = addedRow.getCell(1);
-        projCell.font = {
-          color: { argb: `FF${hex}` },
-          bold: true,
-        };
+        addedRow.eachCell({ includeEmpty: true }, (cell, col) => {
+          cell.font = { color: { argb: `FF${hex}` }, bold: col <= 4 && hex !== '000000' };
+        });
       }
 
       if (row['_fillColor']) {

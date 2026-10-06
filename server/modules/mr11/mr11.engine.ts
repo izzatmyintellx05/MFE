@@ -50,6 +50,24 @@ function normalizeColor(color: any): string {
   return s.startsWith('#') ? s : `#${s}`;
 }
 
+// Blue font (e.g. #0F9ED5, #0070C0, #0000FF): hue between cyan-blue and blue, clearly coloured
+function isBlueColor(color: any): boolean {
+  const hex = normalizeColor(color);
+  if (!/^#[0-9A-F]{6}$/.test(hex)) return false;
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  if (max === 0 || d / max < 0.35 || max < 0.25) return false;
+  let hue = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  hue = (hue * 60 + 360) % 360;
+  return hue >= 185 && hue <= 250;
+}
+
+// MR11 output columns that come from the Production and Dispatch files
+const PRODUCTION_DISPATCH_COLUMN =
+  /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
+
 function normalizeFillColor(color: any): string {
   if (!color) return '';
   const s = String(color).trim().toUpperCase();
@@ -605,7 +623,7 @@ export async function executeMr11Pipeline(
   const datasetMap: Partial<Record<RoleCode, ExtractedRow[]>> = {};
   let productionHeaders: Record<number, string> = {};
   let dispatchHeaders: Record<number, string> = {};
-  let financeMonthColumns: { header: string; label: string }[] = [];
+  let bdMonthColumns: { header: string; label: string }[] = [];
   let detectedProdSeries = 0;
 
   for (const dept of activeDepartments) {
@@ -629,8 +647,8 @@ export async function executeMr11Pipeline(
         if (dept.code === RoleCode.DISPATCH) {
           dispatchHeaders = headers;
         }
-        if (dept.code === RoleCode.FINANCE) {
-          financeMonthColumns = buildFinanceMonthColumns(headers);
+        if (dept.code === RoleCode.BD) {
+          bdMonthColumns = buildFinanceMonthColumns(headers);
         }
       }
     }
@@ -1338,17 +1356,14 @@ export async function executeMr11Pipeline(
     cellColors['Actual Time of Departure'] = atdColor;
     outRow['_cellColors'] = cellColors;
 
-    // Monthly breakdown (from Finance ACTUAL / F'CAST month columns)
+    // Monthly breakdown (from the BD row's own ACTUAL / F'CAST month columns)
     const MONTH_COLUMNS_26 = MONTH_LABELS.map((m) => `${m}-26`);
     const MONTH_COLUMNS_27 = MONTH_LABELS.map((m) => `${m}-27`);
 
-    const financeRow = findBestDeptRow(RoleCode.FINANCE);
     const monthValues: Record<string, number> = {};
-    if (financeRow) {
-      for (const { header, label } of financeMonthColumns) {
-        const v = parseNumeric(financeRow[header]);
-        if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
-      }
+    for (const { header, label } of bdMonthColumns) {
+      const v = parseNumeric(bdData[header]);
+      if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
     }
 
     let sum2026 = 0;
@@ -1761,6 +1776,17 @@ export async function executeMr11Pipeline(
     }
 
     outRow['Produced Date'] = latestFilledDate;
+
+    // Blue-font BD rows only go as far as Planning: they take no Production or Dispatch values
+    if (isBlueColor(bdFontColor)) {
+      for (const key of Object.keys(outRow)) {
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = null;
+      }
+      for (const key of Object.keys(cellColors)) {
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) delete cellColors[key];
+      }
+      outRow['_atdColor'] = null;
+    }
 
     outRow['_fontColor'] = bdFontColor;
     outRow['_fillColor'] = bdFillColor;

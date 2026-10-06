@@ -1345,6 +1345,28 @@ function safeString(val) {
     return "";
   }
 }
+function readThemeColors(workbook) {
+  const xml = workbook._themes?.theme1 || "";
+  const scheme = xml.match(/<a:clrScheme[\s\S]*?<\/a:clrScheme>/)?.[0] || "";
+  const hexOf = (tag) => {
+    const block = scheme.match(new RegExp(`<a:${tag}>([\\s\\S]*?)</a:${tag}>`))?.[1] || "";
+    const hex = block.match(/srgbClr val="([0-9A-Fa-f]{6})"/)?.[1] || block.match(/lastClr="([0-9A-Fa-f]{6})"/)?.[1];
+    return hex ? `#${hex.toUpperCase()}` : "";
+  };
+  return ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"].map(hexOf);
+}
+function applyTint(hex, tint) {
+  if (!tint) return hex;
+  const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const tinted = channels.map((v) => Math.round(tint < 0 ? v * (1 + tint) : v + (255 - v) * tint));
+  return `#${tinted.map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+function colorHex(color, theme) {
+  if (!color) return void 0;
+  if (typeof color.argb === "string") return `#${color.argb.slice(-6).toUpperCase()}`;
+  if (typeof color.theme === "number" && theme[color.theme]) return applyTint(theme[color.theme], Number(color.tint) || 0);
+  return void 0;
+}
 async function parseAndNormalizeWorkbook(input) {
   const workbook = new ExcelJS.Workbook();
   if (Buffer.isBuffer(input)) {
@@ -1353,6 +1375,7 @@ async function parseAndNormalizeWorkbook(input) {
     await workbook.xlsx.readFile(input);
   }
   const sheets = [];
+  const theme = readThemeColors(workbook);
   workbook.eachSheet((worksheet, sheetId) => {
     const celldata = [];
     const mergeConfig = {};
@@ -1395,15 +1418,10 @@ async function parseAndNormalizeWorkbook(input) {
         const c = colNumber - 1;
         let bgHex;
         if (cell.fill && cell.fill.type === "pattern") {
-          const colorObj = cell.fill.fgColor;
-          if (colorObj?.argb && typeof colorObj.argb === "string") {
-            bgHex = `#${colorObj.argb.slice(-6).toUpperCase()}`;
-          }
+          bgHex = colorHex(cell.fill.fgColor, theme);
         }
         let fontColor;
-        if (cell.font?.color?.argb && typeof cell.font.color.argb === "string") {
-          fontColor = `#${cell.font.color.argb.slice(-6).toUpperCase()}`;
-        }
+        fontColor = colorHex(cell.font?.color, theme);
         let rawVal = extractRawValue(cellValue(cell));
         const parentMerge = mergeMap.get(`${r}_${c}`);
         if (parentMerge && (rawVal === null || rawVal === void 0 || rawVal === "")) {
@@ -1591,7 +1609,7 @@ var ORDERED_HEADER_LIST = [
   "Dispatched Date",
   "Formwork Quantity Sailed (m2)",
   "ATD",
-  // --- 2026 Monthly Breakdown & Total ---
+  // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
   "Jan-26",
   "Feb-26",
   "Mar-26",
@@ -1731,7 +1749,7 @@ var MR11_COLUMN_DEPARTMENTS = (() => {
   const map = {};
   for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
   for (const h of ORDERED_HEADER_LIST) {
-    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "FINANCE" /* FINANCE */;
+    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "BD" /* BD */;
   }
   return map;
 })();
@@ -1762,6 +1780,19 @@ function normalizeColor(color) {
   if (s === "WHITE" || s === "#FFF" || s === "#FFFFFF") return "#FFFFFF";
   return s.startsWith("#") ? s : `#${s}`;
 }
+function isBlueColor(color) {
+  const hex = normalizeColor(color);
+  if (!/^#[0-9A-F]{6}$/.test(hex)) return false;
+  const [r, g2, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g2, b);
+  const min = Math.min(r, g2, b);
+  const d = max - min;
+  if (max === 0 || d / max < 0.35 || max < 0.25) return false;
+  let hue = max === r ? (g2 - b) / d % 6 : max === g2 ? (b - r) / d + 2 : (r - g2) / d + 4;
+  hue = (hue * 60 + 360) % 360;
+  return hue >= 185 && hue <= 250;
+}
+var PRODUCTION_DISPATCH_COLUMN = /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
 function normalizeFillColor(color) {
   if (!color) return "";
   const s = String(color).trim().toUpperCase();
@@ -2190,7 +2221,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const datasetMap = {};
   let productionHeaders = {};
   let dispatchHeaders = {};
-  let financeMonthColumns = [];
+  let bdMonthColumns = [];
   let detectedProdSeries = 0;
   for (const dept of activeDepartments) {
     if (dept.activeVersion?.parsedWorkbook) {
@@ -2209,8 +2240,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         if (dept.code === "DISPATCH" /* DISPATCH */) {
           dispatchHeaders = headers;
         }
-        if (dept.code === "FINANCE" /* FINANCE */) {
-          financeMonthColumns = buildFinanceMonthColumns(headers);
+        if (dept.code === "BD" /* BD */) {
+          bdMonthColumns = buildFinanceMonthColumns(headers);
         }
       }
     }
@@ -2712,13 +2743,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["_cellColors"] = cellColors;
     const MONTH_COLUMNS_26 = MONTH_LABELS.map((m) => `${m}-26`);
     const MONTH_COLUMNS_27 = MONTH_LABELS.map((m) => `${m}-27`);
-    const financeRow = findBestDeptRow("FINANCE" /* FINANCE */);
     const monthValues = {};
-    if (financeRow) {
-      for (const { header, label } of financeMonthColumns) {
-        const v = parseNumeric(financeRow[header]);
-        if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
-      }
+    for (const { header, label } of bdMonthColumns) {
+      const v = parseNumeric(bdData[header]);
+      if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
     }
     let sum2026 = 0;
     let sum2027 = 0;
@@ -2974,6 +3002,15 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
     }
     outRow["Produced Date"] = latestFilledDate;
+    if (isBlueColor(bdFontColor)) {
+      for (const key of Object.keys(outRow)) {
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = null;
+      }
+      for (const key of Object.keys(cellColors)) {
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) delete cellColors[key];
+      }
+      outRow["_atdColor"] = null;
+    }
     outRow["_fontColor"] = bdFontColor;
     outRow["_fillColor"] = bdFillColor;
     return outRow;
@@ -3546,11 +3583,9 @@ async function exportMr11ToExcel(req, res) {
       const addedRow = worksheet.addRow(orderedRowData);
       if (row["_fontColor"]) {
         const hex = String(row["_fontColor"]).replace("#", "");
-        const projCell = addedRow.getCell(1);
-        projCell.font = {
-          color: { argb: `FF${hex}` },
-          bold: true
-        };
+        addedRow.eachCell({ includeEmpty: true }, (cell, col) => {
+          cell.font = { color: { argb: `FF${hex}` }, bold: col <= 4 && hex !== "000000" };
+        });
       }
       if (row["_fillColor"]) {
         const hex = String(row["_fillColor"]).replace("#", "");

@@ -172,7 +172,7 @@ export const ORDERED_HEADER_LIST = [
   'Formwork Quantity Sailed (m2)',
   'ATD',
 
-  // --- 2026 Monthly Breakdown & Total ---
+  // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
   'Jan-26',
   'Feb-26',
   'Mar-26',
@@ -278,13 +278,13 @@ export const MR11_DEPARTMENT_COLORS: Record<string, string> = {
 
 /**
  * Which department's file each MR11 column comes from. Mapped columns use their source;
- * the monthly columns come from Finance.
+ * the monthly columns come from BD's ACTUAL / F'CAST month columns.
  */
 export const MR11_COLUMN_DEPARTMENTS: Record<string, string> = (() => {
   const map: Record<string, string> = {};
   for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
   for (const h of ORDERED_HEADER_LIST) {
-    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = RoleCode.FINANCE;
+    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = RoleCode.BD;
   }
   return map;
 })();
