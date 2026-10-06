@@ -36,19 +36,12 @@ interface Mr11TableProps {
   zoom: number;
 }
 
-// Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
+// Highlighted column: a coloured border around it (header and cells), no fill
 const headerGlow = (color: string): React.CSSProperties => ({
-  boxShadow: `inset 0 0 0 2px ${color}, 0 0 10px 1px ${color}99`,
-  backgroundColor: `${color}1F`,
-  color,
-  position: 'relative',
-  zIndex: 1,
+  boxShadow: `inset 2px 0 0 ${color}, inset -2px 0 0 ${color}, inset 0 2px 0 ${color}`,
 });
 const columnGlow = (color: string, last: boolean): React.CSSProperties => ({
-  boxShadow: `inset 2px 0 0 ${color}, inset -2px 0 0 ${color}, inset 0 0 8px ${color}55${
-    last ? `, inset 0 -2px 0 ${color}` : ''
-  }`,
-  backgroundColor: `${color}12`,
+  boxShadow: `inset 2px 0 0 ${color}, inset -2px 0 0 ${color}${last ? `, inset 0 -2px 0 ${color}` : ''}`,
 });
 
 // MR11 master ledger grid, shared by the MR11 page and the CEO dashboard's raw data view
@@ -186,8 +179,6 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                         }`}
                         style={{
                           ...(glowColor ? columnGlow(glowColor, rIdx === records.length - 1) : {}),
-                          // keep the yellow ATD fill visible under the outline
-                          ...(glowColor && isYellowAtd ? { backgroundColor: undefined } : {}),
                           color: isYellowAtd
                             ? '#78350F'
                             : fontColor !== '#000000' && cIdx < 4
