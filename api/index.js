@@ -2607,21 +2607,11 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         outRow[mapping.target] = bestCandidate ? findCellValue(bestCandidate, mapping.sourceColumn) : null;
       }
     }
-    const matchedDispatchRows = dispatchRows.filter((dRow) => {
-      const dShort = cleanStr(
-        findCellValue(dRow.data, "Short Name") || findCellValue(dRow.data, "Project Shortname") || findCellValue(dRow.data, "Project Shortname (from bd column C)") || findCellValue(dRow.data, "Project Short Code") || findCellValue(dRow.data, "Short Code") || dRow.rawCells?.[1] || dRow.rawCells?.[2]
-      );
-      const dName = cleanStr(
-        findCellValue(dRow.data, "Customer & Project Name") || findCellValue(dRow.data, "Project Name") || findCellValue(dRow.data, "Project Name (from bd column A)") || dRow.rawCells?.[0] || dRow.rawCells?.[1]
-      );
-      const dNo = cleanStr(
-        findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No.") || dRow.rawCells?.[0]
-      );
-      const shortMatched = shortName && dShort && (dShort === shortName || dShort.includes(shortName) || shortName.includes(dShort)) || projectNo && dNo && (dNo === projectNo || dNo.includes(projectNo) || projectNo.includes(dNo));
-      if (!shortMatched) return false;
-      if (projectName && dName && !(dName === projectName || dName.includes(projectName) || projectName.includes(dName))) {
-        return false;
-      }
+    const dispatchCandidates = dispatchRows.filter((dRow) => {
+      const dShort = cleanStr(findCellValue(dRow.data, "Short Name") || findCellValue(dRow.data, "Project Shortname") || findCellValue(dRow.data, "Project Shortname (from bd column C)"));
+      const dNo = cleanStr(findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No."));
+      const idMatches = shortName && dShort ? dShort === shortName : Boolean(projectNo && dNo === projectNo);
+      if (!idMatches) return false;
       let dStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
         const v = findCellValue(dRow.data, sh);
@@ -2630,171 +2620,71 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           break;
         }
       }
-      if (dStream !== bdStream) return false;
-      const dFontColor = normalizeColor(dRow.fontColor);
-      if (dFontColor !== bdFontColor) return false;
-      const dFillColor = normalizeFillColor(dRow.fillColor);
-      if (bdFillColor !== dFillColor) return false;
-      return true;
+      return dStream === bdStream;
     });
-    let totalFormworkSailed = 0;
-    let hasSailedValue = false;
-    for (const dRow of matchedDispatchRows) {
-      const rawSailed = findCellValue(dRow.data, "Formwork Quantity Sailed (m2)") ?? findCellValue(dRow.data, "Formwork Quantity Sailed m2") ?? findCellValue(dRow.data, "Formwork Quantity Sailed") ?? findCellValue(dRow.data, "Quantity Sailed (m2)") ?? findCellValue(dRow.data, "Quantity Sailed") ?? findCellValue(dRow.data, "Total Sailed (m2)") ?? findCellValue(dRow.data, "Total Sailed");
-      const num = parseNumeric(rawSailed);
-      if (!isNaN(num) && num > 0) {
-        totalFormworkSailed += num;
-        hasSailedValue = true;
+    const dispatchMatches = closestColourGroup(dispatchCandidates, bdFontColor, bdFillColor);
+    const sumDispatchColumn = (header) => {
+      let total = null;
+      for (const dRow of dispatchMatches) {
+        const key = Object.keys(dRow.data).find((k) => header.test(k.trim()));
+        if (!key || dRow.mergedCopyHeaders?.includes(key) || !isCellFilled(dRow.data[key])) continue;
+        total = (total ?? 0) + parseNumeric(dRow.data[key]);
       }
+      return total;
+    };
+    const totalDispatched = sumDispatchColumn(/^cumulative dispatched/i);
+    const totalSailed = sumDispatchColumn(/^formwork quantity sailed/i);
+    for (const key of ["Total Dispatch", "Total Dispatched", "Total Dispatched Quantity", "Total Dispatch (m2)", "Total Dispatched (m2)", "Total Dispatched Quantity m2"]) {
+      outRow[key] = totalDispatched;
     }
-    const finalFormworkSailed = hasSailedValue ? totalFormworkSailed : null;
-    outRow["Formwork Quantity Sailed (m2)"] = finalFormworkSailed;
-    outRow["Formwork Quantity Sailed m2"] = finalFormworkSailed;
-    outRow["Formwork Quantity Sailed"] = finalFormworkSailed;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "formwork quantity sailed (m2)" || cleanH === "formwork quantity sailed m2" || cleanH === "formwork quantity sailed" || cleanH === "quantity sailed (m2)" || cleanH.includes("formwork") && cleanH.includes("sailed")) {
-          outRow[h] = finalFormworkSailed;
-        }
-      });
+    for (const key of ["Formwork Quantity Sailed (m2)", "Formwork Quantity Sailed m2", "Formwork Quantity Sailed"]) {
+      outRow[key] = totalSailed;
     }
-    let matchedDispatchRowForK = null;
-    let directColumnKValue = 0;
-    for (const dRow of matchedDispatchRows) {
-      const val = parseNumeric(
-        findCellValue(dRow.data, "Total Dispatched") ?? findCellValue(dRow.data, "Total Dispatch") ?? findCellValue(dRow.data, "Total Dispatched Quantity") ?? findCellValue(dRow.data, "Dispatched Quantity") ?? findCellValue(dRow.data, "Total Dispatch (m2)") ?? findCellValue(dRow.data, "Total Dispatched (m2)") ?? findCellValue(dRow.data, "Column K") ?? dRow.rawCells?.[10] ?? findCellValue(dRow.data, "__COLUMN_K__")
-      );
-      if (val > directColumnKValue) {
-        directColumnKValue = val;
-        matchedDispatchRowForK = dRow;
+    const dispatchColumns = (header) => Object.entries(dispatchHeaders).filter(([, h]) => header.test(String(h).trim())).map(([c]) => Number(c));
+    const etdColumns = dispatchColumns(/\betd\b|^eta pol$/i);
+    const atdColumns = dispatchColumns(/^(atd|atd date|actual time of departure)$/i);
+    const latestDateIn = (dRow, columns) => {
+      let latest = null;
+      for (const c of columns) {
+        const v = dRow.rawCells?.[c] ?? dRow.data[dispatchHeaders[c]];
+        const d = isCellFilled(v) && parseFlexibleDate(v) ? formatDateString(v) : null;
+        if (d && (!latest || d > latest)) latest = d;
       }
+      return latest;
+    };
+    const etdByDate = /* @__PURE__ */ new Map();
+    const atdByDate = /* @__PURE__ */ new Map();
+    const addDate = (byDate, date, m2) => {
+      const current = byDate.has(date) ? byDate.get(date) : null;
+      byDate.set(date, m2 === null ? current : (current ?? 0) + m2);
+    };
+    for (const dRow of dispatchMatches) {
+      const areaKey = Object.keys(dRow.data).find((k) => /^total area/i.test(k.trim()));
+      const m2 = areaKey && !dRow.mergedCopyHeaders?.includes(areaKey) && isCellFilled(dRow.data[areaKey]) ? parseNumeric(dRow.data[areaKey]) : null;
+      const atd = latestDateIn(dRow, atdColumns);
+      const etd = latestDateIn(dRow, etdColumns);
+      if (atd) addDate(atdByDate, atd, m2);
+      else if (etd) addDate(etdByDate, etd, m2);
     }
-    if (!matchedDispatchRowForK && matchedDispatchRows.length > 0) {
-      matchedDispatchRowForK = matchedDispatchRows[matchedDispatchRows.length - 1];
+    const formatDispatchDates = (byDate) => {
+      if (byDate.size === 0) return null;
+      return [...byDate.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([iso, m2]) => {
+        const [y, m, d] = iso.split("-").map((p) => parseInt(p, 10));
+        return `${d}/${m}/${y}${m2 !== null ? ` (${Number(m2.toFixed(2))} m2)` : ""}`;
+      }).join(", ");
+    };
+    const latestOf = (byDate) => [...byDate.keys()].sort().pop() ?? null;
+    const etdText = formatDispatchDates(etdByDate);
+    const atdText = formatDispatchDates(atdByDate);
+    for (const key of ["Dispatched Date", "Dispatch Date", "Actual Dispatched Date", "Actual Dispatch Date", "Date Dispatched"]) {
+      outRow[key] = etdText;
     }
-    const finalTotalDispatch = directColumnKValue > 0 ? directColumnKValue : null;
-    outRow["Total Dispatch"] = finalTotalDispatch;
-    outRow["Total Dispatched"] = finalTotalDispatch;
-    outRow["Total Dispatched Quantity"] = finalTotalDispatch;
-    outRow["Total Dispatch (m2)"] = finalTotalDispatch;
-    outRow["Total Dispatched (m2)"] = finalTotalDispatch;
-    outRow["Total Dispatched Quantity m2"] = finalTotalDispatch;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "total dispatch" || cleanH === "total dispatched" || cleanH === "total dispatched quantity" || cleanH === "total dispatch (m2)" || cleanH === "total dispatched (m2)" || cleanH.includes("total dispatch") || cleanH.includes("total dispatched")) {
-          outRow[h] = finalTotalDispatch;
-        }
-      });
+    for (const key of ["ATD", "ATD Date", "Actual Time of Departure"]) {
+      outRow[key] = atdText;
     }
-    const dispatchCompositeKey = `${shortName || projectNo}__${projectName}__${bdStream}__${bdFontColor}__${bdFillColor}`;
-    const previousEntry = prevDispatchHistory[dispatchCompositeKey];
-    let resolvedDispatchedDate = null;
-    if (directColumnKValue > 0) {
-      if (!previousEntry) {
-        resolvedDispatchedDate = todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: todayStr };
-      } else if (previousEntry.quantity !== directColumnKValue) {
-        resolvedDispatchedDate = todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: todayStr };
-      } else {
-        resolvedDispatchedDate = previousEntry.date || todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: resolvedDispatchedDate };
-      }
-    } else {
-      resolvedDispatchedDate = null;
-    }
-    outRow["Dispatched Date"] = resolvedDispatchedDate;
-    outRow["Dispatch Date"] = resolvedDispatchedDate;
-    outRow["Actual Dispatched Date"] = resolvedDispatchedDate;
-    outRow["Actual Dispatch Date"] = resolvedDispatchedDate;
-    outRow["Date Dispatched"] = resolvedDispatchedDate;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "dispatched date" || cleanH === "dispatch date" || cleanH === "actual dispatched date" || cleanH === "actual dispatch date" || cleanH === "date dispatched" || cleanH.includes("dispatch") && cleanH.includes("date")) {
-          outRow[h] = resolvedDispatchedDate;
-        }
-      });
-    }
-    let latestDateW = null;
-    let latestDateWStr = null;
-    let latestDatePV = null;
-    let latestDatePVStr = null;
-    const atdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /^(atd|atd date|actual time of departure)$/i.test(String(h).trim())).map(([c]) => Number(c));
-    const etdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /\betd\b/i.test(String(h))).map(([c]) => Number(c));
-    const atdColumns = atdHeaderIdx.length ? atdHeaderIdx : [22];
-    const etdColumns = etdHeaderIdx.length ? etdHeaderIdx : [15, 16, 17, 18, 19, 20, 21];
-    for (const dRow of matchedDispatchRows) {
-      const candidateWValues = atdColumns.flatMap((c) => [
-        dRow.rawCells?.[c],
-        dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
-      ]);
-      for (const valW of candidateWValues) {
-        if (valW !== void 0 && valW !== null && String(valW).trim() !== "") {
-          const d = parseFlexibleDate(valW);
-          if (d) {
-            if (!latestDateW || d.getTime() > latestDateW.getTime()) {
-              latestDateW = d;
-              latestDateWStr = formatDateString(d);
-            }
-          } else {
-            const s = String(valW).trim();
-            if (s && s !== "-" && !latestDateWStr) {
-              latestDateWStr = s;
-            }
-          }
-        }
-      }
-      for (const c of etdColumns) {
-        const candidatePVValues = [
-          dRow.rawCells?.[c],
-          dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
-        ];
-        for (const valPV of candidatePVValues) {
-          if (valPV !== void 0 && valPV !== null && String(valPV).trim() !== "") {
-            const d = parseFlexibleDate(valPV);
-            if (d) {
-              if (!latestDatePV || d.getTime() > latestDatePV.getTime()) {
-                latestDatePV = d;
-                latestDatePVStr = formatDateString(d);
-              }
-            } else {
-              const s = String(valPV).trim();
-              if (s && s !== "-" && !latestDatePVStr) {
-                latestDatePVStr = s;
-              }
-            }
-          }
-        }
-      }
-    }
-    let finalAtdDate = null;
-    let atdColor = "#FFFFFF";
-    if (latestDateWStr) {
-      finalAtdDate = latestDateWStr;
-      atdColor = "#FFFFFF";
-    } else if (latestDatePVStr) {
-      finalAtdDate = latestDatePVStr;
-      atdColor = "#FFFF00";
-    }
-    outRow["ATD"] = finalAtdDate;
-    outRow["ATD Date"] = finalAtdDate;
-    outRow["Actual Time of Departure"] = finalAtdDate;
-    outRow["_atdColor"] = atdColor;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "atd" || cleanH === "atd date" || cleanH === "actual time of departure" || cleanH === "actual departure date" || cleanH.includes("atd")) {
-          outRow[h] = finalAtdDate;
-          cellColors[h] = atdColor;
-        }
-      });
-    }
-    cellColors["ATD"] = atdColor;
-    cellColors["ATD Date"] = atdColor;
-    cellColors["Actual Time of Departure"] = atdColor;
+    outRow["_dispatchedDate"] = latestOf(etdByDate);
+    outRow["_atdDate"] = latestOf(atdByDate);
+    outRow["_atdColor"] = null;
     outRow["_cellColors"] = cellColors;
     const MONTH_COLUMNS_26 = MONTH_LABELS.map((m) => `${m}-26`);
     const MONTH_COLUMNS_27 = MONTH_LABELS.map((m) => `${m}-27`);
@@ -3494,7 +3384,7 @@ async function getLmeAluminiumPrice() {
 
 // server/modules/mr11/mr11.controller.ts
 var prisma5 = new PrismaClient();
-var ORDERED_HEADER_LIST2 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
+var ORDERED_HEADER_LIST3 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
 async function getLatestMr11(req, res) {
   try {
     const latestRun = await getLatestMr11Run(prisma5);
@@ -3508,7 +3398,7 @@ async function getLatestMr11(req, res) {
         fxRate: fx,
         lmePrice,
         visibleColumns: config?.visibleColumns || [],
-        orderedHeaders: ORDERED_HEADER_LIST2,
+        orderedHeaders: ORDERED_HEADER_LIST3,
         headerGroups: MR11_HEADER_GROUPS,
         numberFormats: MR11_NUMBER_FORMATS,
         // Lets a department user's own columns be highlighted in their department colour
@@ -3566,7 +3456,7 @@ async function exportMr11ToExcel(req, res) {
     const records = latestRun.records;
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
-    const headers = ORDERED_HEADER_LIST2;
+    const headers = ORDERED_HEADER_LIST3;
     worksheet.columns = headers.map((header) => ({
       key: header,
       width: Math.max(header.length + 4, 16),

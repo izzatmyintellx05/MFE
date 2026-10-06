@@ -1135,43 +1135,15 @@ export async function executeMr11Pipeline(
     }
 
     // ------------------------------------------------------------------------
-    // DISPATCH MAPPINGS: 5-POINT COMPOSITE KEY MATCHING
+    // DISPATCH MAPPINGS
     // ------------------------------------------------------------------------
-    const matchedDispatchRows = dispatchRows.filter((dRow) => {
-      const dShort = cleanStr(
-        findCellValue(dRow.data, 'Short Name') ||
-        findCellValue(dRow.data, 'Project Shortname') ||
-        findCellValue(dRow.data, 'Project Shortname (from bd column C)') ||
-        findCellValue(dRow.data, 'Project Short Code') ||
-        findCellValue(dRow.data, 'Short Code') ||
-        dRow.rawCells?.[1] ||
-        dRow.rawCells?.[2]
-      );
-
-      const dName = cleanStr(
-        findCellValue(dRow.data, 'Customer & Project Name') ||
-        findCellValue(dRow.data, 'Project Name') ||
-        findCellValue(dRow.data, 'Project Name (from bd column A)') ||
-        dRow.rawCells?.[0] ||
-        dRow.rawCells?.[1]
-      );
-
-      const dNo = cleanStr(
-        findCellValue(dRow.data, 'Project No') ||
-        findCellValue(dRow.data, 'Project No.') ||
-        dRow.rawCells?.[0]
-      );
-
-      const shortMatched =
-        (shortName && dShort && (dShort === shortName || dShort.includes(shortName) || shortName.includes(dShort))) ||
-        (projectNo && dNo && (dNo === projectNo || dNo.includes(projectNo) || projectNo.includes(dNo)));
-
-      if (!shortMatched) return false;
-
-      if (projectName && dName && !(dName === projectName || dName.includes(projectName) || projectName.includes(dName))) {
-        return false;
-      }
-
+    // The Dispatch blocks for this BD row: same project & stream, and the closest font and fill
+    // colour (Dispatch uses its own shades, e.g. #FF9933 for BD's #FF9900)
+    const dispatchCandidates = dispatchRows.filter((dRow) => {
+      const dShort = cleanStr(findCellValue(dRow.data, 'Short Name') || findCellValue(dRow.data, 'Project Shortname') || findCellValue(dRow.data, 'Project Shortname (from bd column C)'));
+      const dNo = cleanStr(findCellValue(dRow.data, 'Project No') || findCellValue(dRow.data, 'Project No.'));
+      const idMatches = shortName && dShort ? dShort === shortName : Boolean(projectNo && dNo === projectNo);
+      if (!idMatches) return false;
       let dStream = '1';
       for (const sh of STREAM_HEADER_CANDIDATES) {
         const v = findCellValue(dRow.data, sh);
@@ -1180,247 +1152,94 @@ export async function executeMr11Pipeline(
           break;
         }
       }
-      if (dStream !== bdStream) return false;
-
-      const dFontColor = normalizeColor(dRow.fontColor);
-      if (dFontColor !== bdFontColor) return false;
-
-      const dFillColor = normalizeFillColor(dRow.fillColor);
-      if (bdFillColor !== dFillColor) return false;
-
-      return true;
+      return dStream === bdStream;
     });
+    const dispatchMatches = closestColourGroup(dispatchCandidates, bdFontColor, bdFillColor);
 
-    let totalFormworkSailed = 0;
-    let hasSailedValue = false;
-    for (const dRow of matchedDispatchRows) {
-      const rawSailed =
-        findCellValue(dRow.data, 'Formwork Quantity Sailed (m2)') ??
-        findCellValue(dRow.data, 'Formwork Quantity Sailed m2') ??
-        findCellValue(dRow.data, 'Formwork Quantity Sailed') ??
-        findCellValue(dRow.data, 'Quantity Sailed (m2)') ??
-        findCellValue(dRow.data, 'Quantity Sailed') ??
-        findCellValue(dRow.data, 'Total Sailed (m2)') ??
-        findCellValue(dRow.data, 'Total Sailed');
-
-      const num = parseNumeric(rawSailed);
-      if (!isNaN(num) && num > 0) {
-        totalFormworkSailed += num;
-        hasSailedValue = true;
+    // A column's values summed over those blocks, each merged cell counted once
+    const sumDispatchColumn = (header: RegExp): number | null => {
+      let total: number | null = null;
+      for (const dRow of dispatchMatches) {
+        const key = Object.keys(dRow.data).find((k) => header.test(k.trim()));
+        if (!key || dRow.mergedCopyHeaders?.includes(key) || !isCellFilled(dRow.data[key])) continue;
+        total = (total ?? 0) + parseNumeric(dRow.data[key]);
       }
+      return total;
+    };
+
+    // Total Dispatch = "Cumulative Dispatched (Project)"; Quantity Sailed = "Formwork Quantity Sailed (m2)"
+    const totalDispatched = sumDispatchColumn(/^cumulative dispatched/i);
+    const totalSailed = sumDispatchColumn(/^formwork quantity sailed/i);
+    for (const key of ['Total Dispatch', 'Total Dispatched', 'Total Dispatched Quantity', 'Total Dispatch (m2)', 'Total Dispatched (m2)', 'Total Dispatched Quantity m2']) {
+      outRow[key] = totalDispatched;
+    }
+    for (const key of ['Formwork Quantity Sailed (m2)', 'Formwork Quantity Sailed m2', 'Formwork Quantity Sailed']) {
+      outRow[key] = totalSailed;
     }
 
-    const finalFormworkSailed = hasSailedValue ? totalFormworkSailed : null;
-    outRow['Formwork Quantity Sailed (m2)'] = finalFormworkSailed;
-    outRow['Formwork Quantity Sailed m2'] = finalFormworkSailed;
-    outRow['Formwork Quantity Sailed'] = finalFormworkSailed;
-
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (
-          cleanH === 'formwork quantity sailed (m2)' ||
-          cleanH === 'formwork quantity sailed m2' ||
-          cleanH === 'formwork quantity sailed' ||
-          cleanH === 'quantity sailed (m2)' ||
-          (cleanH.includes('formwork') && cleanH.includes('sailed'))
-        ) {
-          outRow[h] = finalFormworkSailed;
-        }
-      });
-    }
-
-    let matchedDispatchRowForK: ExtractedRow | null = null;
-    let directColumnKValue = 0;
-
-    for (const dRow of matchedDispatchRows) {
-      // By header name first; column K is only the fallback for files without the header
-      const val = parseNumeric(
-        findCellValue(dRow.data, 'Total Dispatched') ??
-        findCellValue(dRow.data, 'Total Dispatch') ??
-        findCellValue(dRow.data, 'Total Dispatched Quantity') ??
-        findCellValue(dRow.data, 'Dispatched Quantity') ??
-        findCellValue(dRow.data, 'Total Dispatch (m2)') ??
-        findCellValue(dRow.data, 'Total Dispatched (m2)') ??
-        findCellValue(dRow.data, 'Column K') ??
-        dRow.rawCells?.[10] ??
-        findCellValue(dRow.data, '__COLUMN_K__')
-      );
-      if (val > directColumnKValue) {
-        directColumnKValue = val;
-        matchedDispatchRowForK = dRow;
+    // Each Dispatch row's own dates: its ETD is the latest of the original and revised ETD columns
+    // (ETA POL, Rev ETD, Rev 2 ETD ...); a row with an ATD has sailed and is listed under ATD instead.
+    // Each date shows that row's m2 from "Total Area m2", e.g. "12/12/2026 (100 m2), 11/12/2026 (400 m2)".
+    const dispatchColumns = (header: RegExp) =>
+      Object.entries(dispatchHeaders)
+        .filter(([, h]) => header.test(String(h).trim()))
+        .map(([c]) => Number(c));
+    const etdColumns = dispatchColumns(/\betd\b|^eta pol$/i);
+    const atdColumns = dispatchColumns(/^(atd|atd date|actual time of departure)$/i);
+    const latestDateIn = (dRow: ExtractedRow, columns: number[]): string | null => {
+      let latest: string | null = null;
+      for (const c of columns) {
+        const v = dRow.rawCells?.[c] ?? dRow.data[dispatchHeaders[c]];
+        const d = isCellFilled(v) && parseFlexibleDate(v) ? formatDateString(v) : null;
+        if (d && (!latest || d > latest)) latest = d;
       }
+      return latest;
+    };
+
+    const etdByDate = new Map<string, number | null>();
+    const atdByDate = new Map<string, number | null>();
+    const addDate = (byDate: Map<string, number | null>, date: string, m2: number | null) => {
+      const current = byDate.has(date) ? byDate.get(date)! : null;
+      byDate.set(date, m2 === null ? current : (current ?? 0) + m2);
+    };
+    for (const dRow of dispatchMatches) {
+      const areaKey = Object.keys(dRow.data).find((k) => /^total area/i.test(k.trim()));
+      const m2 =
+        areaKey && !dRow.mergedCopyHeaders?.includes(areaKey) && isCellFilled(dRow.data[areaKey])
+          ? parseNumeric(dRow.data[areaKey])
+          : null;
+      const atd = latestDateIn(dRow, atdColumns);
+      const etd = latestDateIn(dRow, etdColumns);
+      if (atd) addDate(atdByDate, atd, m2);
+      else if (etd) addDate(etdByDate, etd, m2);
     }
 
-    if (!matchedDispatchRowForK && matchedDispatchRows.length > 0) {
-      matchedDispatchRowForK = matchedDispatchRows[matchedDispatchRows.length - 1];
+    // "2026-12-12" -> "12/12/2026 (100 m2)", latest date first
+    const formatDispatchDates = (byDate: Map<string, number | null>): string | null => {
+      if (byDate.size === 0) return null;
+      return [...byDate.entries()]
+        .sort(([a], [b]) => b.localeCompare(a))
+        .map(([iso, m2]) => {
+          const [y, m, d] = iso.split('-').map((p) => parseInt(p, 10));
+          return `${d}/${m}/${y}${m2 !== null ? ` (${Number(m2.toFixed(2))} m2)` : ''}`;
+        })
+        .join(', ');
+    };
+    const latestOf = (byDate: Map<string, number | null>) => [...byDate.keys()].sort().pop() ?? null;
+
+    const etdText = formatDispatchDates(etdByDate);
+    const atdText = formatDispatchDates(atdByDate);
+    for (const key of ['Dispatched Date', 'Dispatch Date', 'Actual Dispatched Date', 'Actual Dispatch Date', 'Date Dispatched']) {
+      outRow[key] = etdText;
     }
-
-    const finalTotalDispatch = directColumnKValue > 0 ? directColumnKValue : null;
-    outRow['Total Dispatch'] = finalTotalDispatch;
-    outRow['Total Dispatched'] = finalTotalDispatch;
-    outRow['Total Dispatched Quantity'] = finalTotalDispatch;
-    outRow['Total Dispatch (m2)'] = finalTotalDispatch;
-    outRow['Total Dispatched (m2)'] = finalTotalDispatch;
-    outRow['Total Dispatched Quantity m2'] = finalTotalDispatch;
-
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (
-          cleanH === 'total dispatch' ||
-          cleanH === 'total dispatched' ||
-          cleanH === 'total dispatched quantity' ||
-          cleanH === 'total dispatch (m2)' ||
-          cleanH === 'total dispatched (m2)' ||
-          cleanH.includes('total dispatch') ||
-          cleanH.includes('total dispatched')
-        ) {
-          outRow[h] = finalTotalDispatch;
-        }
-      });
+    for (const key of ['ATD', 'ATD Date', 'Actual Time of Departure']) {
+      outRow[key] = atdText;
     }
+    // Latest single dates, for month grouping on the CEO dashboard
+    outRow['_dispatchedDate'] = latestOf(etdByDate);
+    outRow['_atdDate'] = latestOf(atdByDate);
+    outRow['_atdColor'] = null;
 
-    const dispatchCompositeKey = `${shortName || projectNo}__${projectName}__${bdStream}__${bdFontColor}__${bdFillColor}`;
-    const previousEntry = prevDispatchHistory[dispatchCompositeKey];
-    let resolvedDispatchedDate: string | null = null;
-
-    if (directColumnKValue > 0) {
-      if (!previousEntry) {
-        resolvedDispatchedDate = todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: todayStr };
-      } else if (previousEntry.quantity !== directColumnKValue) {
-        resolvedDispatchedDate = todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: todayStr };
-      } else {
-        resolvedDispatchedDate = previousEntry.date || todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: resolvedDispatchedDate };
-      }
-    } else {
-      resolvedDispatchedDate = null;
-    }
-
-    outRow['Dispatched Date'] = resolvedDispatchedDate;
-    outRow['Dispatch Date'] = resolvedDispatchedDate;
-    outRow['Actual Dispatched Date'] = resolvedDispatchedDate;
-    outRow['Actual Dispatch Date'] = resolvedDispatchedDate;
-    outRow['Date Dispatched'] = resolvedDispatchedDate;
-
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (
-          cleanH === 'dispatched date' ||
-          cleanH === 'dispatch date' ||
-          cleanH === 'actual dispatched date' ||
-          cleanH === 'actual dispatch date' ||
-          cleanH === 'date dispatched' ||
-          (cleanH.includes('dispatch') && cleanH.includes('date'))
-        ) {
-          outRow[h] = resolvedDispatchedDate;
-        }
-      });
-    }
-
-    let latestDateW: Date | null = null;
-    let latestDateWStr: string | null = null;
-    let latestDatePV: Date | null = null;
-    let latestDatePVStr: string | null = null;
-
-    // ATD and the revised ETD dates are found by header name; the fixed columns (W, and P to V)
-    // are only used when the Dispatch file has no recognisable header for them
-    const atdHeaderIdx = Object.entries(dispatchHeaders)
-      .filter(([, h]) => /^(atd|atd date|actual time of departure)$/i.test(String(h).trim()))
-      .map(([c]) => Number(c));
-    const etdHeaderIdx = Object.entries(dispatchHeaders)
-      .filter(([, h]) => /\betd\b/i.test(String(h)))
-      .map(([c]) => Number(c));
-    const atdColumns = atdHeaderIdx.length ? atdHeaderIdx : [22];
-    const etdColumns = etdHeaderIdx.length ? etdHeaderIdx : [15, 16, 17, 18, 19, 20, 21];
-
-    for (const dRow of matchedDispatchRows) {
-      const candidateWValues: any[] = atdColumns.flatMap((c) => [
-        dRow.rawCells?.[c],
-        dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : undefined,
-      ]);
-
-      for (const valW of candidateWValues) {
-        if (valW !== undefined && valW !== null && String(valW).trim() !== '') {
-          const d = parseFlexibleDate(valW);
-          if (d) {
-            if (!latestDateW || d.getTime() > latestDateW.getTime()) {
-              latestDateW = d;
-              latestDateWStr = formatDateString(d);
-            }
-          } else {
-            const s = String(valW).trim();
-            if (s && s !== '-' && !latestDateWStr) {
-              latestDateWStr = s;
-            }
-          }
-        }
-      }
-
-      for (const c of etdColumns) {
-        const candidatePVValues: any[] = [
-          dRow.rawCells?.[c],
-          dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : undefined,
-        ];
-
-        for (const valPV of candidatePVValues) {
-          if (valPV !== undefined && valPV !== null && String(valPV).trim() !== '') {
-            const d = parseFlexibleDate(valPV);
-            if (d) {
-              if (!latestDatePV || d.getTime() > latestDatePV.getTime()) {
-                latestDatePV = d;
-                latestDatePVStr = formatDateString(d);
-              }
-            } else {
-              const s = String(valPV).trim();
-              if (s && s !== '-' && !latestDatePVStr) {
-                latestDatePVStr = s;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    let finalAtdDate: string | null = null;
-    let atdColor: string = '#FFFFFF';
-
-    if (latestDateWStr) {
-      finalAtdDate = latestDateWStr;
-      atdColor = '#FFFFFF';
-    } else if (latestDatePVStr) {
-      finalAtdDate = latestDatePVStr;
-      atdColor = '#FFFF00';
-    }
-
-    outRow['ATD'] = finalAtdDate;
-    outRow['ATD Date'] = finalAtdDate;
-    outRow['Actual Time of Departure'] = finalAtdDate;
-    outRow['_atdColor'] = atdColor;
-
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (
-          cleanH === 'atd' ||
-          cleanH === 'atd date' ||
-          cleanH === 'actual time of departure' ||
-          cleanH === 'actual departure date' ||
-          cleanH.includes('atd')
-        ) {
-          outRow[h] = finalAtdDate;
-          cellColors[h] = atdColor;
-        }
-      });
-    }
-
-    cellColors['ATD'] = atdColor;
-    cellColors['ATD Date'] = atdColor;
-    cellColors['Actual Time of Departure'] = atdColor;
     outRow['_cellColors'] = cellColors;
 
     // Monthly breakdown (from the BD row's own ACTUAL / F'CAST month columns)
