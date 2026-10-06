@@ -4,7 +4,14 @@ import ExcelJS from 'exceljs';
 import { executeMr11Pipeline } from './mr11.engine';
 import { getLatestMr11Run, hydrateActiveVersionsFromDb } from '../../db/supabase';
 import * as mr11ConfigModule from '../../config/mr11.config';
-import { MR11_HEADER_GROUPS } from '../../config/mr11.config';
+import {
+  MR11_HEADER_GROUPS,
+  MR11_NUMBER_FORMATS,
+  MR11_COLUMN_DEPARTMENTS,
+  MR11_DEPARTMENT_COLORS,
+} from '../../config/mr11.config';
+import { getUsdToMyrRate, withMyrPrices } from '../../utils/fx';
+import { getLmeAluminiumPrice } from '../../utils/lme';
 
 const prisma = new PrismaClient();
 
@@ -19,13 +26,26 @@ export async function getLatestMr11(req: Request, res: Response) {
 
     const config = await prisma.mr11Config.findUnique({ where: { id: 'singleton' } });
 
+    // Ringgit prices use today's live rate, not the rate when MR11 was generated
+    const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
+    const run =
+      latestRun && Array.isArray(latestRun.records)
+        ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) }
+        : latestRun;
+
     return res.json({
       success: true,
       data: {
-        run: latestRun,
+        run,
+        fxRate: fx,
+        lmePrice,
         visibleColumns: (config?.visibleColumns as string[]) || [],
         orderedHeaders: ORDERED_HEADER_LIST,
         headerGroups: MR11_HEADER_GROUPS,
+        numberFormats: MR11_NUMBER_FORMATS,
+        // Lets a department user's own columns be highlighted in their department colour
+        columnDepartments: MR11_COLUMN_DEPARTMENTS,
+        departmentColors: MR11_DEPARTMENT_COLORS,
       },
     });
   } catch (err: any) {
@@ -81,7 +101,7 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: { message: 'No MR11 records to export' } });
     }
 
-    const records = latestRun.records as Record<string, any>[];
+    const records = withMyrPrices(latestRun.records as Record<string, any>[], await getUsdToMyrRate());
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('MR11 Master');
 
@@ -89,6 +109,9 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     worksheet.columns = headers.map((header) => ({
       key: header,
       width: Math.max(header.length + 4, 16),
+      ...(MR11_NUMBER_FORMATS[header] !== undefined
+        ? { style: { numFmt: `0.${'0'.repeat(MR11_NUMBER_FORMATS[header])}` } }
+        : {}),
     }));
 
     // Two header rows: grouped columns (e.g. Payment terms) share a merged top cell with
@@ -119,7 +142,10 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     records.forEach((row) => {
       const orderedRowData: Record<string, any> = {};
       headers.forEach((h) => {
-        orderedRowData[h] = row[h] ?? '';
+        // Columns with fixed decimals are written as numbers so Excel can apply the format
+        const places = MR11_NUMBER_FORMATS[h];
+        const n = Number(row[h]);
+        orderedRowData[h] = places !== undefined && row[h] !== null && row[h] !== '' && !isNaN(n) ? n : row[h] ?? '';
       });
       const addedRow = worksheet.addRow(orderedRowData);
 

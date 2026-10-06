@@ -73,7 +73,7 @@ export const ProductionPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <ZoomControls zoom={zoom} setZoom={setZoom} min={75} max={135} step={5} />
+          <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
 
           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
             <button

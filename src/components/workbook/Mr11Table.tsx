@@ -29,11 +29,37 @@ interface Mr11TableProps {
   records: any[];
   headers: string[];
   headerGroups?: HeaderGroup[];
+  /** Decimal places per column, e.g. { "LME Rate (USD)": 3 } */
+  numberFormats?: Record<string, number>;
+  /** Columns to outline with a glow, mapped to the colour (e.g. the logged-in department's columns) */
+  highlightColumns?: Record<string, string>;
   zoom: number;
 }
 
+// Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
+const headerGlow = (color: string): React.CSSProperties => ({
+  boxShadow: `inset 0 0 0 2px ${color}, 0 0 10px 1px ${color}99`,
+  backgroundColor: `${color}1F`,
+  color,
+  position: 'relative',
+  zIndex: 1,
+});
+const columnGlow = (color: string, last: boolean): React.CSSProperties => ({
+  boxShadow: `inset 2px 0 0 ${color}, inset -2px 0 0 ${color}, inset 0 0 8px ${color}55${
+    last ? `, inset 0 -2px 0 ${color}` : ''
+  }`,
+  backgroundColor: `${color}12`,
+});
+
 // MR11 master ledger grid, shared by the MR11 page and the CEO dashboard's raw data view
-export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGroups = [], zoom }) => {
+export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGroups = [], numberFormats = {}, highlightColumns = {}, zoom }) => {
+  // A value as shown in a cell: numbers in a formatted column get their fixed decimals
+  const cellText = (h: string, v: any): string => {
+    if (v === null || v === undefined || v === '') return '—';
+    const places = numberFormats[h];
+    const n = Number(v);
+    return places !== undefined && String(v).trim() !== '' && !isNaN(n) ? n.toFixed(places) : String(v);
+  };
   const groupOf = (h: string) => headerGroups.find((g) => g.columns.some((c) => c.key === h));
   const subLabelOf = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
   const groupSpan = (idx: number) => {
@@ -70,6 +96,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                       key={idx}
                       rowSpan={2}
                       className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
+                      style={highlightColumns[h] ? headerGlow(highlightColumns[h]) : undefined}
                     >
                       {h}
                     </th>
@@ -77,11 +104,13 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                 }
                 // Grouped column: only the first column of the group draws the shared header
                 if (idx > 0 && groupOf(headers[idx - 1]) === group) return null;
+                const groupColor = group.columns.map((c) => highlightColumns[c.key]).find(Boolean);
                 return (
                   <th
                     key={idx}
                     colSpan={groupSpan(idx)}
                     className="p-2.5 border-r border-b border-stone-200 whitespace-nowrap text-center bg-[#FAF9F6]"
+                    style={groupColor ? headerGlow(groupColor) : undefined}
                   >
                     {group.label}
                   </th>
@@ -94,6 +123,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                   <th
                     key={idx}
                     className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
+                    style={highlightColumns[h] ? headerGlow(highlightColumns[h]) : undefined}
                   >
                     {subLabelOf(h)}
                   </th>
@@ -122,6 +152,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                   {/* Cell Data */}
                   {headers.map((h, cIdx) => {
                     const isMergeTarget = isStreamMergeColumn(h);
+                    const glowColor = highlightColumns[h];
 
                     // Stream merged columns (Shellplan & Design)
                     if (isMergeTarget) {
@@ -131,10 +162,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                           key={cIdx}
                           rowSpan={streamSpan}
                           className="p-2 border-r border-stone-200 whitespace-nowrap text-center align-middle font-bold text-stone-900 bg-stone-50/80"
+                          style={glowColor ? columnGlow(glowColor, rIdx + streamSpan >= records.length) : undefined}
                         >
-                          {row?.[h] !== null && row?.[h] !== undefined && row?.[h] !== ''
-                            ? String(row[h])
-                            : '—'}
+                          {cellText(h, row?.[h])}
                         </td>
                       );
                     }
@@ -155,6 +185,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                             : ''
                         }`}
                         style={{
+                          ...(glowColor ? columnGlow(glowColor, rIdx === records.length - 1) : {}),
+                          // keep the yellow ATD fill visible under the outline
+                          ...(glowColor && isYellowAtd ? { backgroundColor: undefined } : {}),
                           color: isYellowAtd
                             ? '#78350F'
                             : fontColor !== '#000000' && cIdx < 4
@@ -163,9 +196,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                           fontWeight: fontColor !== '#000000' && cIdx < 4 ? 'bold' : 'normal',
                         }}
                       >
-                        {row?.[h] !== null && row?.[h] !== undefined && row?.[h] !== ''
-                          ? String(row[h])
-                          : '—'}
+                        {cellText(h, row?.[h])}
                       </td>
                     );
                   })}

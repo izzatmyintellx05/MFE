@@ -12,7 +12,7 @@ interface ZoomControlsProps {
 export const ZoomControls: React.FC<ZoomControlsProps> = ({
   zoom,
   setZoom,
-  min = 70,
+  min = 20,
   max = 140,
   step = 5,
 }) => {

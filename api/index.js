@@ -1465,6 +1465,12 @@ var MR11_HEADER_GROUPS = [
     ]
   }
 ];
+var MR11_NUMBER_FORMATS = {
+  "LME Rate (USD)": 3,
+  "LME Adjusted (USD)": 3,
+  "Final Selling Price (USD)": 2,
+  "Final Selling Price (MYR)": 2
+};
 var MR11_SOURCE_KEY_MAP = {
   BD: [
     "Customer & Project Name",
@@ -1558,12 +1564,14 @@ var ORDERED_HEADER_LIST = [
   "Payment terms - Type 3",
   "Selling Price (USD)",
   "LME",
+  "LME Rate (USD)",
   "Incoterms",
   "Props, WPB, Waler, Acc (USD)",
   "Aluminium Weight Adjusted (USD)",
   "LME Adjusted (USD)",
   "Freight Adjusted (USD)",
   "Final Selling Price (USD)",
+  "Final Selling Price (MYR)",
   "Advance Received / Payment Status",
   "Actual Received",
   "Payment Date",
@@ -1644,6 +1652,8 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Payment terms - Type 3", sourceDept: "BD" /* BD */, sourceColumn: "Type 3", type: "string", exact: true },
   { target: "Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Selling Price (USD)", type: "number" },
   { target: "LME", sourceDept: "BD" /* BD */, sourceColumn: "LME", type: "number" },
+  // LME price from BD column Z
+  { target: "LME Rate (USD)", sourceDept: "BD" /* BD */, sourceColumn: "LME Rate (USD)", type: "number", aliases: ["LME rate (USD)", "LME Rate"] },
   { target: "Incoterms", sourceDept: "BD" /* BD */, sourceColumn: "Incoterms", type: "string" },
   { target: "Props, WPB, Waler, Acc (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Props, WPB, Waler, Acc (USD)", type: "number" },
   { target: "Aluminium Weight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Aluminium Weight Adjusted (USD)", type: "number" },
@@ -1670,6 +1680,31 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Formwork Quantity Sailed (m2)", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "number" },
   { target: "ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "date" }
 ];
+var MR11_DEPARTMENT_COLORS = {
+  BD: "#2563EB",
+  // blue
+  FINANCE: "#16A34A",
+  // green
+  SHELLPLAN: "#9333EA",
+  // purple
+  DESIGN: "#EA580C",
+  // orange
+  PLANNING: "#0891B2",
+  // teal
+  PRODUCTION: "#DB2777",
+  // pink
+  DISPATCH: "#D97706"
+  // amber
+};
+var MR11_COLUMN_DEPARTMENTS = (() => {
+  const map = {};
+  for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
+  for (const h of ORDERED_HEADER_LIST) {
+    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "FINANCE" /* FINANCE */;
+  }
+  map["Final Selling Price (MYR)"] = "BD" /* BD */;
+  return map;
+})();
 
 // server/modules/mr11/mr11.engine.ts
 init_supabase();
@@ -2085,9 +2120,11 @@ function resolveLmePricing(bdData) {
   else if (lmeType === "variable") computedAdjusted = rateIsNumber ? Number(lmeRate) : "Check";
   const col = (prefix) => bdData[keyWhere((k) => k.startsWith(prefix))];
   const bdAdjusted = col("lme adjusted");
-  const lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
+  let lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
+  const replacedCheck = String(lmeAdjusted ?? "").trim().toLowerCase() === "check" && rateIsNumber;
+  if (replacedCheck) lmeAdjusted = Number(lmeRate);
   const bdFinal = col("final selling price");
-  if (isUsableValue(bdFinal)) return { lmeAdjusted, finalSellingPrice: bdFinal };
+  if (isUsableValue(bdFinal) && !replacedCheck) return { lmeAdjusted, finalSellingPrice: bdFinal };
   const isNumber = (v) => isUsableValue(v) && !isNaN(Number(v));
   const parts = [
     col("selling price"),
@@ -2159,9 +2196,16 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
   const planningRows = datasetMap["PLANNING" /* PLANNING */] || [];
   const incomingPlanningTotals = {};
+  const bdProjectNoByShort = {};
+  for (const bdRow of datasetMap["BD" /* BD */] || []) {
+    const s = cleanStr(findCellValue(bdRow.data, "Short Name") || findCellValue(bdRow.data, "Project Shortname"));
+    const n = cleanStr(findCellValue(bdRow.data, "Project No") || findCellValue(bdRow.data, "Project No."));
+    if (s && n && !bdProjectNoByShort[s]) bdProjectNoByShort[s] = n;
+  }
   for (const row of planningRows) {
-    const pNo = cleanStr(findCellValue(row.data, "Project No") || findCellValue(row.data, "Project No.") || findCellValue(row.data, "Project No. (from design column A)"));
     const pShort = cleanStr(findCellValue(row.data, "Short Name") || findCellValue(row.data, "Project Shortname") || findCellValue(row.data, "Project Shortname (from bd column C)"));
+    const pNoInFile = cleanStr(findCellValue(row.data, "Project No") || findCellValue(row.data, "Project No.") || findCellValue(row.data, "Project No. (from design column A)"));
+    const pNo = pShort && bdProjectNoByShort[pShort] || pNoInFile;
     const pName = findCellValue(row.data, "Customer & Project Name") || findCellValue(row.data, "Project Name") || findCellValue(row.data, "Project Name (from design column B)");
     let stream = "1";
     for (const sh of STREAM_HEADER_CANDIDATES) {
@@ -2280,7 +2324,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       seriesNumber = detectedProdSeries > 0 ? detectedProdSeries : 1;
     }
     const fontColor = normalizeColor(row.fontColor);
-    const rawProduced = row.rawCells?.[16] ?? findCellValue(row.data, "__COLUMN_Q__") ?? findCellValue(row.data, "Total Produced") ?? findCellValue(row.data, "Total Produced Quantity") ?? findCellValue(row.data, "Produced Quantity") ?? findCellValue(row.data, "Column Q") ?? findCellValue(row.data, "Produced (m2)");
+    const rawProduced = findCellValue(row.data, "Total Produced") ?? findCellValue(row.data, "Total Produced Quantity") ?? findCellValue(row.data, "Produced Quantity") ?? findCellValue(row.data, "Produced (m2)") ?? findCellValue(row.data, "Column Q") ?? row.rawCells?.[16] ?? findCellValue(row.data, "__COLUMN_Q__");
     const totalProduced = parseNumeric(rawProduced);
     if (pShort && seriesNumber > 0 && totalProduced > 0) {
       await prisma8.productionSeriesHistory.upsert({
@@ -2492,7 +2536,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     let directColumnKValue = 0;
     for (const dRow of matchedDispatchRows) {
       const val = parseNumeric(
-        dRow.rawCells?.[10] ?? findCellValue(dRow.data, "__COLUMN_K__") ?? findCellValue(dRow.data, "Column K") ?? findCellValue(dRow.data, "Total Dispatch") ?? findCellValue(dRow.data, "Total Dispatched") ?? findCellValue(dRow.data, "Total Dispatched Quantity") ?? findCellValue(dRow.data, "Dispatched Quantity") ?? findCellValue(dRow.data, "Total Dispatch (m2)") ?? findCellValue(dRow.data, "Total Dispatched (m2)")
+        findCellValue(dRow.data, "Total Dispatched") ?? findCellValue(dRow.data, "Total Dispatch") ?? findCellValue(dRow.data, "Total Dispatched Quantity") ?? findCellValue(dRow.data, "Dispatched Quantity") ?? findCellValue(dRow.data, "Total Dispatch (m2)") ?? findCellValue(dRow.data, "Total Dispatched (m2)") ?? findCellValue(dRow.data, "Column K") ?? dRow.rawCells?.[10] ?? findCellValue(dRow.data, "__COLUMN_K__")
       );
       if (val > directColumnKValue) {
         directColumnKValue = val;
@@ -2551,16 +2595,15 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     let latestDateWStr = null;
     let latestDatePV = null;
     let latestDatePVStr = null;
+    const atdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /^(atd|atd date|actual time of departure)$/i.test(String(h).trim())).map(([c]) => Number(c));
+    const etdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /\betd\b/i.test(String(h))).map(([c]) => Number(c));
+    const atdColumns = atdHeaderIdx.length ? atdHeaderIdx : [22];
+    const etdColumns = etdHeaderIdx.length ? etdHeaderIdx : [15, 16, 17, 18, 19, 20, 21];
     for (const dRow of matchedDispatchRows) {
-      const candidateWValues = [
-        dRow.rawCells?.[22],
-        findCellValue(dRow.data, "__COLUMN_W__"),
-        dispatchHeaders[22] ? dRow.data[dispatchHeaders[22]] : void 0,
-        findCellValue(dRow.data, "Column W"),
-        findCellValue(dRow.data, "ATD"),
-        findCellValue(dRow.data, "ATD Date"),
-        findCellValue(dRow.data, "Actual Time of Departure")
-      ];
+      const candidateWValues = atdColumns.flatMap((c) => [
+        dRow.rawCells?.[c],
+        dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
+      ]);
       for (const valW of candidateWValues) {
         if (valW !== void 0 && valW !== null && String(valW).trim() !== "") {
           const d = parseFlexibleDate(valW);
@@ -2577,7 +2620,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           }
         }
       }
-      for (let c = 15; c <= 21; c++) {
+      for (const c of etdColumns) {
         const candidatePVValues = [
           dRow.rawCells?.[c],
           dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
@@ -2786,11 +2829,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     }
     outRow["shellplan approval date"] = latestApprovedDateStr;
     outRow["Shell Plan Approved Date"] = latestApprovedDateStr;
+    const sameProject = (otherNo, otherShort) => shortName && otherShort ? otherShort === shortName : Boolean(projectNo && otherNo === projectNo);
     const matchedPlanningSeries = allHistoricalPlanningSeries.filter((s) => {
-      const pClean = cleanStr(s.projectNo);
-      const sClean = cleanStr(s.projectShortname);
-      const matchesId = pClean === projectNo || sClean === shortName || shortName && sClean.includes(shortName);
-      const matchesStream = s.stream === bdStream || s.stream === "1" || bdStream === "1";
+      const matchesId = sameProject(cleanStr(s.projectNo), cleanStr(s.projectShortname));
+      const matchesStream = normalizeStream(s.stream || "1") === bdStream;
       const sFont = normalizeColor(s.fontColor);
       return matchesId && matchesStream && sFont === bdFontColor;
     });
@@ -2800,15 +2842,14 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       outRow["Total Processed (m2)"] = sumProcessed;
     }
     const tracker = allQuantityTrackers.find(
-      (t) => (cleanStr(t.projectNo) === projectNo || shortName && cleanStr(t.projectShortname) === shortName) && (t.stream === bdStream || t.stream === "1" || bdStream === "1") && normalizeColor(t.fontColor) === bdFontColor
+      (t) => sameProject(cleanStr(t.projectNo), cleanStr(t.projectShortname)) && normalizeStream(t.stream || "1") === bdStream && normalizeColor(t.fontColor) === bdFontColor
     );
     let matchedPlanningRow = null;
     let highestPlanScore = -1;
     for (const p of planningRows) {
       const pNo = cleanStr(findCellValue(p.data, "Project No") || findCellValue(p.data, "Project No.") || findCellValue(p.data, "Project No. (from design column A)"));
       const pShort = cleanStr(findCellValue(p.data, "Short Name") || findCellValue(p.data, "Project Shortname") || findCellValue(p.data, "Project Shortname (from bd column C)"));
-      const idMatches = projectNo && pNo === projectNo || shortName && pShort === shortName;
-      if (!idMatches) continue;
+      if (!sameProject(pNo, pShort)) continue;
       let score = 1;
       let pStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
@@ -2835,6 +2876,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Closing Date"] = resolvedProcessedDate;
     let matchedProdRow = null;
     let highestProdScore = -1;
+    const prodScores = [];
     for (const pRow of productionRows) {
       const pShort = cleanStr(
         findCellValue(pRow.data, "Short Name") || findCellValue(pRow.data, "Project Shortname") || findCellValue(pRow.data, "Project Shortname (from planning column B)") || pRow.rawCells?.[1] || pRow.rawCells?.[0] || pRow.rawCells?.[2]
@@ -2858,13 +2900,15 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       const pFill = normalizeFillColor(pRow.fillColor);
       if (pColor === bdFontColor) score += 8;
       if (bdFillColor && pFill && pFill === bdFillColor) score += 10;
+      prodScores.push({ row: pRow, score });
       if (score > highestProdScore) {
         highestProdScore = score;
         matchedProdRow = pRow;
       }
     }
+    const bestProdRows = prodScores.filter((p) => p.score === highestProdScore).map((p) => p.row);
     const directColumnQValue = matchedProdRow ? parseNumeric(
-      matchedProdRow.rawCells?.[16] ?? findCellValue(matchedProdRow.data, "__COLUMN_Q__") ?? findCellValue(matchedProdRow.data, "Total Produced") ?? findCellValue(matchedProdRow.data, "Total Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced Quantity") ?? findCellValue(matchedProdRow.data, "Column Q") ?? findCellValue(matchedProdRow.data, "Produced (m2)")
+      findCellValue(matchedProdRow.data, "Total Produced") ?? findCellValue(matchedProdRow.data, "Total Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced (m2)") ?? findCellValue(matchedProdRow.data, "Column Q") ?? matchedProdRow.rawCells?.[16] ?? findCellValue(matchedProdRow.data, "__COLUMN_Q__")
     ) : 0;
     const finalColumnAQ = directColumnQValue > 0 ? directColumnQValue : null;
     outRow["Total Produced"] = finalColumnAQ;
@@ -2872,35 +2916,20 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["produced qty"] = finalColumnAQ;
     let latestFilledDate = null;
     if (matchedProdRow) {
-      const COL_R_INDEX = 17;
-      const COL_AV_INDEX = 47;
-      for (let c = COL_AV_INDEX; c >= COL_R_INDEX; c--) {
-        const cellVal = matchedProdRow.rawCells?.[c];
-        const headerName = productionHeaders[c];
-        const valFromHeader = headerName ? matchedProdRow.data[headerName] : void 0;
-        const targetVal = cellVal !== void 0 ? cellVal : valFromHeader;
-        if (isCellFilled(targetVal)) {
-          if (headerName) {
-            const formatted = formatDateString(headerName);
-            if (formatted) {
-              latestFilledDate = formatted;
-              break;
-            }
-          }
-          const cellAsDate = formatDateString(targetVal);
-          if (cellAsDate) {
-            latestFilledDate = cellAsDate;
-            break;
-          }
-          if (headerName) {
-            latestFilledDate = headerName;
-            break;
+      const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null })).filter((d) => Boolean(d.date));
+      for (const pRow of bestProdRows) {
+        for (const { c, date } of dayColumns) {
+          const headerName = productionHeaders[c];
+          const cellVal = pRow.rawCells?.[c];
+          const targetVal = cellVal !== void 0 ? cellVal : pRow.data[headerName];
+          if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
+            latestFilledDate = date;
           }
         }
       }
       if (!latestFilledDate) {
         const fallbackDate = findCellValue(matchedProdRow.data, "Day/Date") || findCellValue(matchedProdRow.data, "Date");
-        latestFilledDate = formatDateString(fallbackDate);
+        latestFilledDate = parseFlexibleDate(fallbackDate) ? formatDateString(fallbackDate) : null;
       }
     }
     outRow["Produced Date"] = latestFilledDate;
@@ -3266,19 +3295,134 @@ import { Router as Router3 } from "express";
 init_prisma();
 import ExcelJS2 from "exceljs";
 init_supabase();
+
+// server/utils/fx.ts
+var CACHE_MS = 60 * 60 * 1e3;
+var TIMEOUT_MS = 5e3;
+var cached = null;
+async function getJson(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+var providers = [
+  {
+    name: "ExchangeRate-API",
+    load: async () => {
+      const j = await getJson("https://open.er-api.com/v6/latest/USD");
+      const rate = Number(j?.rates?.MYR);
+      if (j?.result !== "success" || !(rate > 0)) throw new Error("no MYR rate");
+      const asOf = new Date(Number(j.time_last_update_unix) * 1e3).toISOString().slice(0, 10);
+      return { rate, source: "ExchangeRate-API", asOf, live: true };
+    }
+  },
+  {
+    name: "Frankfurter (ECB)",
+    load: async () => {
+      const j = await getJson("https://api.frankfurter.dev/v1/latest?base=USD&symbols=MYR");
+      const rate = Number(j?.rates?.MYR);
+      if (!(rate > 0)) throw new Error("no MYR rate");
+      return { rate, source: "Frankfurter (ECB)", asOf: String(j.date), live: true };
+    }
+  }
+];
+function fixedSettingRate() {
+  const rate = Number(process.env.USD_TO_MYR_RATE);
+  return Number.isFinite(rate) && rate > 0 ? { rate, source: "USD_TO_MYR_RATE setting", asOf: "", live: false } : null;
+}
+async function getUsdToMyrRate() {
+  if (cached && Date.now() - cached.fetchedAt < CACHE_MS) return cached.value;
+  for (const provider of providers) {
+    try {
+      const value = await provider.load();
+      cached = { value, fetchedAt: Date.now() };
+      return value;
+    } catch (err) {
+      console.warn(`[FX] ${provider.name} unavailable:`, err?.message || err);
+    }
+  }
+  if (cached) return { ...cached.value, live: false };
+  return fixedSettingRate();
+}
+function withMyrPrices(records, fx) {
+  return records.map((r) => {
+    const usd = Number(r?.["Final Selling Price (USD)"]);
+    const hasUsd = r?.["Final Selling Price (USD)"] !== null && r?.["Final Selling Price (USD)"] !== "" && Number.isFinite(usd);
+    return {
+      ...r,
+      "Final Selling Price (MYR)": fx && hasUsd ? Math.round(usd * fx.rate * 100) / 100 : null
+    };
+  });
+}
+
+// server/utils/lme.ts
+var URL = "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Al_cash";
+var CACHE_MS2 = 60 * 60 * 1e3;
+var TIMEOUT_MS2 = 8e3;
+var cached2 = null;
+var toNumber = (s) => {
+  const n = Number(s.replace(/,/g, "").trim());
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+function parseWestmetallTable(html) {
+  const rows = [];
+  const rowRe = /<tr>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([^<]*)<\/td>\s*<td[^>]*>([^<]*)<\/td>/g;
+  let m;
+  while ((m = rowRe.exec(html)) && rows.length < 2) {
+    const date = /* @__PURE__ */ new Date(`${m[1].replace(".", "")} UTC`);
+    if (isNaN(date.getTime())) continue;
+    rows.push({ date: date.toISOString().slice(0, 10), cash: toNumber(m[2]), threeMonth: toNumber(m[3]) });
+  }
+  const latest = rows[0];
+  if (!latest?.cash) throw new Error("no LME aluminium price in the table");
+  return {
+    cash: latest.cash,
+    threeMonth: latest.threeMonth,
+    previousCash: rows[1]?.cash ?? null,
+    asOf: latest.date,
+    source: "LME official prices (via Westmetall)",
+    live: true
+  };
+}
+async function getLmeAluminiumPrice() {
+  if (cached2 && Date.now() - cached2.fetchedAt < CACHE_MS2) return cached2.value;
+  try {
+    const res = await fetch(URL, {
+      signal: AbortSignal.timeout(TIMEOUT_MS2),
+      headers: { "User-Agent": "Mozilla/5.0 (MFE MR11)" }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const value = parseWestmetallTable(await res.text());
+    cached2 = { value, fetchedAt: Date.now() };
+    return value;
+  } catch (err) {
+    console.warn("[LME] price unavailable:", err?.message || err);
+    return cached2 ? { ...cached2.value, live: false } : null;
+  }
+}
+
+// server/modules/mr11/mr11.controller.ts
 var prisma5 = new PrismaClient();
 var ORDERED_HEADER_LIST2 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
 async function getLatestMr11(req, res) {
   try {
     const latestRun = await getLatestMr11Run(prisma5);
     const config = await prisma5.mr11Config.findUnique({ where: { id: "singleton" } });
+    const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
+    const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) } : latestRun;
     return res.json({
       success: true,
       data: {
-        run: latestRun,
+        run,
+        fxRate: fx,
+        lmePrice,
         visibleColumns: config?.visibleColumns || [],
         orderedHeaders: ORDERED_HEADER_LIST2,
-        headerGroups: MR11_HEADER_GROUPS
+        headerGroups: MR11_HEADER_GROUPS,
+        numberFormats: MR11_NUMBER_FORMATS,
+        // Lets a department user's own columns be highlighted in their department colour
+        columnDepartments: MR11_COLUMN_DEPARTMENTS,
+        departmentColors: MR11_DEPARTMENT_COLORS
       }
     });
   } catch (err) {
@@ -3328,13 +3472,14 @@ async function exportMr11ToExcel(req, res) {
     if (!latestRun || !Array.isArray(latestRun.records) || latestRun.records.length === 0) {
       return res.status(400).json({ success: false, error: { message: "No MR11 records to export" } });
     }
-    const records = latestRun.records;
+    const records = withMyrPrices(latestRun.records, await getUsdToMyrRate());
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
     const headers = ORDERED_HEADER_LIST2;
     worksheet.columns = headers.map((header) => ({
       key: header,
-      width: Math.max(header.length + 4, 16)
+      width: Math.max(header.length + 4, 16),
+      ...MR11_NUMBER_FORMATS[header] !== void 0 ? { style: { numFmt: `0.${"0".repeat(MR11_NUMBER_FORMATS[header])}` } } : {}
     }));
     const groupOf = (h) => MR11_HEADER_GROUPS.find((g2) => g2.columns.some((c) => c.key === h));
     const subLabel = (h) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
@@ -3359,7 +3504,9 @@ async function exportMr11ToExcel(req, res) {
     records.forEach((row) => {
       const orderedRowData = {};
       headers.forEach((h) => {
-        orderedRowData[h] = row[h] ?? "";
+        const places = MR11_NUMBER_FORMATS[h];
+        const n = Number(row[h]);
+        orderedRowData[h] = places !== void 0 && row[h] !== null && row[h] !== "" && !isNaN(n) ? n : row[h] ?? "";
       });
       const addedRow = worksheet.addRow(orderedRowData);
       if (row["_fontColor"]) {

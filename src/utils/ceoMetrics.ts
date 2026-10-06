@@ -33,7 +33,7 @@ const STAGE_COLUMNS: Record<Stage, { qty: string; date: string }> = {
   processed: { qty: 'Total Processed', date: 'Processed Date' },
   produced: { qty: 'Total Produced', date: 'Produced Date' },
   dispatched: { qty: 'Total Dispatch', date: 'Dispatched Date' },
-  // ATD (actual time of departure) is when the formwork sailed
+  // Quantity actually shipped, dated by the actual time of departure (ATD)
   sailed: { qty: 'Formwork Quantity Sailed (m2)', date: 'ATD' },
 };
 
@@ -174,4 +174,24 @@ export function monthlySeries(rows: any[], months: MonthColumn[], today: Date): 
 // m2 dispatched (left the warehouse) in each month, by Dispatched Date
 export function dispatchedByMonth(rows: any[], months: MonthColumn[]): number[] {
   return months.map((col) => stageTotals(rows, col.key).dispatched);
+}
+
+// Average Final Selling Price (USD per m²), weighted by each project's m² in the month
+// (or across all months); projects without m² count equally when nothing is weighted.
+export function averageSellingPrice(rows: any[], months: MonthColumn[], monthKey: string | null): number | null {
+  let weighted = 0;
+  let weight = 0;
+  const plain: number[] = [];
+  for (const r of firstRowPerProject(rows)) {
+    const price = toNumber(r?.['Final Selling Price (USD)']);
+    if (price <= 0) continue;
+    const m2 = monthKey ? toNumber(r?.[monthKey]) : months.reduce((a, m) => a + toNumber(r?.[m.key]), 0);
+    plain.push(price);
+    if (m2 > 0) {
+      weighted += price * m2;
+      weight += m2;
+    }
+  }
+  if (weight > 0) return weighted / weight;
+  return plain.length ? plain.reduce((a, b) => a + b, 0) / plain.length : null;
 }

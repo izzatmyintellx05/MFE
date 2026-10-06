@@ -16,6 +16,7 @@ import {
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
 import {
+  TrendingUp,
   Building2,
   CheckCircle2,
   CalendarClock,
@@ -33,6 +34,7 @@ import {
   DEFAULT_FORECAST_M2,
   RegionFilter,
   Stage,
+  averageSellingPrice,
   dispatchedByMonth,
   filterByRegion,
   firstRowPerProject,
@@ -61,6 +63,8 @@ const REGION_COLORS: Record<string, string> = {
 const ACTUAL_COLOR = '#004B87';
 const FORECAST_COLOR = '#F59E0B';
 
+const formatUsd = (n: number | null, digits = 2) =>
+  n === null ? '—' : `${n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 const formatM2 = (n: number) => `${Math.round(n).toLocaleString('en-US')} m²`;
 
 const axisM2 = { callback: (v: any) => Number(v).toLocaleString('en-US') };
@@ -75,6 +79,7 @@ export const CeoDashboard: React.FC = () => {
   const [records, setRecords] = useState<any[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
+  const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [region, setRegion] = useState<RegionFilter>('ALL');
@@ -91,6 +96,7 @@ export const CeoDashboard: React.FC = () => {
       setRecords(data?.run?.records || []);
       setHeaders(data?.orderedHeaders || []);
       setHeaderGroups(data?.headerGroups || []);
+      setNumberFormats(data?.numberFormats || {});
     } catch (err: any) {
       console.error('Failed to load CEO telemetry:', err);
       setError(err.response?.data?.error?.message || err.message || 'Failed to load MR11 data');
@@ -120,6 +126,10 @@ export const CeoDashboard: React.FC = () => {
   const series = useMemo(() => monthlySeries(regionRows, months, today), [regionRows, months, today]);
   const selectedPoint = selectedMonth ? series.find((p) => p.key === selectedMonth.key) || null : null;
   const projectCount = useMemo(() => firstRowPerProject(regionRows).length, [regionRows]);
+  const avgPrice = useMemo(
+    () => averageSellingPrice(regionRows, months, selectedMonth?.key ?? null),
+    [regionRows, months, selectedMonth]
+  );
 
   const actualTotal = series.filter((p) => p.kind === 'actual').reduce((a, p) => a + p.value, 0);
   const forecastTotal = series.filter((p) => p.kind === 'forecast').reduce((a, p) => a + p.value, 0);
@@ -297,7 +307,7 @@ export const CeoDashboard: React.FC = () => {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
           <div className="flex items-center justify-between text-slate-400 mb-2">
             <span className="text-[10px] font-extrabold uppercase tracking-wider">
@@ -349,6 +359,17 @@ export const CeoDashboard: React.FC = () => {
           </div>
           <div className="text-2xl font-black text-slate-900 font-mono">{projectCount}</div>
           <span className="text-[10px] text-slate-400 mt-1">{regionLabel}</span>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
+          <div className="flex items-center justify-between text-slate-400 mb-2">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider">
+              Avg Selling Price {selectedMonth ? `· ${selectedMonth.key}` : ''}
+            </span>
+            <TrendingUp className="w-4 h-4 text-slate-500" />
+          </div>
+          <div className="text-2xl font-black text-slate-900 font-mono">{formatUsd(avgPrice)}</div>
+          <span className="text-[10px] text-slate-400 mt-1">USD per m², Final Selling Price weighted by m²</span>
         </div>
       </div>
 
@@ -432,7 +453,9 @@ export const CeoDashboard: React.FC = () => {
                     label: (ctx: any) => {
                       const p = series[ctx.dataIndex];
                       const kind = p.kind === 'actual' ? 'Actual' : p.isDefault ? 'Forecast (default, none entered)' : 'Forecast';
-                      return `${kind}: ${formatM2(p.value)}`;
+                      const price = averageSellingPrice(regionRows, months, p.key);
+                      const usd = price !== null && !p.isDefault ? ` · avg ${formatUsd(price)}/m² · ≈ ${formatUsd(price * p.value, 0)}` : '';
+                      return `${kind}: ${formatM2(p.value)}${usd}`;
                     },
                   },
                 },
@@ -531,7 +554,7 @@ export const CeoDashboard: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <ZoomControls zoom={rawZoom} setZoom={setRawZoom} min={70} max={135} step={5} />
+                <ZoomControls zoom={rawZoom} setZoom={setRawZoom} min={20} max={135} step={5} />
                 <button
                   type="button"
                   onClick={() => setShowRawData(false)}
@@ -543,7 +566,7 @@ export const CeoDashboard: React.FC = () => {
               </div>
             </div>
             <div className="flex-1 m-3 bg-white border border-stone-200/90 rounded-xl shadow-sm overflow-hidden flex flex-col">
-              <Mr11Table records={regionRows} headers={headers} headerGroups={headerGroups} zoom={rawZoom} />
+              <Mr11Table records={regionRows} headers={headers} headerGroups={headerGroups} numberFormats={numberFormats} zoom={rawZoom} />
             </div>
           </div>
         </div>
