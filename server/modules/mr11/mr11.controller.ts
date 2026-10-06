@@ -145,6 +145,10 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
         orderedRowData[h] = places !== undefined && row[h] !== null && row[h] !== '' && !isNaN(n) ? n : row[h] ?? '';
       });
       const addedRow = worksheet.addRow(orderedRowData);
+      // Values on several lines (e.g. ETD/ATD) are shown wrapped, one line each
+      headers.forEach((h, i) => {
+        if (String(row[h] ?? '').includes('\n')) addedRow.getCell(i + 1).alignment = { wrapText: true, vertical: 'top' };
+      });
 
       if (row['_fontColor']) {
         // The BD row's font colour runs across the whole row (project columns in bold)

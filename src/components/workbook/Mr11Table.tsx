@@ -186,7 +186,10 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                     return (
                       <td
                         key={cIdx}
-                        className={`p-2 border-r border-stone-200 whitespace-nowrap transition-colors ${
+                        // A value on several lines (e.g. ETD/ATD) keeps its line breaks
+                        className={`p-2 border-r border-stone-200 ${
+                          String(row?.[h] ?? '').includes('\n') ? 'whitespace-pre align-top' : 'whitespace-nowrap'
+                        } transition-colors ${
                           isYellowAtd
                             ? 'bg-[#FEF08A] font-extrabold text-amber-950 ring-1 ring-amber-300'
                             : ''

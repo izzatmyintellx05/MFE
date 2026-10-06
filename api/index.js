@@ -1488,71 +1488,6 @@ var MR11_NUMBER_FORMATS = {
   "LME Adjusted (USD)": 3,
   "Final Selling Price (USD)": 2
 };
-var MR11_SOURCE_KEY_MAP = {
-  BD: [
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No.",
-    "Short Name",
-    "Project Shortname"
-  ],
-  FINANCE: [
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No.",
-    "Short Name",
-    "Project Shortname"
-  ],
-  SHELLPLAN: [
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No.",
-    "Short Name",
-    "Project Shortname",
-    "Building Name"
-  ],
-  DESIGN: [
-    "Project No. (from design column A)",
-    "Project No",
-    "Project No.",
-    "Customer & Project Name",
-    "Project Name",
-    "Short Name",
-    "Project Shortname"
-  ],
-  PLANNING: [
-    "Project No. (from design column A)",
-    "Project No",
-    "Project No.",
-    "Project Shortname (from bd column C)",
-    "Project Shortname",
-    "Customer & Project Name",
-    "Project Name"
-  ],
-  PRODUCTION: [
-    "Project Shortname (from planning column B)",
-    "Project Shortname",
-    "Short Name",
-    "Project No",
-    "Project No."
-  ],
-  DISPATCH: [
-    "Project Shortname (from bd column C)",
-    "Project Shortname",
-    "Project Short Code",
-    "Short Code",
-    "Short Name",
-    "Customer & Project Name",
-    "Project Name",
-    "Project No",
-    "Project No."
-  ],
-  ADMIN: [],
-  CEO: []
-};
 var ORDERED_HEADER_LIST = [
   // --- BD & Commercial Columns (Col A to Col AI) ---
   "Customer & Project Name",
@@ -1606,9 +1541,9 @@ var ORDERED_HEADER_LIST = [
   "Produced Date",
   // --- Dispatch Columns ---
   "Total Dispatch",
-  "Dispatched Date",
+  "ETD/ATD",
   "Formwork Quantity Sailed (m2)",
-  "ATD",
+  "Formwork Sailed Date",
   // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
   "Jan-26",
   "Feb-26",
@@ -1719,15 +1654,22 @@ var MR11_ORDERED_COLUMNS = [
   { target: "Actual Formwork Order Completion Date", sourceDept: "DESIGN" /* DESIGN */, sourceColumn: "Actual Formwork Order Completion Date", type: "date" },
   { target: "Total Quantity Ordered m2", sourceDept: "DESIGN" /* DESIGN */, sourceColumn: "Total Quantity Ordered m2", type: "number" },
   // Planning & Production
-  { target: "Total Processed", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Total Processed", type: "number" },
-  { target: "Processed Date", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Closing Date", type: "date" },
-  { target: "Total Produced", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Total Produced", type: "number" },
-  { target: "Produced Date", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Day/Date", type: "date" },
+  // Sum of "Cumulative Processed (Project)" over the BD row's Planning blocks (same colours)
+  { target: "Total Processed", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Cumulative Processed (Project)", type: "number" },
+  // The upload date on which Total Processed last changed (not read from the file)
+  { target: "Processed Date", sourceDept: "PLANNING" /* PLANNING */, sourceColumn: "Cumulative Processed (Project)", type: "date" },
+  // Sum of "Cumulative Produced (Project)" over the BD row's Production blocks (same colours)
+  { target: "Total Produced", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "Cumulative Produced (Project)", type: "number" },
+  // The latest daily (date-headed) column with a value in those blocks
+  { target: "Produced Date", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "daily date columns", type: "date" },
   // Dispatch & ATD
-  { target: "Total Dispatch", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Column K", type: "number" },
-  { target: "Dispatched Date", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Dispatched Date", type: "date" },
+  // Sum of "Cumulative Dispatched (Project)" over the BD row's Dispatch blocks
+  { target: "Total Dispatch", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Cumulative Dispatched (Project)", type: "number" },
+  // Each Dispatch row's latest ETD (ETA POL, Rev ETD .. Rev 7 ETD) and its ATD, with m2, one line each
+  { target: "ETD/ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "string" },
   { target: "Formwork Quantity Sailed (m2)", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "number" },
-  { target: "ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "date" }
+  // The upload date on which Formwork Quantity Sailed (m2) last changed (not read from the file)
+  { target: "Formwork Sailed Date", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "date" }
 ];
 var MR11_DEPARTMENT_COLORS = {
   BD: "#2563EB",
@@ -1792,7 +1734,60 @@ function isBlueColor(color) {
   hue = (hue * 60 + 360) % 360;
   return hue >= 185 && hue <= 250;
 }
-var PRODUCTION_DISPATCH_COLUMN = /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
+var PRODUCTION_DISPATCH_COLUMN = /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|formwork sailed|etd|atd|actual time of departure|actual departure)/i;
+function colourDistance(a, b) {
+  const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
+  const [x, y] = [rgb(a), rgb(b)];
+  return Math.sqrt(x.reduce((sum, v, i) => sum + (v - y[i]) ** 2, 0));
+}
+var SAME_COLOUR_DISTANCE = 100;
+function closestColourGroup(rows, font, fill) {
+  let best = [];
+  let bestScore = Infinity;
+  for (const row of rows) {
+    const rowFill = normalizeFillColor(row.fillColor);
+    if (Boolean(rowFill) !== Boolean(fill)) continue;
+    const fontGap = colourDistance(normalizeColor(row.fontColor), font);
+    const fillGap = fill ? colourDistance(rowFill, fill) : 0;
+    if (fontGap > SAME_COLOUR_DISTANCE || fillGap > SAME_COLOUR_DISTANCE) continue;
+    const score = fontGap + fillGap;
+    if (score < bestScore - 0.5) {
+      best = [row];
+      bestScore = score;
+    } else if (Math.abs(score - bestScore) <= 0.5) {
+      best.push(row);
+    }
+  }
+  return best;
+}
+function closestFillGroup(rows, fill) {
+  if (!fill) return rows.filter((row) => !normalizeFillColor(row.fillColor));
+  let best = [];
+  let bestGap = Infinity;
+  for (const row of rows) {
+    const rowFill = normalizeFillColor(row.fillColor);
+    if (!rowFill) continue;
+    const gap = colourDistance(rowFill, fill);
+    if (gap > SAME_COLOUR_DISTANCE) continue;
+    if (gap < bestGap - 0.5) {
+      best = [row];
+      bestGap = gap;
+    } else if (Math.abs(gap - bestGap) <= 0.5) {
+      best.push(row);
+    }
+  }
+  return best;
+}
+function mr11RowKey(short, stream, font, fill, productType) {
+  return [cleanStr(short), normalizeStream(stream), normalizeColor(font), normalizeFillColor(fill), cleanStr(productType)].join("|");
+}
+function takePreviousRecord(byKey, key) {
+  const list = byKey[key];
+  return list && list.length > 0 ? list.shift() : null;
+}
+function malaysiaDate() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(/* @__PURE__ */ new Date());
+}
 function normalizeFillColor(color) {
   if (!color) return "";
   const s = String(color).trim().toUpperCase();
@@ -2105,11 +2100,21 @@ function sheetToRecordsWithStyles(sheet) {
       }
     }
   }
+  const mergeCopies = {};
+  for (const m of Object.values(merges)) {
+    if (!m) continue;
+    for (let rr = m.r; rr < m.r + m.rs; rr++) {
+      for (let cc = m.c; cc < m.c + m.cs; cc++) {
+        if ((rr !== m.r || cc !== m.c) && headers[cc]) (mergeCopies[rr] ||= /* @__PURE__ */ new Set()).add(headers[cc]);
+      }
+    }
+  }
   const rows = sortedRowKeys.map((rKey) => ({
     data: rowsMap[rKey],
     fontColor: normalizeColor(rowStyleMap[rKey]?.fontColor),
     fillColor: normalizeFillColor(rowStyleMap[rKey]?.fillColor),
-    rawCells: rawCellsMap[rKey]
+    rawCells: rawCellsMap[rKey],
+    mergedCopyHeaders: [...mergeCopies[rKey] || []]
   }));
   return { rows, detectedSeries, headers };
 }
@@ -2430,6 +2435,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     },
     orderBy: { generatedAt: "desc" }
   });
+  const uploadDateStr = malaysiaDate();
+  const previousRecordsByRow = {};
+  for (const r of previousRun?.records || []) {
+    const k = mr11RowKey(r["Short Name"] || r["Project Shortname"], r["Stream"], r["_fontColor"], r["_fillColor"], r["Products type"]);
+    (previousRecordsByRow[k] ||= []).push(r);
+  }
   const prevDispatchHistory = {
     ...previousRun?.sourceSnapshot?.dispatchTracker || {}
   };
@@ -2473,6 +2484,20 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const designRows = datasetMap["DESIGN" /* DESIGN */] || [];
   const shellplanRows = datasetMap["SHELLPLAN" /* SHELLPLAN */] || [];
   const dispatchRows = datasetMap["DISPATCH" /* DISPATCH */] || [];
+  const streamOfBuilding = {};
+  for (const d of designRows) {
+    const no = cleanStr(findCellValue(d.data, "Project No") || findCellValue(d.data, "Project No."));
+    const building = cleanStr(findCellValue(d.data, "Building Name"));
+    let stream = null;
+    for (const sh of STREAM_HEADER_CANDIDATES) {
+      const v = findCellValue(d.data, sh);
+      if (v !== null && v !== void 0 && String(v).trim() !== "") {
+        stream = normalizeStream(v);
+        break;
+      }
+    }
+    if (no && building && stream && !streamOfBuilding[`${no}|${building}`]) streamOfBuilding[`${no}|${building}`] = stream;
+  }
   const derivedMr11Rows = bdRecords.map((bdRowItem) => {
     const bdData = bdRowItem.data;
     const projectNo = cleanStr(findCellValue(bdData, "Project No") || findCellValue(bdData, "Project No.") || bdRowItem.rawCells?.[1]);
@@ -2509,64 +2534,34 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const lmePricing = resolveLmePricing(bdData);
     outRow["LME Adjusted (USD)"] = lmePricing.lmeAdjusted;
     outRow["Final Selling Price (USD)"] = lmePricing.finalSellingPrice;
-    const findBestDeptRow = (dept) => {
-      const deptDataset = datasetMap[dept] || [];
-      const possibleKeyNames = MR11_SOURCE_KEY_MAP[dept] || [];
-      let bestCandidate = null;
-      let highestScore = -1;
-      for (const candidate of deptDataset) {
-        const cData = candidate.data;
-        let idMatched = false;
-        for (const keyName of possibleKeyNames) {
-          const raw = cleanStr(findCellValue(cData, keyName));
-          if (raw && (raw === projectNo || raw === shortName || shortName && raw.includes(shortName))) {
-            idMatched = true;
-            break;
-          }
-        }
-        if (!idMatched) continue;
-        let score = 1;
-        let cStream = "1";
-        for (const sh of STREAM_HEADER_CANDIDATES) {
-          const v = findCellValue(cData, sh);
-          if (v !== null && v !== void 0 && v !== "") {
-            cStream = normalizeStream(v);
-            break;
-          }
-        }
-        if (cStream === bdStream) score += 4;
-        const cFont = normalizeColor(candidate.fontColor);
-        if (cFont === bdFontColor) score += 8;
-        const cFill = normalizeFillColor(candidate.fillColor);
-        if (bdFillColor && cFill && cFill === bdFillColor) score += 10;
-        if (score > highestScore) {
-          highestScore = score;
-          bestCandidate = cData;
+    const financeCandidates = (datasetMap["FINANCE" /* FINANCE */] || []).filter((f) => {
+      const fShort = cleanStr(findCellValue(f.data, "Project Shortname") || findCellValue(f.data, "Short Name"));
+      const fNo = cleanStr(findCellValue(f.data, "Project No") || findCellValue(f.data, "Project No."));
+      const idMatches = shortName && fShort ? fShort === shortName : Boolean(projectNo && fNo === projectNo);
+      if (!idMatches) return false;
+      let fStream = "1";
+      for (const sh of STREAM_HEADER_CANDIDATES) {
+        const v = findCellValue(f.data, sh);
+        if (v !== null && v !== void 0 && v !== "") {
+          fStream = normalizeStream(v);
+          break;
         }
       }
-      return bestCandidate;
-    };
+      return fStream === bdStream;
+    });
+    const financeGroup = closestColourGroup(financeCandidates, bdFontColor, bdFillColor);
+    const bdProductType = cleanStr(outRow["Products type"]);
+    const financeRow = financeGroup.find((f) => cleanStr(findCellValue(f.data, "Product Type") || findCellValue(f.data, "Products type")) === bdProductType) ?? financeGroup[0] ?? null;
     for (const mapping of MR11_ORDERED_COLUMNS) {
-      if (mapping.sourceDept !== "BD" /* BD */ && mapping.sourceDept !== "DESIGN" /* DESIGN */ && mapping.sourceDept !== "SHELLPLAN" /* SHELLPLAN */ && mapping.sourceDept !== "PLANNING" /* PLANNING */ && mapping.sourceDept !== "PRODUCTION" /* PRODUCTION */ && mapping.sourceDept !== "DISPATCH" /* DISPATCH */) {
-        const bestCandidate = findBestDeptRow(mapping.sourceDept);
-        outRow[mapping.target] = bestCandidate ? findCellValue(bestCandidate, mapping.sourceColumn) : null;
+      if (mapping.sourceDept === "FINANCE" /* FINANCE */) {
+        outRow[mapping.target] = financeRow ? findCellValue(financeRow.data, mapping.sourceColumn) : null;
       }
     }
-    const matchedDispatchRows = dispatchRows.filter((dRow) => {
-      const dShort = cleanStr(
-        findCellValue(dRow.data, "Short Name") || findCellValue(dRow.data, "Project Shortname") || findCellValue(dRow.data, "Project Shortname (from bd column C)") || findCellValue(dRow.data, "Project Short Code") || findCellValue(dRow.data, "Short Code") || dRow.rawCells?.[1] || dRow.rawCells?.[2]
-      );
-      const dName = cleanStr(
-        findCellValue(dRow.data, "Customer & Project Name") || findCellValue(dRow.data, "Project Name") || findCellValue(dRow.data, "Project Name (from bd column A)") || dRow.rawCells?.[0] || dRow.rawCells?.[1]
-      );
-      const dNo = cleanStr(
-        findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No.") || dRow.rawCells?.[0]
-      );
-      const shortMatched = shortName && dShort && (dShort === shortName || dShort.includes(shortName) || shortName.includes(dShort)) || projectNo && dNo && (dNo === projectNo || dNo.includes(projectNo) || projectNo.includes(dNo));
-      if (!shortMatched) return false;
-      if (projectName && dName && !(dName === projectName || dName.includes(projectName) || projectName.includes(dName))) {
-        return false;
-      }
+    const dispatchCandidates = dispatchRows.filter((dRow) => {
+      const dShort = cleanStr(findCellValue(dRow.data, "Short Name") || findCellValue(dRow.data, "Project Shortname") || findCellValue(dRow.data, "Project Shortname (from bd column C)"));
+      const dNo = cleanStr(findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No."));
+      const idMatches = shortName && dShort ? dShort === shortName : Boolean(projectNo && dNo === projectNo);
+      if (!idMatches) return false;
       let dStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
         const v = findCellValue(dRow.data, sh);
@@ -2575,171 +2570,75 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           break;
         }
       }
-      if (dStream !== bdStream) return false;
-      const dFontColor = normalizeColor(dRow.fontColor);
-      if (dFontColor !== bdFontColor) return false;
-      const dFillColor = normalizeFillColor(dRow.fillColor);
-      if (bdFillColor !== dFillColor) return false;
-      return true;
+      return dStream === bdStream;
     });
-    let totalFormworkSailed = 0;
-    let hasSailedValue = false;
-    for (const dRow of matchedDispatchRows) {
-      const rawSailed = findCellValue(dRow.data, "Formwork Quantity Sailed (m2)") ?? findCellValue(dRow.data, "Formwork Quantity Sailed m2") ?? findCellValue(dRow.data, "Formwork Quantity Sailed") ?? findCellValue(dRow.data, "Quantity Sailed (m2)") ?? findCellValue(dRow.data, "Quantity Sailed") ?? findCellValue(dRow.data, "Total Sailed (m2)") ?? findCellValue(dRow.data, "Total Sailed");
-      const num = parseNumeric(rawSailed);
-      if (!isNaN(num) && num > 0) {
-        totalFormworkSailed += num;
-        hasSailedValue = true;
+    const dispatchMatches = closestColourGroup(dispatchCandidates, bdFontColor, bdFillColor);
+    const sumDispatchColumn = (header) => {
+      let total = null;
+      for (const dRow of dispatchMatches) {
+        const key = Object.keys(dRow.data).find((k) => header.test(k.trim()));
+        if (!key || dRow.mergedCopyHeaders?.includes(key) || !isCellFilled(dRow.data[key])) continue;
+        total = (total ?? 0) + parseNumeric(dRow.data[key]);
       }
+      return total;
+    };
+    const totalDispatched = sumDispatchColumn(/^cumulative dispatched/i);
+    const totalSailed = sumDispatchColumn(/^formwork quantity sailed/i);
+    for (const key of ["Total Dispatch", "Total Dispatched", "Total Dispatched Quantity", "Total Dispatch (m2)", "Total Dispatched (m2)", "Total Dispatched Quantity m2"]) {
+      outRow[key] = totalDispatched;
     }
-    const finalFormworkSailed = hasSailedValue ? totalFormworkSailed : null;
-    outRow["Formwork Quantity Sailed (m2)"] = finalFormworkSailed;
-    outRow["Formwork Quantity Sailed m2"] = finalFormworkSailed;
-    outRow["Formwork Quantity Sailed"] = finalFormworkSailed;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "formwork quantity sailed (m2)" || cleanH === "formwork quantity sailed m2" || cleanH === "formwork quantity sailed" || cleanH === "quantity sailed (m2)" || cleanH.includes("formwork") && cleanH.includes("sailed")) {
-          outRow[h] = finalFormworkSailed;
-        }
-      });
+    for (const key of ["Formwork Quantity Sailed (m2)", "Formwork Quantity Sailed m2", "Formwork Quantity Sailed"]) {
+      outRow[key] = totalSailed;
     }
-    let matchedDispatchRowForK = null;
-    let directColumnKValue = 0;
-    for (const dRow of matchedDispatchRows) {
-      const val = parseNumeric(
-        findCellValue(dRow.data, "Total Dispatched") ?? findCellValue(dRow.data, "Total Dispatch") ?? findCellValue(dRow.data, "Total Dispatched Quantity") ?? findCellValue(dRow.data, "Dispatched Quantity") ?? findCellValue(dRow.data, "Total Dispatch (m2)") ?? findCellValue(dRow.data, "Total Dispatched (m2)") ?? findCellValue(dRow.data, "Column K") ?? dRow.rawCells?.[10] ?? findCellValue(dRow.data, "__COLUMN_K__")
-      );
-      if (val > directColumnKValue) {
-        directColumnKValue = val;
-        matchedDispatchRowForK = dRow;
+    const dispatchColumns = (header) => Object.entries(dispatchHeaders).filter(([, h]) => header.test(String(h).trim())).map(([c]) => Number(c));
+    const etdColumns = dispatchColumns(/\betd\b|^eta pol$/i);
+    const atdColumns = dispatchColumns(/^(atd|atd date|actual time of departure)$/i);
+    const latestDateIn = (dRow, columns) => {
+      let latest = null;
+      for (const c of columns) {
+        const v = dRow.rawCells?.[c] ?? dRow.data[dispatchHeaders[c]];
+        const d = isCellFilled(v) && parseFlexibleDate(v) ? formatDateString(v) : null;
+        if (d && (!latest || d > latest)) latest = d;
       }
+      return latest;
+    };
+    const etdByDate = /* @__PURE__ */ new Map();
+    const atdByDate = /* @__PURE__ */ new Map();
+    const addDate = (byDate, date, m2) => {
+      const current = byDate.has(date) ? byDate.get(date) : null;
+      byDate.set(date, m2 === null ? current : (current ?? 0) + m2);
+    };
+    for (const dRow of dispatchMatches) {
+      const areaKey = Object.keys(dRow.data).find((k) => /^total area/i.test(k.trim()));
+      const m2 = areaKey && !dRow.mergedCopyHeaders?.includes(areaKey) && isCellFilled(dRow.data[areaKey]) ? parseNumeric(dRow.data[areaKey]) : null;
+      const atd = latestDateIn(dRow, atdColumns);
+      const etd = latestDateIn(dRow, etdColumns);
+      if (atd) addDate(atdByDate, atd, m2);
+      else if (etd) addDate(etdByDate, etd, m2);
     }
-    if (!matchedDispatchRowForK && matchedDispatchRows.length > 0) {
-      matchedDispatchRowForK = matchedDispatchRows[matchedDispatchRows.length - 1];
-    }
-    const finalTotalDispatch = directColumnKValue > 0 ? directColumnKValue : null;
-    outRow["Total Dispatch"] = finalTotalDispatch;
-    outRow["Total Dispatched"] = finalTotalDispatch;
-    outRow["Total Dispatched Quantity"] = finalTotalDispatch;
-    outRow["Total Dispatch (m2)"] = finalTotalDispatch;
-    outRow["Total Dispatched (m2)"] = finalTotalDispatch;
-    outRow["Total Dispatched Quantity m2"] = finalTotalDispatch;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "total dispatch" || cleanH === "total dispatched" || cleanH === "total dispatched quantity" || cleanH === "total dispatch (m2)" || cleanH === "total dispatched (m2)" || cleanH.includes("total dispatch") || cleanH.includes("total dispatched")) {
-          outRow[h] = finalTotalDispatch;
-        }
-      });
-    }
-    const dispatchCompositeKey = `${shortName || projectNo}__${projectName}__${bdStream}__${bdFontColor}__${bdFillColor}`;
-    const previousEntry = prevDispatchHistory[dispatchCompositeKey];
-    let resolvedDispatchedDate = null;
-    if (directColumnKValue > 0) {
-      if (!previousEntry) {
-        resolvedDispatchedDate = todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: todayStr };
-      } else if (previousEntry.quantity !== directColumnKValue) {
-        resolvedDispatchedDate = todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: todayStr };
-      } else {
-        resolvedDispatchedDate = previousEntry.date || todayStr;
-        newDispatchTracker[dispatchCompositeKey] = { quantity: directColumnKValue, date: resolvedDispatchedDate };
-      }
-    } else {
-      resolvedDispatchedDate = null;
-    }
-    outRow["Dispatched Date"] = resolvedDispatchedDate;
-    outRow["Dispatch Date"] = resolvedDispatchedDate;
-    outRow["Actual Dispatched Date"] = resolvedDispatchedDate;
-    outRow["Actual Dispatch Date"] = resolvedDispatchedDate;
-    outRow["Date Dispatched"] = resolvedDispatchedDate;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "dispatched date" || cleanH === "dispatch date" || cleanH === "actual dispatched date" || cleanH === "actual dispatch date" || cleanH === "date dispatched" || cleanH.includes("dispatch") && cleanH.includes("date")) {
-          outRow[h] = resolvedDispatchedDate;
-        }
-      });
-    }
-    let latestDateW = null;
-    let latestDateWStr = null;
-    let latestDatePV = null;
-    let latestDatePVStr = null;
-    const atdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /^(atd|atd date|actual time of departure)$/i.test(String(h).trim())).map(([c]) => Number(c));
-    const etdHeaderIdx = Object.entries(dispatchHeaders).filter(([, h]) => /\betd\b/i.test(String(h))).map(([c]) => Number(c));
-    const atdColumns = atdHeaderIdx.length ? atdHeaderIdx : [22];
-    const etdColumns = etdHeaderIdx.length ? etdHeaderIdx : [15, 16, 17, 18, 19, 20, 21];
-    for (const dRow of matchedDispatchRows) {
-      const candidateWValues = atdColumns.flatMap((c) => [
-        dRow.rawCells?.[c],
-        dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
-      ]);
-      for (const valW of candidateWValues) {
-        if (valW !== void 0 && valW !== null && String(valW).trim() !== "") {
-          const d = parseFlexibleDate(valW);
-          if (d) {
-            if (!latestDateW || d.getTime() > latestDateW.getTime()) {
-              latestDateW = d;
-              latestDateWStr = formatDateString(d);
-            }
-          } else {
-            const s = String(valW).trim();
-            if (s && s !== "-" && !latestDateWStr) {
-              latestDateWStr = s;
-            }
-          }
-        }
-      }
-      for (const c of etdColumns) {
-        const candidatePVValues = [
-          dRow.rawCells?.[c],
-          dispatchHeaders[c] ? dRow.data[dispatchHeaders[c]] : void 0
-        ];
-        for (const valPV of candidatePVValues) {
-          if (valPV !== void 0 && valPV !== null && String(valPV).trim() !== "") {
-            const d = parseFlexibleDate(valPV);
-            if (d) {
-              if (!latestDatePV || d.getTime() > latestDatePV.getTime()) {
-                latestDatePV = d;
-                latestDatePVStr = formatDateString(d);
-              }
-            } else {
-              const s = String(valPV).trim();
-              if (s && s !== "-" && !latestDatePVStr) {
-                latestDatePVStr = s;
-              }
-            }
-          }
-        }
-      }
-    }
-    let finalAtdDate = null;
-    let atdColor = "#FFFFFF";
-    if (latestDateWStr) {
-      finalAtdDate = latestDateWStr;
-      atdColor = "#FFFFFF";
-    } else if (latestDatePVStr) {
-      finalAtdDate = latestDatePVStr;
-      atdColor = "#FFFF00";
-    }
-    outRow["ATD"] = finalAtdDate;
-    outRow["ATD Date"] = finalAtdDate;
-    outRow["Actual Time of Departure"] = finalAtdDate;
-    outRow["_atdColor"] = atdColor;
-    if (Array.isArray(ORDERED_HEADER_LIST)) {
-      ORDERED_HEADER_LIST.forEach((h) => {
-        const cleanH = h.toLowerCase().trim();
-        if (cleanH === "atd" || cleanH === "atd date" || cleanH === "actual time of departure" || cleanH === "actual departure date" || cleanH.includes("atd")) {
-          outRow[h] = finalAtdDate;
-          cellColors[h] = atdColor;
-        }
-      });
-    }
-    cellColors["ATD"] = atdColor;
-    cellColors["ATD Date"] = atdColor;
-    cellColors["Actual Time of Departure"] = atdColor;
+    const formatDispatchDates = (byDate) => {
+      if (byDate.size === 0) return null;
+      return [...byDate.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([iso, m2]) => {
+        const [y, m, d] = iso.split("-").map((p) => parseInt(p, 10));
+        return `${d}/${m}/${y}${m2 !== null ? ` (${Number(m2.toFixed(2))} m2)` : ""}`;
+      }).join(", ");
+    };
+    const latestOf = (byDate) => [...byDate.keys()].sort().pop() ?? null;
+    const etdText = formatDispatchDates(etdByDate);
+    const atdText = formatDispatchDates(atdByDate);
+    const etdAtd = [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`].filter(Boolean).join("\n") || null;
+    outRow["ETD/ATD"] = etdAtd;
+    const previousRow = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]));
+    const dateOfChange = (current, valueKey, dateKey) => {
+      if (current === null) return null;
+      const previousValue = previousRow && isCellFilled(previousRow[valueKey]) ? parseNumeric(previousRow[valueKey]) : null;
+      const previousDate = String(previousRow?.[dateKey] ?? "");
+      return previousValue === current && /^\d{4}-\d{2}-\d{2}$/.test(previousDate) ? previousDate : uploadDateStr;
+    };
+    outRow["Formwork Sailed Date"] = dateOfChange(totalSailed, "Formwork Quantity Sailed (m2)", "Formwork Sailed Date");
+    outRow["_dispatchedDate"] = dateOfChange(totalDispatched, "Total Dispatch", "_dispatchedDate");
+    outRow["_atdDate"] = latestOf(atdByDate);
+    outRow["_atdColor"] = null;
     outRow["_cellColors"] = cellColors;
     const MONTH_COLUMNS_26 = MONTH_LABELS.map((m) => `${m}-26`);
     const MONTH_COLUMNS_27 = MONTH_LABELS.map((m) => `${m}-27`);
@@ -2762,7 +2661,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       sum2027 += val;
     });
     outRow["Total 2027 m2"] = sum2027 > 0 ? sum2027 : null;
-    const streamMatchedDesign = designRows.filter((dRow) => {
+    const designCandidates = designRows.filter((dRow) => {
       const dProjNo = cleanStr(findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No.") || dRow.rawCells?.[0]);
       const dProjName = cleanStr(findCellValue(dRow.data, "Project Name") || findCellValue(dRow.data, "Customer & Project Name") || dRow.rawCells?.[1]);
       let dStream = null;
@@ -2780,6 +2679,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
       return true;
     });
+    const streamMatchedDesign = closestFillGroup(designCandidates, bdFillColor);
     const designStatuses = streamMatchedDesign.map(
       (d) => findCellValue(d.data, "Formwork Design Status") || findCellValue(d.data, "design status") || findCellValue(d.data, "Design Status") || findCellValue(d.data, "Status")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
@@ -2787,7 +2687,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Formwork Design Status"] = resolvedFormworkStatus;
     outRow["design status"] = resolvedFormworkStatus;
     const designDates = streamMatchedDesign.map(
-      (d) => findCellValue(d.data, "Actual Formwork Order Completion Date") || findCellValue(d.data, "Actual Completion Date") || findCellValue(d.data, "estimated design completion date (should be date or tbc) ") || findCellValue(d.data, "Completion Date")
+      (d) => findCellValue(d.data, "Actual Formwork Order Completion Date") || findCellValue(d.data, "Actual Completion Date") || findCellValue(d.data, "Completion Date")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
     let latestDesignDate = null;
     for (const dv of designDates) {
@@ -2849,7 +2749,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Total Quantity Ordered (m2)"] = finalQuantityAN;
     outRow["Total Quantity Ordered"] = finalQuantityAN;
     outRow["processed qty"] = finalQuantityAN;
-    const streamMatchedShellplan = shellplanRows.filter((spRow) => {
+    const shellplanCandidates = shellplanRows.filter((spRow) => {
       const spProjNo = cleanStr(findCellValue(spRow.data, "Project No") || findCellValue(spRow.data, "Project No.") || spRow.rawCells?.[0]);
       const spProjName = cleanStr(findCellValue(spRow.data, "Project Name") || findCellValue(spRow.data, "Customer & Project Name") || spRow.rawCells?.[1]);
       let spStream = null;
@@ -2862,11 +2762,16 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
       const idMatches = projectNo && spProjNo && (spProjNo === projectNo || spProjNo.includes(projectNo) || projectNo.includes(spProjNo)) || projectName && spProjName && (spProjName === projectName || spProjName.includes(projectName) || projectName.includes(spProjName)) || shortName && spProjName && spProjName.includes(shortName);
       if (!idMatches) return false;
+      if (!spStream) {
+        const building = cleanStr(findCellValue(spRow.data, "Building Name"));
+        spStream = streamOfBuilding[`${spProjNo}|${building}`] ?? null;
+      }
       if (spStream && spStream !== bdStream) {
         return false;
       }
       return true;
     });
+    const streamMatchedShellplan = closestFillGroup(shellplanCandidates, bdFillColor);
     const spStatuses = streamMatchedShellplan.map(
       (c) => findCellValue(c.data, "Shell Plan Status") || findCellValue(c.data, "shellplan status") || findCellValue(c.data, "Shell Plan Status - Pending Consultant Drawings") || findCellValue(c.data, "Status")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
@@ -2899,27 +2804,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["shellplan approval date"] = latestApprovedDateStr;
     outRow["Shell Plan Approved Date"] = latestApprovedDateStr;
     const sameProject = (otherNo, otherShort) => shortName && otherShort ? otherShort === shortName : Boolean(projectNo && otherNo === projectNo);
-    const matchedPlanningSeries = allHistoricalPlanningSeries.filter((s) => {
-      const matchesId = sameProject(cleanStr(s.projectNo), cleanStr(s.projectShortname));
-      const matchesStream = normalizeStream(s.stream || "1") === bdStream;
-      const sFont = normalizeColor(s.fontColor);
-      return matchesId && matchesStream && sFont === bdFontColor;
-    });
-    if (matchedPlanningSeries.length > 0) {
-      const sumProcessed = matchedPlanningSeries.reduce((acc, curr) => acc + (curr.totalProcessed || 0), 0);
-      outRow["Total Processed"] = sumProcessed;
-      outRow["Total Processed (m2)"] = sumProcessed;
-    }
-    const tracker = allQuantityTrackers.find(
-      (t) => sameProject(cleanStr(t.projectNo), cleanStr(t.projectShortname)) && normalizeStream(t.stream || "1") === bdStream && normalizeColor(t.fontColor) === bdFontColor
-    );
-    let matchedPlanningRow = null;
-    let highestPlanScore = -1;
-    for (const p of planningRows) {
+    const planningCandidates = planningRows.filter((p) => {
       const pNo = cleanStr(findCellValue(p.data, "Project No") || findCellValue(p.data, "Project No.") || findCellValue(p.data, "Project No. (from design column A)"));
       const pShort = cleanStr(findCellValue(p.data, "Short Name") || findCellValue(p.data, "Project Shortname") || findCellValue(p.data, "Project Shortname (from bd column C)"));
-      if (!sameProject(pNo, pShort)) continue;
-      let score = 1;
+      if (!sameProject(pNo, pShort)) return false;
       let pStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
         const v = findCellValue(p.data, sh);
@@ -2928,83 +2816,64 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           break;
         }
       }
-      if (pStream === bdStream) score += 4;
-      const pColor = normalizeColor(p.fontColor);
-      const pFill = normalizeFillColor(p.fillColor);
-      if (pColor === bdFontColor) score += 8;
-      if (bdFillColor && pFill && pFill === bdFillColor) score += 10;
-      if (score > highestPlanScore) {
-        highestPlanScore = score;
-        matchedPlanningRow = p;
-      }
+      return pStream === bdStream;
+    });
+    const planningMatches = closestColourGroup(planningCandidates, bdFontColor, bdFillColor);
+    let processedTotal = null;
+    for (const p of planningMatches) {
+      const key = Object.keys(p.data).find((k) => /^cumulative processed/i.test(k.trim()));
+      if (!key || p.mergedCopyHeaders?.includes(key) || !isCellFilled(p.data[key])) continue;
+      processedTotal = (processedTotal ?? 0) + parseNumeric(p.data[key]);
     }
-    const activeClosingDate = matchedPlanningRow ? findCellValue(matchedPlanningRow.data, "Closing Date ") || findCellValue(matchedPlanningRow.data, "Closing Date") || findCellValue(matchedPlanningRow.data, "Processed Date") : null;
-    const latestSeriesClosingDate = matchedPlanningSeries.length > 0 ? matchedPlanningSeries[matchedPlanningSeries.length - 1].closingDate : null;
-    const resolvedProcessedDate = activeClosingDate || latestSeriesClosingDate || (tracker ? tracker.lastChangedDate : null) || todayStr;
+    outRow["Total Processed"] = processedTotal;
+    outRow["Total Processed (m2)"] = processedTotal;
+    const previous = previousRow;
+    const previousTotal = previous && isCellFilled(previous["Total Processed"]) ? parseNumeric(previous["Total Processed"]) : null;
+    let resolvedProcessedDate = null;
+    if (processedTotal !== null) {
+      resolvedProcessedDate = previousTotal !== null && previousTotal === processedTotal && previous?.["Processed Date"] ? String(previous["Processed Date"]) : uploadDateStr;
+    }
     outRow["Processed Date"] = resolvedProcessedDate;
     outRow["Closing Date"] = resolvedProcessedDate;
-    let matchedProdRow = null;
-    let highestProdScore = -1;
-    const prodScores = [];
-    for (const pRow of productionRows) {
-      const pShort = cleanStr(
-        findCellValue(pRow.data, "Short Name") || findCellValue(pRow.data, "Project Shortname") || findCellValue(pRow.data, "Project Shortname (from planning column B)") || pRow.rawCells?.[1] || pRow.rawCells?.[0] || pRow.rawCells?.[2]
-      );
-      const pNo = cleanStr(
-        findCellValue(pRow.data, "Project No") || findCellValue(pRow.data, "Project No.") || pRow.rawCells?.[0]
-      );
-      const idMatches = shortName && pShort === shortName || projectNo && pNo === projectNo || shortName && pShort.includes(shortName) || projectNo && pShort.includes(projectNo) || projectName && pShort.includes(projectName);
-      if (!idMatches) continue;
-      let score = 1;
-      let stream = "1";
+    const productionCandidates = productionRows.filter((p) => {
+      const pShort = cleanStr(findCellValue(p.data, "Short Name") || findCellValue(p.data, "Project Shortname") || findCellValue(p.data, "Project Shortname (from planning column B)"));
+      const pNo = cleanStr(findCellValue(p.data, "Project No") || findCellValue(p.data, "Project No."));
+      if (!sameProject(pNo, pShort)) return false;
+      let pStream = "1";
       for (const sh of STREAM_HEADER_CANDIDATES) {
-        const v = findCellValue(pRow.data, sh);
+        const v = findCellValue(p.data, sh);
         if (v !== null && v !== void 0 && v !== "") {
-          stream = normalizeStream(v);
+          pStream = normalizeStream(v);
           break;
         }
       }
-      if (stream === bdStream) score += 4;
-      const pColor = normalizeColor(pRow.fontColor);
-      const pFill = normalizeFillColor(pRow.fillColor);
-      if (pColor === bdFontColor) score += 8;
-      if (bdFillColor && pFill && pFill === bdFillColor) score += 10;
-      prodScores.push({ row: pRow, score });
-      if (score > highestProdScore) {
-        highestProdScore = score;
-        matchedProdRow = pRow;
-      }
+      return pStream === bdStream;
+    });
+    const productionMatches = closestColourGroup(productionCandidates, bdFontColor, bdFillColor);
+    let producedTotal = null;
+    for (const p of productionMatches) {
+      const key = Object.keys(p.data).find((k) => /^cumulative produced/i.test(k.trim()));
+      if (!key || p.mergedCopyHeaders?.includes(key) || !isCellFilled(p.data[key])) continue;
+      producedTotal = (producedTotal ?? 0) + parseNumeric(p.data[key]);
     }
-    const bestProdRows = prodScores.filter((p) => p.score === highestProdScore).map((p) => p.row);
-    const directColumnQValue = matchedProdRow ? parseNumeric(
-      findCellValue(matchedProdRow.data, "Total Produced") ?? findCellValue(matchedProdRow.data, "Total Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced Quantity") ?? findCellValue(matchedProdRow.data, "Produced (m2)") ?? findCellValue(matchedProdRow.data, "Column Q") ?? matchedProdRow.rawCells?.[16] ?? findCellValue(matchedProdRow.data, "__COLUMN_Q__")
-    ) : 0;
-    const finalColumnAQ = directColumnQValue > 0 ? directColumnQValue : null;
-    outRow["Total Produced"] = finalColumnAQ;
-    outRow["Total Produced Quantity"] = finalColumnAQ;
-    outRow["produced qty"] = finalColumnAQ;
+    outRow["Total Produced"] = producedTotal;
+    outRow["Total Produced Quantity"] = producedTotal;
+    outRow["produced qty"] = producedTotal;
     let latestFilledDate = null;
-    if (matchedProdRow) {
-      const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null })).filter((d) => Boolean(d.date));
-      for (const pRow of bestProdRows) {
-        for (const { c, date } of dayColumns) {
-          const headerName = productionHeaders[c];
-          const cellVal = pRow.rawCells?.[c];
-          const targetVal = cellVal !== void 0 ? cellVal : pRow.data[headerName];
-          if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
-            latestFilledDate = date;
-          }
+    const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null })).filter((d) => Boolean(d.date));
+    for (const pRow of productionMatches) {
+      for (const { c, date } of dayColumns) {
+        const cellVal = pRow.rawCells?.[c];
+        const targetVal = cellVal !== void 0 ? cellVal : pRow.data[productionHeaders[c]];
+        if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
+          latestFilledDate = date;
         }
-      }
-      if (!latestFilledDate) {
-        const fallbackDate = findCellValue(matchedProdRow.data, "Day/Date") || findCellValue(matchedProdRow.data, "Date");
-        latestFilledDate = parseFlexibleDate(fallbackDate) ? formatDateString(fallbackDate) : null;
       }
     }
     outRow["Produced Date"] = latestFilledDate;
     if (isBlueColor(bdFontColor)) {
       for (const key of Object.keys(outRow)) {
-        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = null;
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = "-";
       }
       for (const key of Object.keys(cellColors)) {
         if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) delete cellColors[key];
@@ -3475,7 +3344,7 @@ async function getLmeAluminiumPrice() {
 
 // server/modules/mr11/mr11.controller.ts
 var prisma5 = new PrismaClient();
-var ORDERED_HEADER_LIST2 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
+var ORDERED_HEADER_LIST3 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
 async function getLatestMr11(req, res) {
   try {
     const latestRun = await getLatestMr11Run(prisma5);
@@ -3489,7 +3358,7 @@ async function getLatestMr11(req, res) {
         fxRate: fx,
         lmePrice,
         visibleColumns: config?.visibleColumns || [],
-        orderedHeaders: ORDERED_HEADER_LIST2,
+        orderedHeaders: ORDERED_HEADER_LIST3,
         headerGroups: MR11_HEADER_GROUPS,
         numberFormats: MR11_NUMBER_FORMATS,
         // Lets a department user's own columns be highlighted in their department colour
@@ -3547,7 +3416,7 @@ async function exportMr11ToExcel(req, res) {
     const records = latestRun.records;
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
-    const headers = ORDERED_HEADER_LIST2;
+    const headers = ORDERED_HEADER_LIST3;
     worksheet.columns = headers.map((header) => ({
       key: header,
       width: Math.max(header.length + 4, 16),
@@ -3581,6 +3450,9 @@ async function exportMr11ToExcel(req, res) {
         orderedRowData[h] = places !== void 0 && row[h] !== null && row[h] !== "" && !isNaN(n) ? n : row[h] ?? "";
       });
       const addedRow = worksheet.addRow(orderedRowData);
+      headers.forEach((h, i) => {
+        if (String(row[h] ?? "").includes("\n")) addedRow.getCell(i + 1).alignment = { wrapText: true, vertical: "top" };
+      });
       if (row["_fontColor"]) {
         const hex = String(row["_fontColor"]).replace("#", "");
         addedRow.eachCell({ includeEmpty: true }, (cell, col) => {
