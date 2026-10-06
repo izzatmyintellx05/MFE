@@ -5,6 +5,7 @@ import { executeMr11Pipeline } from './mr11.engine';
 import { getLatestMr11Run, hydrateActiveVersionsFromDb } from '../../db/supabase';
 import * as mr11ConfigModule from '../../config/mr11.config';
 import { MR11_HEADER_GROUPS, MR11_NUMBER_FORMATS } from '../../config/mr11.config';
+import { getUsdToMyrRate, withMyrPrices } from '../../utils/fx';
 
 const prisma = new PrismaClient();
 
@@ -19,10 +20,18 @@ export async function getLatestMr11(req: Request, res: Response) {
 
     const config = await prisma.mr11Config.findUnique({ where: { id: 'singleton' } });
 
+    // Ringgit prices use today's live rate, not the rate when MR11 was generated
+    const fx = await getUsdToMyrRate();
+    const run =
+      latestRun && Array.isArray(latestRun.records)
+        ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) }
+        : latestRun;
+
     return res.json({
       success: true,
       data: {
-        run: latestRun,
+        run,
+        fxRate: fx,
         visibleColumns: (config?.visibleColumns as string[]) || [],
         orderedHeaders: ORDERED_HEADER_LIST,
         headerGroups: MR11_HEADER_GROUPS,
@@ -82,7 +91,7 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: { message: 'No MR11 records to export' } });
     }
 
-    const records = latestRun.records as Record<string, any>[];
+    const records = withMyrPrices(latestRun.records as Record<string, any>[], await getUsdToMyrRate());
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('MR11 Master');
 

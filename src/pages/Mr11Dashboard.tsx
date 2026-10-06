@@ -15,6 +15,8 @@ export const Mr11Dashboard: React.FC = () => {
   const [headers, setHeaders] = useState<string[]>([]);
   const [headerGroups, setHeaderGroups] = useState<HeaderGroup[]>([]);
   const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
+  // Live USD -> MYR rate used for "Final Selling Price (MYR)"
+  const [fxRate, setFxRate] = useState<{ rate: number; source: string; asOf: string; live: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +33,7 @@ export const Mr11Dashboard: React.FC = () => {
       setHeaders(data?.orderedHeaders || []);
       setHeaderGroups(data?.headerGroups || []);
       setNumberFormats(data?.numberFormats || {});
+      setFxRate(data?.fxRate || null);
     } catch (err: any) {
       setError(err.response?.data?.error?.message || err.message || 'Failed to fetch MR11 records');
     } finally {
@@ -86,6 +89,12 @@ export const Mr11Dashboard: React.FC = () => {
             </div>
             <p className="text-[11px] text-stone-400 mt-0.5">
               Production, dispatch milestones & fulfillment schedule
+              {' · '}
+              {fxRate
+                ? `1 USD = ${fxRate.rate.toFixed(4)} MYR (${fxRate.live ? 'live' : 'last known'}, ${fxRate.source}${
+                    fxRate.asOf ? `, ${fxRate.asOf}` : ''
+                  })`
+                : 'MYR prices unavailable: no exchange rate'}
             </p>
           </div>
         </div>

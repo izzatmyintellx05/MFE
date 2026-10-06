@@ -1471,10 +1471,6 @@ var MR11_NUMBER_FORMATS = {
   "Final Selling Price (USD)": 2,
   "Final Selling Price (MYR)": 2
 };
-function usdToMyrRate() {
-  const rate = Number(process.env.USD_TO_MYR_RATE);
-  return Number.isFinite(rate) && rate > 0 ? rate : null;
-}
 var MR11_SOURCE_KEY_MAP = {
   BD: [
     "Customer & Project Name",
@@ -2416,9 +2412,6 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const lmePricing = resolveLmePricing(bdData);
     outRow["LME Adjusted (USD)"] = lmePricing.lmeAdjusted;
     outRow["Final Selling Price (USD)"] = lmePricing.finalSellingPrice;
-    const myrRate = usdToMyrRate();
-    const finalUsd = Number(lmePricing.finalSellingPrice);
-    outRow["Final Selling Price (MYR)"] = myrRate !== null && isUsableValue(lmePricing.finalSellingPrice) && Number.isFinite(finalUsd) ? Math.round(finalUsd * myrRate * 100) / 100 : null;
     const findBestDeptRow = (dept) => {
       const deptDataset = datasetMap[dept] || [];
       const possibleKeyNames = MR11_SOURCE_KEY_MAP[dept] || [];
@@ -3277,16 +3270,80 @@ import { Router as Router3 } from "express";
 init_prisma();
 import ExcelJS2 from "exceljs";
 init_supabase();
+
+// server/utils/fx.ts
+var CACHE_MS = 60 * 60 * 1e3;
+var TIMEOUT_MS = 5e3;
+var cached = null;
+async function getJson(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+var providers = [
+  {
+    name: "ExchangeRate-API",
+    load: async () => {
+      const j = await getJson("https://open.er-api.com/v6/latest/USD");
+      const rate = Number(j?.rates?.MYR);
+      if (j?.result !== "success" || !(rate > 0)) throw new Error("no MYR rate");
+      const asOf = new Date(Number(j.time_last_update_unix) * 1e3).toISOString().slice(0, 10);
+      return { rate, source: "ExchangeRate-API", asOf, live: true };
+    }
+  },
+  {
+    name: "Frankfurter (ECB)",
+    load: async () => {
+      const j = await getJson("https://api.frankfurter.dev/v1/latest?base=USD&symbols=MYR");
+      const rate = Number(j?.rates?.MYR);
+      if (!(rate > 0)) throw new Error("no MYR rate");
+      return { rate, source: "Frankfurter (ECB)", asOf: String(j.date), live: true };
+    }
+  }
+];
+function fixedSettingRate() {
+  const rate = Number(process.env.USD_TO_MYR_RATE);
+  return Number.isFinite(rate) && rate > 0 ? { rate, source: "USD_TO_MYR_RATE setting", asOf: "", live: false } : null;
+}
+async function getUsdToMyrRate() {
+  if (cached && Date.now() - cached.fetchedAt < CACHE_MS) return cached.value;
+  for (const provider of providers) {
+    try {
+      const value = await provider.load();
+      cached = { value, fetchedAt: Date.now() };
+      return value;
+    } catch (err) {
+      console.warn(`[FX] ${provider.name} unavailable:`, err?.message || err);
+    }
+  }
+  if (cached) return { ...cached.value, live: false };
+  return fixedSettingRate();
+}
+function withMyrPrices(records, fx) {
+  return records.map((r) => {
+    const usd = Number(r?.["Final Selling Price (USD)"]);
+    const hasUsd = r?.["Final Selling Price (USD)"] !== null && r?.["Final Selling Price (USD)"] !== "" && Number.isFinite(usd);
+    return {
+      ...r,
+      "Final Selling Price (MYR)": fx && hasUsd ? Math.round(usd * fx.rate * 100) / 100 : null
+    };
+  });
+}
+
+// server/modules/mr11/mr11.controller.ts
 var prisma5 = new PrismaClient();
 var ORDERED_HEADER_LIST2 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
 async function getLatestMr11(req, res) {
   try {
     const latestRun = await getLatestMr11Run(prisma5);
     const config = await prisma5.mr11Config.findUnique({ where: { id: "singleton" } });
+    const fx = await getUsdToMyrRate();
+    const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) } : latestRun;
     return res.json({
       success: true,
       data: {
-        run: latestRun,
+        run,
+        fxRate: fx,
         visibleColumns: config?.visibleColumns || [],
         orderedHeaders: ORDERED_HEADER_LIST2,
         headerGroups: MR11_HEADER_GROUPS,
@@ -3340,7 +3397,7 @@ async function exportMr11ToExcel(req, res) {
     if (!latestRun || !Array.isArray(latestRun.records) || latestRun.records.length === 0) {
       return res.status(400).json({ success: false, error: { message: "No MR11 records to export" } });
     }
-    const records = latestRun.records;
+    const records = withMyrPrices(latestRun.records, await getUsdToMyrRate());
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
     const headers = ORDERED_HEADER_LIST2;

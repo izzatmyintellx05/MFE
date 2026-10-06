@@ -42,15 +42,6 @@ export const MR11_NUMBER_FORMATS: Record<string, number> = {
   'Final Selling Price (MYR)': 2,
 };
 
-/**
- * USD to MYR rate for "Final Selling Price (MYR)", from the USD_TO_MYR_RATE environment
- * setting (e.g. 4.20). Null when it is not set, and the MYR column then stays empty.
- */
-export function usdToMyrRate(): number | null {
-  const rate = Number(process.env.USD_TO_MYR_RATE);
-  return Number.isFinite(rate) && rate > 0 ? rate : null;
-}
-
 export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {
   BD: [
     'Customer & Project Name',

@@ -1,5 +1,5 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
-import { MR11_ORDERED_COLUMNS, MR11_SOURCE_KEY_MAP, ORDERED_HEADER_LIST, usdToMyrRate } from '../../config/mr11.config';
+import { MR11_ORDERED_COLUMNS, MR11_SOURCE_KEY_MAP, ORDERED_HEADER_LIST } from '../../config/mr11.config';
 import { saveMr11RunToDb, fetchLatestMr11RunFromDb, restoreEngineHistory } from '../../db/supabase';
 import { exportEngineHistory } from '../../db/prisma';
 import { FortuneSheet } from '../../utils/excel-normalizer';
@@ -975,13 +975,7 @@ export async function executeMr11Pipeline(
     const lmePricing = resolveLmePricing(bdData);
     outRow['LME Adjusted (USD)'] = lmePricing.lmeAdjusted;
     outRow['Final Selling Price (USD)'] = lmePricing.finalSellingPrice;
-    // Same price in ringgit, using the USD_TO_MYR_RATE setting (empty when no rate is set)
-    const myrRate = usdToMyrRate();
-    const finalUsd = Number(lmePricing.finalSellingPrice);
-    outRow['Final Selling Price (MYR)'] =
-      myrRate !== null && isUsableValue(lmePricing.finalSellingPrice) && Number.isFinite(finalUsd)
-        ? Math.round(finalUsd * myrRate * 100) / 100
-        : null;
+    // "Final Selling Price (MYR)" is added when MR11 is read, at the live exchange rate
 
     // Best-matching row from a department: project id must match, then stream, font and fill colour add weight
     const findBestDeptRow = (dept: RoleCode): Record<string, any> | null => {
