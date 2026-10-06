@@ -634,7 +634,7 @@ export const CeoDashboard: React.FC = () => {
               <section className={`${PANEL} p-5 sm:p-6`}>
                 <SectionHeading
                   title="Monthly Dispatched m² by Region"
-                  description={`m² out of the warehouse, by Dispatched Date${selectedMonth ? ` · ${selectedMonth.key} highlighted` : ''}`}
+                  description={`m² out of the warehouse, by date of dispatch${selectedMonth ? ` · ${selectedMonth.key} highlighted` : ''}`}
                 />
                 <div className="relative mt-5 h-72">
                   <Bar
@@ -653,7 +653,7 @@ export const CeoDashboard: React.FC = () => {
                   {!regionDispatchedHasData && (
                     <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                       <p className="rounded-lg bg-white/90 px-3 py-1.5 text-sm text-slate-500">
-                        No dispatches with a Dispatched Date yet
+                        No dispatches with a dispatch date yet
                       </p>
                     </div>
                   )}

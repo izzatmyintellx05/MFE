@@ -1606,9 +1606,9 @@ var ORDERED_HEADER_LIST = [
   "Produced Date",
   // --- Dispatch Columns ---
   "Total Dispatch",
-  "Dispatched Date",
+  "ETD/ATD",
   "Formwork Quantity Sailed (m2)",
-  "ATD",
+  "Formwork Sailed Date",
   // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
   "Jan-26",
   "Feb-26",
@@ -1728,10 +1728,13 @@ var MR11_ORDERED_COLUMNS = [
   // The latest daily (date-headed) column with a value in those blocks
   { target: "Produced Date", sourceDept: "PRODUCTION" /* PRODUCTION */, sourceColumn: "daily date columns", type: "date" },
   // Dispatch & ATD
-  { target: "Total Dispatch", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Column K", type: "number" },
-  { target: "Dispatched Date", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Dispatched Date", type: "date" },
+  // Sum of "Cumulative Dispatched (Project)" over the BD row's Dispatch blocks
+  { target: "Total Dispatch", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Cumulative Dispatched (Project)", type: "number" },
+  // Each Dispatch row's latest ETD (ETA POL, Rev ETD .. Rev 7 ETD) and its ATD, with m2, one line each
+  { target: "ETD/ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "string" },
   { target: "Formwork Quantity Sailed (m2)", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "number" },
-  { target: "ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "date" }
+  // The upload date on which Formwork Quantity Sailed (m2) last changed (not read from the file)
+  { target: "Formwork Sailed Date", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "date" }
 ];
 var MR11_DEPARTMENT_COLORS = {
   BD: "#2563EB",
@@ -1796,7 +1799,7 @@ function isBlueColor(color) {
   hue = (hue * 60 + 360) % 360;
   return hue >= 185 && hue <= 250;
 }
-var PRODUCTION_DISPATCH_COLUMN = /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
+var PRODUCTION_DISPATCH_COLUMN = /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|formwork sailed|etd|atd|actual time of departure|actual departure)/i;
 function colourDistance(a, b) {
   const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
   const [x, y] = [rgb(a), rgb(b)];
@@ -2676,13 +2679,17 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const latestOf = (byDate) => [...byDate.keys()].sort().pop() ?? null;
     const etdText = formatDispatchDates(etdByDate);
     const atdText = formatDispatchDates(atdByDate);
-    for (const key of ["Dispatched Date", "Dispatch Date", "Actual Dispatched Date", "Actual Dispatch Date", "Date Dispatched"]) {
-      outRow[key] = etdText;
-    }
-    for (const key of ["ATD", "ATD Date", "Actual Time of Departure"]) {
-      outRow[key] = atdText;
-    }
-    outRow["_dispatchedDate"] = latestOf(etdByDate);
+    const etdAtd = [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`].filter(Boolean).join("\n") || null;
+    outRow["ETD/ATD"] = etdAtd;
+    const previousRow = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]));
+    const dateOfChange = (current, valueKey, dateKey) => {
+      if (current === null) return null;
+      const previousValue = previousRow && isCellFilled(previousRow[valueKey]) ? parseNumeric(previousRow[valueKey]) : null;
+      const previousDate = String(previousRow?.[dateKey] ?? "");
+      return previousValue === current && /^\d{4}-\d{2}-\d{2}$/.test(previousDate) ? previousDate : uploadDateStr;
+    };
+    outRow["Formwork Sailed Date"] = dateOfChange(totalSailed, "Formwork Quantity Sailed (m2)", "Formwork Sailed Date");
+    outRow["_dispatchedDate"] = dateOfChange(totalDispatched, "Total Dispatch", "_dispatchedDate");
     outRow["_atdDate"] = latestOf(atdByDate);
     outRow["_atdColor"] = null;
     outRow["_cellColors"] = cellColors;
@@ -2867,7 +2874,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     }
     outRow["Total Processed"] = processedTotal;
     outRow["Total Processed (m2)"] = processedTotal;
-    const previous = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]));
+    const previous = previousRow;
     const previousTotal = previous && isCellFilled(previous["Total Processed"]) ? parseNumeric(previous["Total Processed"]) : null;
     let resolvedProcessedDate = null;
     if (processedTotal !== null) {
@@ -3490,6 +3497,9 @@ async function exportMr11ToExcel(req, res) {
         orderedRowData[h] = places !== void 0 && row[h] !== null && row[h] !== "" && !isNaN(n) ? n : row[h] ?? "";
       });
       const addedRow = worksheet.addRow(orderedRowData);
+      headers.forEach((h, i) => {
+        if (String(row[h] ?? "").includes("\n")) addedRow.getCell(i + 1).alignment = { wrapText: true, vertical: "top" };
+      });
       if (row["_fontColor"]) {
         const hex = String(row["_fontColor"]).replace("#", "");
         addedRow.eachCell({ includeEmpty: true }, (cell, col) => {

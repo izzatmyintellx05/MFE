@@ -32,8 +32,7 @@ const STAGE_COLUMNS: Record<Stage, { qty: string; date: string }> = {
   design: { qty: 'Total Quantity Ordered m2', date: 'Actual Formwork Order Completion Date' },
   processed: { qty: 'Total Processed', date: 'Processed Date' },
   produced: { qty: 'Total Produced', date: 'Produced Date' },
-  // Dispatched Date and ATD list several dates with their m2 ("12/12/2026 (100 m2), ...");
-  // MR11 also keeps the latest single date of each for grouping by month
+  // ETD/ATD lists several dates with their m2; MR11 keeps single dates for grouping by month
   dispatched: { qty: 'Total Dispatch', date: '_dispatchedDate' },
   // Quantity actually shipped, dated by the actual time of departure (ATD)
   sailed: { qty: 'Formwork Quantity Sailed (m2)', date: '_atdDate' },
@@ -173,7 +172,7 @@ export function monthlySeries(rows: any[], months: MonthColumn[], today: Date): 
   });
 }
 
-// m2 dispatched (left the warehouse) in each month, by its latest ETD (Dispatched Date)
+// m2 dispatched (left the warehouse) in each month, by the date Total Dispatch last changed
 export function dispatchedByMonth(rows: any[], months: MonthColumn[]): number[] {
   return months.map((col) => stageTotals(rows, col.key).dispatched);
 }

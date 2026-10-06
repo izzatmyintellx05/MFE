@@ -68,7 +68,7 @@ function isBlueColor(color: any): boolean {
 
 // MR11 output columns that come from the Production and Dispatch files
 const PRODUCTION_DISPATCH_COLUMN =
-  /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
+  /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|formwork sailed|etd|atd|actual time of departure|actual departure)/i;
 
 // Distance between two hex colours (0 = identical, ~441 = black vs white)
 function colourDistance(a: string, b: string): number {
@@ -1227,16 +1227,32 @@ export async function executeMr11Pipeline(
     };
     const latestOf = (byDate: Map<string, number | null>) => [...byDate.keys()].sort().pop() ?? null;
 
+    // ETD and ATD share one column, one line each:
+    //   ETD: 12/12/2026 (100 m2), 11/12/2026 (400 m2)
+    //   ATD: 9/11/2026 (300 m2)
     const etdText = formatDispatchDates(etdByDate);
     const atdText = formatDispatchDates(atdByDate);
-    for (const key of ['Dispatched Date', 'Dispatch Date', 'Actual Dispatched Date', 'Actual Dispatch Date', 'Date Dispatched']) {
-      outRow[key] = etdText;
-    }
-    for (const key of ['ATD', 'ATD Date', 'Actual Time of Departure']) {
-      outRow[key] = atdText;
-    }
-    // Latest single dates, for month grouping on the CEO dashboard
-    outRow['_dispatchedDate'] = latestOf(etdByDate);
+    const etdAtd = [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`].filter(Boolean).join('\n') || null;
+    outRow['ETD/ATD'] = etdAtd;
+
+    // The previous MR11's version of this row (for dates kept while a total is unchanged)
+    const previousRow = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']));
+
+    // The upload date on which a total last changed: today when it differs from the previous
+    // MR11, otherwise the date kept from then
+    const dateOfChange = (current: number | null, valueKey: string, dateKey: string): string | null => {
+      if (current === null) return null;
+      const previousValue = previousRow && isCellFilled(previousRow[valueKey]) ? parseNumeric(previousRow[valueKey]) : null;
+      const previousDate = String(previousRow?.[dateKey] ?? '');
+      return previousValue === current && /^\d{4}-\d{2}-\d{2}$/.test(previousDate) ? previousDate : uploadDateStr;
+    };
+
+    // Formwork Sailed Date = the upload date on which Formwork Quantity Sailed (m2) last changed
+    outRow['Formwork Sailed Date'] = dateOfChange(totalSailed, 'Formwork Quantity Sailed (m2)', 'Formwork Sailed Date');
+
+    // Single dates for month grouping on the CEO dashboard: dispatched = when Total Dispatch
+    // last changed, sailed = latest ATD
+    outRow['_dispatchedDate'] = dateOfChange(totalDispatched, 'Total Dispatch', '_dispatchedDate');
     outRow['_atdDate'] = latestOf(atdByDate);
     outRow['_atdColor'] = null;
 
@@ -1521,7 +1537,7 @@ export async function executeMr11Pipeline(
 
     // Processed Date = the upload date on which Total Processed last changed: a new value takes
     // today's date, an unchanged value keeps the date from the previous MR11
-    const previous = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']));
+    const previous = previousRow;
     const previousTotal = previous && isCellFilled(previous['Total Processed']) ? parseNumeric(previous['Total Processed']) : null;
     let resolvedProcessedDate: string | null = null;
     if (processedTotal !== null) {
