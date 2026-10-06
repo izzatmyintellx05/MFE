@@ -46,14 +46,22 @@ export const HighFidelityViewer: React.FC<HighFidelityViewerProps> = ({ data }) 
     }
   });
 
+  // The grid reaches the last row / column that holds a value (blank formatted rows at the
+  // bottom of a template don't count); merged blocks starting there are included too
+  const hasValue = (v: any) => v && ((v.m !== undefined && String(v.m).trim() !== '') || (v.v !== undefined && v.v !== null && String(v.v).trim() !== ''));
   celldata.forEach((cell: any) => {
-    if (cell.r > maxR) maxR = cell.r;
-    if (cell.c > maxC) maxC = cell.c;
     gridMap[`${cell.r}_${cell.c}`] = cell.v;
+    if (!hasValue(cell.v)) return;
+    const m = merges[`${cell.r}_${cell.c}`];
+    maxR = Math.max(maxR, cell.r + (m ? m.rs - 1 : 0));
+    maxC = Math.max(maxC, cell.c + (m ? m.cs - 1 : 0));
   });
 
-  const rowIndices = Array.from({ length: Math.min(maxR + 1, 300) }, (_, i) => i);
-  const colIndices = Array.from({ length: Math.min(maxC + 1, 60) }, (_, i) => i);
+  // Safety limits far above any department template, so no real data is cut off
+  const MAX_ROWS = 5000;
+  const MAX_COLS = 200;
+  const rowIndices = Array.from({ length: Math.min(maxR + 1, MAX_ROWS) }, (_, i) => i);
+  const colIndices = Array.from({ length: Math.min(maxC + 1, MAX_COLS) }, (_, i) => i);
 
   return (
     <div className="flex flex-col h-full bg-white rounded-lg border border-slate-300 overflow-hidden shadow-inner">
