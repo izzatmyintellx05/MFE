@@ -7,13 +7,15 @@ import {
   CategoryScale,
   LinearScale,
   BarElement,
+  PointElement,
+  LineElement,
+  Filler,
   Title,
   Tooltip,
   Legend,
 } from 'chart.js';
-import { Bar } from 'react-chartjs-2';
+import { Bar, Line } from 'react-chartjs-2';
 import {
-  TrendingUp,
   Building2,
   CheckCircle2,
   CalendarClock,
@@ -31,23 +33,23 @@ import {
   DEFAULT_FORECAST_M2,
   RegionFilter,
   Stage,
+  dispatchedByMonth,
   filterByRegion,
   firstRowPerProject,
   monthColumns,
   monthlySeries,
-  monthValue,
-  projectBreakdown,
   regionOf,
   stageTotals,
 } from '../utils/ceoMetrics';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Filler, Title, Tooltip, Legend);
 
 const STAGE_COLORS: Record<Stage, string> = {
   design: '#0F172A',
   processed: '#004B87', // Doka/MFE Deep Blue
   produced: '#38BDF8',
   dispatched: '#FFDA00', // Doka Yellow
+  sailed: '#10B981',
 };
 
 const REGION_COLORS: Record<string, string> = {
@@ -57,14 +59,15 @@ const REGION_COLORS: Record<string, string> = {
 };
 
 const ACTUAL_COLOR = '#004B87';
-const FORECAST_COLOR = '#FFDA00';
-const DEFAULT_FORECAST_COLOR = '#FEF3C7';
+const FORECAST_COLOR = '#F59E0B';
 
 const formatM2 = (n: number) => `${Math.round(n).toLocaleString('en-US')} m²`;
 
+const axisM2 = { callback: (v: any) => Number(v).toLocaleString('en-US') };
+
 const chartTooltipM2 = {
   callbacks: {
-    label: (ctx: any) => `${ctx.dataset.label}: ${formatM2(ctx.parsed.x ?? ctx.parsed.y ?? 0)}`,
+    label: (ctx: any) => `${ctx.dataset.label}: ${formatM2(ctx.parsed.y ?? 0)}`,
   },
 };
 
@@ -110,9 +113,10 @@ export const CeoDashboard: React.FC = () => {
   const today = useMemo(() => new Date(), []);
   const months = useMemo(() => monthColumns(headers), [headers]);
   const selectedMonth = month === 'ALL' ? null : months.find((m) => m.key === month) || null;
+  const monthKey = selectedMonth?.key ?? null;
 
   const regionRows = useMemo(() => filterByRegion(records, region), [records, region]);
-  const totals = useMemo(() => stageTotals(regionRows, selectedMonth?.key ?? null), [regionRows, selectedMonth]);
+  const totals = useMemo(() => stageTotals(regionRows, monthKey), [regionRows, monthKey]);
   const series = useMemo(() => monthlySeries(regionRows, months, today), [regionRows, months, today]);
   const selectedPoint = selectedMonth ? series.find((p) => p.key === selectedMonth.key) || null : null;
   const projectCount = useMemo(() => firstRowPerProject(regionRows).length, [regionRows]);
@@ -120,36 +124,44 @@ export const CeoDashboard: React.FC = () => {
   const actualTotal = series.filter((p) => p.kind === 'actual').reduce((a, p) => a + p.value, 0);
   const forecastTotal = series.filter((p) => p.kind === 'forecast').reduce((a, p) => a + p.value, 0);
   const defaultedCount = series.filter((p) => p.isDefault).length;
-
-  const projects = useMemo(
-    () =>
-      projectBreakdown(regionRows, selectedMonth?.key ?? null).filter(
-        (p) => p.month > 0 || STAGES.some((s) => p.stages[s] > 0)
-      ),
-    [regionRows, selectedMonth]
-  );
+  const lastActual = [...series].reverse().find((p) => p.kind === 'actual');
 
   const visibleRegions = region === 'ALL' ? REGIONS : [region];
+  const rowsOfRegion = (r: string) => records.filter((row) => regionOf(row) === r);
 
-  const regionStageTotals = useMemo(
-    () => visibleRegions.map((r) => stageTotals(records.filter((row) => regionOf(row) === r), null)),
-    [records, region]
-  );
+  const regionStageTotals = visibleRegions.map((r) => stageTotals(rowsOfRegion(r), monthKey));
+  const regionDispatched = visibleRegions.map((r) => dispatchedByMonth(rowsOfRegion(r), months));
+  const regionDispatchedHasData = regionDispatched.some((values) => values.some((v) => v > 0));
 
-  // Monthly chart: completed months are actual, the rest forecast (default when empty)
+  // Actual line covers completed months; the forecast line starts at the last actual
+  // month so the two lines join up
+  const lastActualIdx = series.findIndex((p) => p.kind === 'forecast') - 1;
+  const pointRadius = (i: number) => (selectedMonth && series[i]?.key === selectedMonth.key ? 7 : 4);
   const monthlyChartData = {
     labels: series.map((p) => p.key),
     datasets: [
       {
-        label: 'm²',
-        data: series.map((p) => p.value),
-        backgroundColor: series.map((p) => {
-          const base = p.kind === 'actual' ? ACTUAL_COLOR : p.isDefault ? DEFAULT_FORECAST_COLOR : FORECAST_COLOR;
-          return selectedMonth && p.key !== selectedMonth.key ? `${base}55` : base;
-        }),
-        borderColor: series.map((p) => (p.isDefault ? '#F59E0B' : 'transparent')),
-        borderWidth: series.map((p) => (p.isDefault ? 1 : 0)),
-        borderRadius: 4,
+        label: 'Actual',
+        data: series.map((p) => (p.kind === 'actual' ? p.value : null)),
+        borderColor: ACTUAL_COLOR,
+        backgroundColor: `${ACTUAL_COLOR}1A`,
+        pointBackgroundColor: ACTUAL_COLOR,
+        pointRadius: series.map((_, i) => pointRadius(i)),
+        fill: true,
+        tension: 0.25,
+      },
+      {
+        label: 'Forecast',
+        data: series.map((p, i) => (p.kind === 'forecast' || i === lastActualIdx ? p.value : null)),
+        borderColor: FORECAST_COLOR,
+        backgroundColor: `${FORECAST_COLOR}14`,
+        borderDash: [6, 4],
+        // Hollow points mark months using the 100,000 m² default
+        pointBackgroundColor: series.map((p) => (p.isDefault ? '#FFFFFF' : FORECAST_COLOR)),
+        pointBorderColor: FORECAST_COLOR,
+        pointRadius: series.map((p, i) => (p.kind === 'forecast' ? pointRadius(i) : 0)),
+        fill: true,
+        tension: 0.25,
       },
     ],
   };
@@ -164,42 +176,24 @@ export const CeoDashboard: React.FC = () => {
     })),
   };
 
-  const regionMonthlyData = {
+  const regionDispatchData = {
     labels: months.map((m) => m.key),
-    datasets: visibleRegions.map((r) => ({
+    datasets: visibleRegions.map((r, idx) => ({
       label: REGION_LABELS[r],
-      data: months.map((m) => monthValue(records.filter((row) => regionOf(row) === r), m.key)),
-      backgroundColor: REGION_COLORS[r],
+      data: regionDispatched[idx],
+      backgroundColor: months.map((m) =>
+        selectedMonth && m.key !== selectedMonth.key ? `${REGION_COLORS[r]}40` : REGION_COLORS[r]
+      ),
       borderRadius: 2,
     })),
   };
-  const regionMonthlyHasData = regionMonthlyData.datasets.some((d) => d.data.some((v) => v > 0));
 
-  const projectChartData = {
-    labels: projects.map((p) => p.label),
-    datasets: [
-      {
-        label: selectedPoint ? `${selectedPoint.kind === 'actual' ? 'Actual' : 'Forecast'} m² (${selectedPoint.key})` : 'Monthly m²',
-        data: projects.map((p) => p.month),
-        backgroundColor: selectedPoint?.kind === 'actual' ? ACTUAL_COLOR : FORECAST_COLOR,
-        borderRadius: 3,
-      },
-      ...STAGES.map((s) => ({
-        label: STAGE_LABELS[s],
-        data: projects.map((p) => p.stages[s]),
-        backgroundColor: STAGE_COLORS[s],
-        borderRadius: 3,
-      })),
-    ],
-  };
+  const regionLabel = region === 'ALL' ? 'All regions' : REGION_LABELS[region];
+  const filterLabel = `${regionLabel} · ${selectedMonth ? selectedMonth.key : 'All months'}`;
 
-  const filterLabel = `${region === 'ALL' ? 'All regions' : REGION_LABELS[region]} · ${
-    selectedMonth ? selectedMonth.key : 'All months'
-  }`;
-
-  const handleMonthBarClick = (_: any, elements: any[]) => {
+  const handleMonthClick = (_: any, elements: any[]) => {
     if (!elements.length) return;
-    const key = series[elements[0].index]?.key;
+    const key = months[elements[0].index]?.key;
     if (key) setMonth((prev) => (prev === key ? 'ALL' : key));
   };
 
@@ -303,20 +297,7 @@ export const CeoDashboard: React.FC = () => {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider">
-              Total m² Produced {selectedMonth ? `· ${selectedMonth.key}` : ''}
-            </span>
-            <TrendingUp className="w-4 h-4 text-emerald-600" />
-          </div>
-          <div className="text-2xl font-black text-slate-900 font-mono">{formatM2(totals.produced)}</div>
-          <span className="text-[10px] text-slate-400 mt-1">
-            {selectedMonth ? 'Produced Date in this month' : 'Overall, MR11 Total Produced'}
-          </span>
-        </div>
-
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm flex flex-col">
           <div className="flex items-center justify-between text-slate-400 mb-2">
             <span className="text-[10px] font-extrabold uppercase tracking-wider">
@@ -328,9 +309,13 @@ export const CeoDashboard: React.FC = () => {
             {selectedPoint ? (selectedPoint.kind === 'actual' ? formatM2(selectedPoint.value) : '—') : formatM2(actualTotal)}
           </div>
           <span className="text-[10px] text-slate-400 mt-1">
-            {selectedPoint && selectedPoint.kind !== 'actual'
-              ? 'Month not completed yet'
-              : 'Completed months'}
+            {selectedPoint
+              ? selectedPoint.kind === 'actual'
+                ? 'Completed month'
+                : 'Month not completed yet'
+              : lastActual
+              ? `Completed months, ${series[0]?.key} to ${lastActual.key}`
+              : 'No completed months yet'}
           </span>
         </div>
 
@@ -350,10 +335,10 @@ export const CeoDashboard: React.FC = () => {
                 ? 'Month completed, see Actual'
                 : selectedPoint.isDefault
                 ? `No forecast entered, default ${formatM2(DEFAULT_FORECAST_M2)}`
-                : 'Remaining month forecast'
+                : 'Forecast entered for this month'
               : defaultedCount > 0
-              ? `${defaultedCount} month(s) use default ${formatM2(DEFAULT_FORECAST_M2)}`
-              : 'Remaining months'}
+              ? `Current and upcoming months · ${defaultedCount} use default ${formatM2(DEFAULT_FORECAST_M2)}`
+              : 'Current and upcoming months'}
           </span>
         </div>
 
@@ -363,22 +348,20 @@ export const CeoDashboard: React.FC = () => {
             <Building2 className="w-4 h-4 text-slate-500" />
           </div>
           <div className="text-2xl font-black text-slate-900 font-mono">{projectCount}</div>
-          <span className="text-[10px] text-slate-400 mt-1">{filterLabel}</span>
+          <span className="text-[10px] text-slate-400 mt-1">{regionLabel}</span>
         </div>
       </div>
 
-      {/* Pipeline: Design -> Processed -> Produced -> Dispatched */}
+      {/* Pipeline: Design -> Processed -> Produced -> Dispatched -> Sailed */}
       <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm mb-4">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Production Pipeline (m²)</h2>
-            <p className="text-[10px] text-slate-400">
-              {filterLabel}
-              {selectedMonth ? ' · each stage counted by its own date column' : ''}
-            </p>
-          </div>
+        <div className="mb-4">
+          <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Production Pipeline (m²)</h2>
+          <p className="text-[10px] text-slate-400">
+            {filterLabel}
+            {selectedMonth ? ' · each stage counted by its own date column' : ''}
+          </p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {STAGES.map((s, idx) => {
             const base = totals.design || Math.max(...STAGES.map((x) => totals[x]), 0);
             const pct = base > 0 ? Math.min(100, (totals[s] / base) * 100) : 0;
@@ -386,7 +369,7 @@ export const CeoDashboard: React.FC = () => {
             return (
               <div key={s} className="relative rounded-xl border border-slate-200 p-4 bg-slate-50/60">
                 {idx > 0 && (
-                  <ArrowRight className="hidden md:block absolute -left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 bg-white rounded-full" />
+                  <ArrowRight className="hidden lg:block absolute -left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 bg-white rounded-full" />
                 )}
                 <div className="flex items-center gap-1.5 mb-1">
                   <span className="w-2.5 h-2.5 rounded" style={{ backgroundColor: STAGE_COLORS[s] }} />
@@ -417,35 +400,34 @@ export const CeoDashboard: React.FC = () => {
           <div>
             <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Monthly m² · Actual vs Forecast</h2>
             <p className="text-[10px] text-slate-400">
-              {region === 'ALL' ? 'All regions' : REGION_LABELS[region]} · click a bar to filter by that month
+              {regionLabel} · MR11 month columns · click a point to filter by that month
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <span className="flex items-center gap-1.5 text-[10px] text-slate-600 font-medium">
-              <span className="w-2.5 h-2.5 rounded" style={{ backgroundColor: ACTUAL_COLOR }} /> Actual
+              <span className="w-4 h-0.5 rounded" style={{ backgroundColor: ACTUAL_COLOR }} /> Actual
             </span>
             <span className="flex items-center gap-1.5 text-[10px] text-slate-600 font-medium">
-              <span className="w-2.5 h-2.5 rounded" style={{ backgroundColor: FORECAST_COLOR }} /> Forecast
+              <span className="w-4 border-t-2 border-dashed" style={{ borderColor: FORECAST_COLOR }} /> Forecast
             </span>
             <span className="flex items-center gap-1.5 text-[10px] text-slate-600 font-medium">
-              <span
-                className="w-2.5 h-2.5 rounded border border-dashed border-amber-500"
-                style={{ backgroundColor: DEFAULT_FORECAST_COLOR }}
-              />
+              <span className="w-2.5 h-2.5 rounded-full border-2 bg-white" style={{ borderColor: FORECAST_COLOR }} />
               Default forecast ({Math.round(DEFAULT_FORECAST_M2 / 1000)}k)
             </span>
           </div>
         </div>
         <div className="h-64">
-          <Bar
+          <Line
             data={monthlyChartData}
             options={{
               responsive: true,
               maintainAspectRatio: false,
-              onClick: handleMonthBarClick,
+              onClick: handleMonthClick,
+              interaction: { mode: 'index', intersect: false },
               plugins: {
                 legend: { display: false },
                 tooltip: {
+                  filter: (ctx: any) => ctx.raw !== null && !(ctx.datasetIndex === 1 && series[ctx.dataIndex]?.kind === 'actual'),
                   callbacks: {
                     label: (ctx: any) => {
                       const p = series[ctx.dataIndex];
@@ -457,108 +439,78 @@ export const CeoDashboard: React.FC = () => {
               },
               scales: {
                 x: { grid: { display: false } },
-                y: { grid: { color: '#F1F5F9' }, ticks: { callback: (v: any) => Number(v).toLocaleString('en-US') } },
+                y: { beginAtZero: true, grid: { color: '#F1F5F9' }, ticks: axisM2 },
               },
             }}
           />
         </div>
       </div>
 
-      {/* Breakdown: by project for a month, otherwise by region */}
-      {selectedMonth ? (
+      {/* Breakdown by region */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm">
           <div className="mb-4">
             <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">
-              Breakdown by Project · {selectedMonth.key}
+              Total m² by Region {selectedMonth ? `· ${selectedMonth.key}` : ''}
             </h2>
             <p className="text-[10px] text-slate-400">
-              {region === 'ALL' ? 'All regions' : REGION_LABELS[region]} · monthly m² and pipeline quantities dated in this month
+              Design, processed, produced, dispatched and sailed
+              {selectedMonth ? ' · counted by each stage’s date in this month' : ''}
             </p>
           </div>
-          {projects.length === 0 ? (
-            <div className="h-40 flex flex-col items-center justify-center text-slate-400">
-              <FileSpreadsheet className="w-8 h-8 stroke-1 mb-2 text-slate-300" />
-              <p className="text-xs font-semibold text-slate-500">No project activity recorded in {selectedMonth.key}</p>
-            </div>
-          ) : (
-            <div style={{ height: Math.max(220, projects.length * 70) }}>
-              <Bar
-                data={projectChartData}
-                options={{
-                  indexAxis: 'y',
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: {
-                    legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
-                    tooltip: chartTooltipM2,
-                  },
-                  scales: {
-                    x: { grid: { color: '#F1F5F9' }, ticks: { callback: (v: any) => Number(v).toLocaleString('en-US') } },
-                    y: { grid: { display: false }, ticks: { font: { size: 10 } } },
-                  },
-                }}
-              />
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm">
-            <div className="mb-4">
-              <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Total m² by Region</h2>
-              <p className="text-[10px] text-slate-400">Design, processed, produced and dispatched per region</p>
-            </div>
-            <div className="h-64">
-              <Bar
-                data={regionChartData}
-                options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: {
-                    legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
-                    tooltip: chartTooltipM2,
-                  },
-                  scales: {
-                    x: { grid: { display: false } },
-                    y: { grid: { color: '#F1F5F9' }, ticks: { callback: (v: any) => Number(v).toLocaleString('en-US') } },
-                  },
-                }}
-              />
-            </div>
+          <div className="h-64">
+            <Bar
+              data={regionChartData}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
+                  tooltip: chartTooltipM2,
+                },
+                scales: {
+                  x: { grid: { display: false } },
+                  y: { grid: { color: '#F1F5F9' }, ticks: axisM2 },
+                },
+              }}
+            />
           </div>
+        </div>
 
-          <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm">
-            <div className="mb-4">
-              <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Monthly m² by Region</h2>
-              <p className="text-[10px] text-slate-400">Entered monthly values (Jan-26 to Dec-27), stacked by region</p>
-            </div>
-            <div className="h-64 relative">
-              <Bar
-                data={regionMonthlyData}
-                options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: {
-                    legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
-                    tooltip: chartTooltipM2,
-                  },
-                  scales: {
-                    x: { stacked: true, grid: { display: false } },
-                    y: { stacked: true, grid: { color: '#F1F5F9' }, ticks: { callback: (v: any) => Number(v).toLocaleString('en-US') } },
-                  },
-                }}
-              />
-              {!regionMonthlyHasData && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <p className="text-xs font-semibold text-slate-400 bg-white/90 px-3 py-1.5 rounded-lg">
-                    No monthly m² entered in MR11 yet
-                  </p>
-                </div>
-              )}
-            </div>
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">Monthly Dispatched m² by Region</h2>
+            <p className="text-[10px] text-slate-400">
+              m² out of the warehouse, by Dispatched Date{selectedMonth ? ` · ${selectedMonth.key} highlighted` : ''}
+            </p>
+          </div>
+          <div className="h-64 relative">
+            <Bar
+              data={regionDispatchData}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                onClick: handleMonthClick,
+                plugins: {
+                  legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
+                  tooltip: chartTooltipM2,
+                },
+                scales: {
+                  x: { stacked: true, grid: { display: false } },
+                  y: { stacked: true, grid: { color: '#F1F5F9' }, ticks: axisM2 },
+                },
+              }}
+            />
+            {!regionDispatchedHasData && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <p className="text-xs font-semibold text-slate-400 bg-white/90 px-3 py-1.5 rounded-lg">
+                  No dispatches with a Dispatched Date yet
+                </p>
+              </div>
+            )}
           </div>
         </div>
-      )}
+      </div>
 
       {/* Raw data: the MR11 ledger, filtered by region */}
       {showRawData && (
@@ -574,7 +526,7 @@ export const CeoDashboard: React.FC = () => {
                     MR11 Raw Data
                   </h2>
                   <p className="text-[11px] text-stone-400">
-                    {region === 'ALL' ? 'All regions' : REGION_LABELS[region]} · {regionRows.length} rows
+                    {regionLabel} · {regionRows.length} rows
                   </p>
                 </div>
               </div>

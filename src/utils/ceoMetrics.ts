@@ -15,15 +15,16 @@ export const REGION_LABELS: Record<Region, string> = {
 // Used for a month that is not yet completed and has no forecast value
 export const DEFAULT_FORECAST_M2 = 100000;
 
-export type Stage = 'design' | 'processed' | 'produced' | 'dispatched';
+export type Stage = 'design' | 'processed' | 'produced' | 'dispatched' | 'sailed';
 
-export const STAGES: Stage[] = ['design', 'processed', 'produced', 'dispatched'];
+export const STAGES: Stage[] = ['design', 'processed', 'produced', 'dispatched', 'sailed'];
 
 export const STAGE_LABELS: Record<Stage, string> = {
   design: 'Total Design',
   processed: 'Total Processed',
   produced: 'Total Produced',
   dispatched: 'Total Dispatched',
+  sailed: 'Total Sailed',
 };
 
 // MR11 quantity and date column for each pipeline stage
@@ -32,6 +33,8 @@ const STAGE_COLUMNS: Record<Stage, { qty: string; date: string }> = {
   processed: { qty: 'Total Processed', date: 'Processed Date' },
   produced: { qty: 'Total Produced', date: 'Produced Date' },
   dispatched: { qty: 'Total Dispatch', date: 'Dispatched Date' },
+  // ATD (actual time of departure) is when the formwork sailed
+  sailed: { qty: 'Formwork Quantity Sailed (m2)', date: 'ATD' },
 };
 
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -70,14 +73,6 @@ export function projectKey(row: any): string {
   return String(
     row?.['Customer & Project Name'] || row?.['Project No'] || row?.['Short Name'] || 'Unnamed Project'
   ).trim();
-}
-
-// Short chart label: "INDIA - Alekhya ... - Adarsh Parkland" -> "Alekhya ... - Adarsh Parkland"
-export function projectLabel(row: any): string {
-  const short = String(row?.['Short Name'] || '').trim();
-  if (short) return short;
-  const name = projectKey(row).replace(/^[A-Z][A-Z\s]+-\s*/, '');
-  return name.length > 40 ? `${name.slice(0, 38)}…` : name;
 }
 
 // Month columns present in the MR11 headers ("Jan-26" ... "Dec-27"), in header order
@@ -149,10 +144,10 @@ function stageQuantity(row: any, stage: Stage): number {
   return toNumber(row?.[STAGE_COLUMNS[stage].qty]);
 }
 
-// Design -> Processed -> Produced -> Dispatched totals. With a month, a quantity is
-// counted only when that stage's date falls in the month.
+// Design -> Processed -> Produced -> Dispatched -> Sailed totals. With a month, a quantity
+// is counted only when that stage's date falls in the month.
 export function stageTotals(rows: any[], monthKey: string | null): StageTotals {
-  const totals: StageTotals = { design: 0, processed: 0, produced: 0, dispatched: 0 };
+  const totals: StageTotals = { design: 0, processed: 0, produced: 0, dispatched: 0, sailed: 0 };
   for (const row of rows) {
     for (const stage of STAGES) {
       if (monthKey && monthKeyOfDate(row?.[STAGE_COLUMNS[stage].date]) !== monthKey) continue;
@@ -176,26 +171,7 @@ export function monthlySeries(rows: any[], months: MonthColumn[], today: Date): 
   });
 }
 
-export interface ProjectBreakdown {
-  key: string;
-  label: string;
-  region: Region;
-  month: number; // the selected month's m2 from the monthly columns
-  stages: StageTotals;
-}
-
-export function projectBreakdown(rows: any[], monthKey: string | null): ProjectBreakdown[] {
-  const groups = new Map<string, any[]>();
-  for (const r of rows) {
-    const key = projectKey(r);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(r);
-  }
-  return Array.from(groups.entries()).map(([key, projectRows]) => ({
-    key,
-    label: projectLabel(projectRows[0]),
-    region: regionOf(projectRows[0]),
-    month: monthKey ? toNumber(projectRows[0]?.[monthKey]) : 0,
-    stages: stageTotals(projectRows, monthKey),
-  }));
+// m2 dispatched (left the warehouse) in each month, by Dispatched Date
+export function dispatchedByMonth(rows: any[], months: MonthColumn[]): number[] {
+  return months.map((col) => stageTotals(rows, col.key).dispatched);
 }
