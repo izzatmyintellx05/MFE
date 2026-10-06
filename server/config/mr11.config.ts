@@ -204,43 +204,44 @@ export const ORDERED_HEADER_LIST = [
 ];
 
 export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
-  // BD / Pre-Shellplan Columns
-  { target: 'Customer & Project Name', sourceDept: RoleCode.BD, sourceColumn: 'Customer & Project Name', type: 'string' },
-  { target: 'Project No', sourceDept: RoleCode.BD, sourceColumn: 'Project No', type: 'string' },
-  { target: 'Short Name', sourceDept: RoleCode.BD, sourceColumn: 'Short Name', type: 'string', aliases: ['Project Shortname', 'Shortname'] },
-  { target: 'Stream', sourceDept: RoleCode.BD, sourceColumn: 'Stream', type: 'string' },
-  { target: 'Countries', sourceDept: RoleCode.BD, sourceColumn: 'Countries', type: 'string' },
-  { target: 'PIC', sourceDept: RoleCode.BD, sourceColumn: 'PIC', type: 'string' },
-  { target: 'Status', sourceDept: RoleCode.BD, sourceColumn: 'Status', type: 'string' },
-  { target: 'Products type', sourceDept: RoleCode.BD, sourceColumn: 'Products type', type: 'string', aliases: ['Product Type'] },
-  { target: 'Formwork type', sourceDept: RoleCode.BD, sourceColumn: 'Formwork type', type: 'string' },
-  { target: 'Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks', type: 'string' },
-  { target: 'PO', sourceDept: RoleCode.BD, sourceColumn: 'PO', type: 'string' },
-  { target: 'PO date', sourceDept: RoleCode.BD, sourceColumn: 'PO date', type: 'date' },
-  { target: 'NCA', sourceDept: RoleCode.BD, sourceColumn: 'NCA', type: 'string' },
-  { target: 'NCA date', sourceDept: RoleCode.BD, sourceColumn: 'NCA date', type: 'date' },
-  { target: 'Original NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Original NCA Qty', type: 'number' },
-  { target: 'Revised NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Revised NCA Qty', type: 'number' },
+  // BD columns A..AF, by the header names in the BD workbook. Each is matched by its whole
+  // name (any letter case); aliases are the names used by earlier versions of the BD file.
+  { target: 'Customer & Project Name', sourceDept: RoleCode.BD, sourceColumn: 'Customer & Project Name', type: 'string', exact: true, aliases: ['Project Name'] }, // A
+  { target: 'Project No', sourceDept: RoleCode.BD, sourceColumn: 'Project No.', type: 'string', exact: true, aliases: ['Project No'] }, // B
+  { target: 'Short Name', sourceDept: RoleCode.BD, sourceColumn: 'Project Shortname', type: 'string', exact: true, aliases: ['Short Name', 'Shortname'] }, // C
+  { target: 'Stream', sourceDept: RoleCode.BD, sourceColumn: 'Stream', type: 'string', exact: true }, // D
+  { target: 'Countries', sourceDept: RoleCode.BD, sourceColumn: 'Countries', type: 'string', exact: true, aliases: ['Country'] }, // E
+  { target: 'PIC', sourceDept: RoleCode.BD, sourceColumn: 'PIC', type: 'string', exact: true }, // F
+  { target: 'Status', sourceDept: RoleCode.BD, sourceColumn: 'Status', type: 'string', exact: true }, // G
+  { target: 'Products type', sourceDept: RoleCode.BD, sourceColumn: 'Product Type', type: 'string', exact: true, aliases: ['Products type'] }, // H
+  { target: 'Formwork type', sourceDept: RoleCode.BD, sourceColumn: 'Formwork Type', type: 'string', exact: true, aliases: ['Formworks type'] }, // I
+  { target: 'Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks', type: 'string', exact: true }, // J
+  { target: 'PO', sourceDept: RoleCode.BD, sourceColumn: 'PO', type: 'string', exact: true }, // K
+  { target: 'PO date', sourceDept: RoleCode.BD, sourceColumn: 'PO date', type: 'date', exact: true }, // L
+  { target: 'NCA', sourceDept: RoleCode.BD, sourceColumn: 'NCA', type: 'string', exact: true }, // M
+  { target: 'NCA date', sourceDept: RoleCode.BD, sourceColumn: 'NCA date', type: 'date', exact: true }, // N
+  { target: 'Original NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Original NCA Qty', type: 'number', exact: true }, // O
+  { target: 'Revised NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Revised NCA Qty', type: 'number', exact: true }, // P
   // BD's second "Remarks" column (right after Revised NCA Qty) is the NCA remark
-  { target: 'NCA Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks 2', type: 'string', exact: true },
-  // Payment terms sub-columns under the BD two-row "Payment terms" header (exact match:
-  // a missing "Type 3" must not fall back to "Type")
-  { target: 'Payment terms - Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Percentage', type: 'number', exact: true },
-  { target: 'Payment terms - Type', sourceDept: RoleCode.BD, sourceColumn: 'Type', type: 'string', exact: true },
-  { target: 'Payment terms - Balance Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage', type: 'number', exact: true },
-  { target: 'Payment terms - Type 2', sourceDept: RoleCode.BD, sourceColumn: 'Type 2', type: 'string', exact: true },
-  { target: 'Payment terms - Balance Percentage 2', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage 2', type: 'number', exact: true },
-  { target: 'Payment terms - Type 3', sourceDept: RoleCode.BD, sourceColumn: 'Type 3', type: 'string', exact: true },
-  { target: 'Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Selling Price (USD)', type: 'number' },
-  { target: 'LME', sourceDept: RoleCode.BD, sourceColumn: 'LME', type: 'number' },
-  // LME price from BD column Z
-  { target: 'LME Rate (USD)', sourceDept: RoleCode.BD, sourceColumn: 'LME Rate (USD)', type: 'number', aliases: ['LME rate (USD)', 'LME Rate'] },
-  { target: 'Incoterms', sourceDept: RoleCode.BD, sourceColumn: 'Incoterms', type: 'string' },
-  { target: 'Props, WPB, Waler, Acc (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Props, WPB, Waler, Acc (USD)', type: 'number' },
-  { target: 'Aluminium Weight Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Aluminium Weight Adjusted (USD)', type: 'number' },
-  { target: 'LME Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'LME Adjusted (USD)', type: 'number' },
-  { target: 'Freight Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Freight Adjusted (USD)', type: 'number' },
-  { target: 'Final Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Final Selling Price (USD)', type: 'number' },
+  { target: 'NCA Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks 2', type: 'string', exact: true }, // Q
+  // Payment terms sub-columns under the two-row "Payment terms" header
+  { target: 'Payment terms - Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Percentage', type: 'number', exact: true }, // R
+  { target: 'Payment terms - Type', sourceDept: RoleCode.BD, sourceColumn: 'Type', type: 'string', exact: true }, // S
+  { target: 'Payment terms - Balance Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage', type: 'number', exact: true }, // T
+  { target: 'Payment terms - Type 2', sourceDept: RoleCode.BD, sourceColumn: 'Type 2', type: 'string', exact: true }, // U
+  { target: 'Payment terms - Balance Percentage 2', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage 2', type: 'number', exact: true }, // V
+  { target: 'Payment terms - Type 3', sourceDept: RoleCode.BD, sourceColumn: 'Type 3', type: 'string', exact: true }, // W
+  { target: 'Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Selling Price (USD)', type: 'number', exact: true }, // X
+  // Fixed / Freeze / Variable
+  { target: 'LME', sourceDept: RoleCode.BD, sourceColumn: 'LME', type: 'string', exact: true, aliases: ['LME (Fixed / Freeze / Variable - dropdown)'] }, // Y
+  { target: 'LME Rate (USD)', sourceDept: RoleCode.BD, sourceColumn: 'LME Rate (USD)', type: 'number', exact: true, aliases: ['LME Rate'] }, // Z
+  { target: 'Incoterms', sourceDept: RoleCode.BD, sourceColumn: 'Incoterms', type: 'string', exact: true }, // AA
+  { target: 'Props, WPB, Waler, Acc (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Props, WPB, Waler, Acc (USD)', type: 'number', exact: true }, // AB
+  { target: 'Aluminium Weight Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Aluminium Weight Adjusted (USD)', type: 'number', exact: true }, // AC
+  // AD and AF are formulas in the BD file; MR11 recalculates them (resolveLmePricing)
+  { target: 'LME Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'LME Adjusted (USD)', type: 'number', exact: true }, // AD
+  { target: 'Freight Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Freight Adjusted (USD)', type: 'number', exact: true }, // AE
+  { target: 'Final Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Final Selling Price (USD)', type: 'number', exact: true }, // AF
   { target: 'Advance Received / Payment Status', sourceDept: RoleCode.FINANCE, sourceColumn: 'Advance Received / Payment Status', type: 'string' },
   { target: 'Actual Received', sourceDept: RoleCode.FINANCE, sourceColumn: 'Actual Received', type: 'number' },
   { target: 'Payment Date', sourceDept: RoleCode.FINANCE, sourceColumn: 'Payment Date', type: 'date' },

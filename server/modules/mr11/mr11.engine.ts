@@ -636,6 +636,14 @@ export async function executeMr11Pipeline(
     }
   }
 
+  // A BD row only counts when one of its own cells holds a value: empty formatted rows
+  // (e.g. merged blocks below the data) would otherwise inherit the project above them
+  if (datasetMap[RoleCode.BD]) {
+    datasetMap[RoleCode.BD] = datasetMap[RoleCode.BD]!.filter((row) =>
+      Object.values(row.rawCells || {}).some((v) => v !== null && v !== undefined && String(v).trim() !== '')
+    );
+  }
+
   const STREAM_HEADER_CANDIDATES = [
     'Stream',
     'stream',
@@ -959,15 +967,20 @@ export async function executeMr11Pipeline(
     const outRow: Record<string, any> = {};
     const cellColors: Record<string, string> = {};
 
-    // 1. Populate defined BD columns directly from BD
+    // 1. Populate defined BD columns directly from BD. Exact columns match the whole header
+    // name (any letter case), so a blank "PO date" can't pick up "PO" or "LME Rate" pick up "LME"
+    const exactValue = (name: string) => {
+      const target = name.toLowerCase().trim();
+      const key = Object.keys(bdData).find((k) => k.toLowerCase().trim() === target);
+      return key !== undefined ? bdData[key] ?? null : null;
+    };
     for (const mapping of MR11_ORDERED_COLUMNS) {
       if (mapping.sourceDept === RoleCode.BD) {
-        let value = mapping.exact
-          ? bdData[mapping.sourceColumn] ?? null
-          : findCellValue(bdData, mapping.sourceColumn);
+        const read = (name: string) => (mapping.exact ? exactValue(name) : findCellValue(bdData, name));
+        let value = read(mapping.sourceColumn);
         for (const alias of mapping.aliases || []) {
           if (value !== null && value !== undefined && value !== '') break;
-          value = findCellValue(bdData, alias);
+          value = read(alias);
         }
         outRow[mapping.target] = value;
       }
@@ -1756,7 +1769,7 @@ export async function executeMr11Pipeline(
   });
 
   // --------------------------------------------------------------------------
-  // 5. SORTING: PROJECT -> STREAM -> FONT COLOR (BLACK FIRST) -> ROW COLOR
+  // 5. SORTING: PROJECT -> STREAM -> NO FILL BEFORE FILLED -> FONT COLOR (BLACK FIRST) -> FILL COLOR
   // --------------------------------------------------------------------------
   derivedMr11Rows.sort((a, b) => {
     const projA = getProjectIdentifier(a);
@@ -1770,6 +1783,11 @@ export async function executeMr11Pipeline(
     if (streamA !== streamB) {
       return streamA - streamB;
     }
+
+    // Rows without a fill colour come first so a stream's unfilled rows sit together and can merge
+    const filledA = normalizeFillColor(a['_fillColor']) !== '';
+    const filledB = normalizeFillColor(b['_fillColor']) !== '';
+    if (filledA !== filledB) return filledA ? 1 : -1;
 
     const colorA = normalizeColor(a['_fontColor']);
     const colorB = normalizeColor(b['_fontColor']);
@@ -1788,15 +1806,20 @@ export async function executeMr11Pipeline(
 
   // --------------------------------------------------------------------------
   // 6. ATTACH STREAM MERGE METADATA (ONLY MERGES FOR SHELLPLAN & DESIGN)
+  // A BD row with a fill colour always keeps its own ShellPlan & Design cells (fill takes
+  // priority). Rows without a fill (black or coloured font) merge across their Project & Stream.
   // --------------------------------------------------------------------------
+  const hasFill = (row: Record<string, any>) => normalizeFillColor(row['_fillColor']) !== '';
   for (let i = 0; i < derivedMr11Rows.length; ) {
     const curProj = getProjectIdentifier(derivedMr11Rows[i]);
     const curStream = normalizeStream(derivedMr11Rows[i]['Stream']);
     let span = 1;
 
-    // Expand span across all rows sharing the exact same Project & Stream
+    // Expand span across the unfilled rows sharing the exact same Project & Stream
     while (
+      !hasFill(derivedMr11Rows[i]) &&
       i + span < derivedMr11Rows.length &&
+      !hasFill(derivedMr11Rows[i + span]) &&
       getProjectIdentifier(derivedMr11Rows[i + span]) === curProj &&
       normalizeStream(derivedMr11Rows[i + span]['Stream']) === curStream
     ) {
