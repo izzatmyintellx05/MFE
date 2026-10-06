@@ -20,11 +20,12 @@ export function useDepartmentHighlight(
   departmentColors: Record<string, string>
 ) {
   const user = useAuthStore((s) => s.user);
-  const [active, setActive] = useState<string[]>(() =>
-    ((user?.roles as string[]) || []).concat(user?.departmentRole ? [user.departmentRole] : []).filter(
-      (r) => r in DEPARTMENT_LABELS
-    )
-  );
+  const [active, setActive] = useState<string[]>(() => {
+    const roles: string[] = ((user?.roles as string[]) || []).concat(user?.departmentRole ? [user.departmentRole] : []);
+    // Admin and CEO accounts see every department, so nothing is highlighted until they pick one
+    if (roles.includes('ADMIN') || roles.includes('CEO')) return [];
+    return roles.filter((r) => r in DEPARTMENT_LABELS);
+  });
 
   const toggle = (dept: string) =>
     setActive((prev) => (prev.includes(dept) ? prev.filter((d) => d !== dept) : [...prev, dept]));

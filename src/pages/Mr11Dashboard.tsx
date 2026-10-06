@@ -1,14 +1,20 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { api } from '../api/client';
 import { ZoomControls } from '../components/common/ZoomControls';
+import { FullscreenButton } from '../components/common/FullscreenButton';
 import { Mr11Table, HeaderGroup } from '../components/workbook/Mr11Table';
 import { useDepartmentHighlight, DepartmentLegend } from '../components/workbook/DepartmentHighlight';
-import { 
-  FileSpreadsheet, 
-  Download, 
-  RefreshCw, 
-  AlertTriangle, 
-  Search
+import { ColumnGroupsMenu, columnGroupOf, columnGroups } from '../components/workbook/ColumnGroupsMenu';
+import { usePersistentState } from '../utils/usePersistentState';
+import {
+  FileSpreadsheet,
+  Download,
+  RefreshCw,
+  AlertTriangle,
+  Search,
+  X,
+  PanelTopClose,
+  PanelTopOpen,
 } from 'lucide-react';
 import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice } from '../components/common/MarketRates';
 
@@ -27,8 +33,13 @@ export const Mr11Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [zoom, setZoom] = useState<number>(100);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Remembered in this browser: zoom, hidden column groups and the rates strip
+  const [zoom, setZoom] = usePersistentState<number>('mr11.zoom', 100);
+  const [hiddenGroups, setHiddenGroups] = usePersistentState<string[]>('mr11.hiddenColumnGroups', []);
+  const [showRates, setShowRates] = usePersistentState<boolean>('mr11.showRatesStrip', true);
+  const tableRef = useRef<HTMLDivElement>(null);
 
   const fetchMr11Data = async () => {
     setLoading(true);
@@ -71,6 +82,16 @@ export const Mr11Dashboard: React.FC = () => {
     window.open(`${api.defaults.baseURL}/mr11/export`, '_blank');
   };
 
+  const groups = useMemo(() => columnGroups(departmentColors), [departmentColors]);
+  const visibleHeaders = useMemo(
+    () =>
+      headers.filter((h) => {
+        const group = columnGroupOf(h, columnDepartments);
+        return !group || !hiddenGroups.includes(group);
+      }),
+    [headers, columnDepartments, hiddenGroups]
+  );
+
   const filteredRecords = records.filter((r) => {
     if (!searchTerm.trim()) return true;
     const term = searchTerm.toLowerCase();
@@ -83,40 +104,64 @@ export const Mr11Dashboard: React.FC = () => {
   return (
     <div className="flex flex-col h-full bg-[#FAF9F6] p-5 overflow-hidden select-none">
       {/* Top Header Card */}
-      <div className="flex items-center justify-between bg-white border border-stone-200/80 rounded-xl px-5 py-3.5 shadow-sm mb-3.5 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-stone-900 flex items-center justify-center text-amber-200">
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-stone-200/80 rounded-xl px-5 py-3.5 shadow-sm mb-3.5 flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-xl bg-stone-900 flex items-center justify-center text-amber-200 shadow-sm flex-shrink-0">
             <FileSpreadsheet className="w-4 h-4" />
           </div>
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2.5">
-              <h1 className="text-sm font-extrabold text-stone-900 tracking-tight uppercase">
+              <h1 className="text-sm font-extrabold text-stone-900 tracking-tight uppercase truncate">
                 MR11 Master Operations Ledger
               </h1>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-stone-100 text-stone-700">
-                {records.length} Contracts
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-stone-100 text-stone-700 whitespace-nowrap">
+                {searchTerm.trim() ? `${filteredRecords.length} of ${records.length}` : records.length} Contracts
               </span>
             </div>
-            <p className="text-[11px] text-stone-400 mt-0.5">
+            <p className="text-[11px] text-stone-400 mt-0.5 truncate">
               Production, dispatch milestones & fulfillment schedule
             </p>
           </div>
         </div>
 
-        {/* Clean Action Controls & Zoom Bar */}
-        <div className="flex items-center gap-2">
+        {/* Action controls */}
+        <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
+            <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
-              placeholder="Search contracts..."
+              placeholder="Search project, no. or short name..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-44 px-2.5 py-1.5 pl-7 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-800 placeholder-stone-400 focus:outline-none focus:border-stone-900 focus:bg-white transition"
+              className="w-56 pl-8 pr-7 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-800 placeholder-stone-400 focus:outline-none focus:border-stone-900 focus:bg-white transition"
             />
-            <Search className="w-3 h-3 text-stone-400 absolute left-2.5 top-2.5" />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-stone-400 hover:text-stone-800 hover:bg-stone-100 cursor-pointer"
+                title="Clear search"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
 
+          <ColumnGroupsMenu groups={groups} hidden={hiddenGroups} onChange={setHiddenGroups} />
+
+          <button
+            type="button"
+            onClick={() => setShowRates(!showRates)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-stone-50 text-stone-700 border border-stone-200 rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer"
+            title={showRates ? 'Hide exchange rate, LME and highlight key' : 'Show exchange rate, LME and highlight key'}
+          >
+            {showRates ? <PanelTopClose className="w-3.5 h-3.5 text-stone-500" /> : <PanelTopOpen className="w-3.5 h-3.5 text-stone-500" />}
+            <span className="hidden xl:inline">{showRates ? 'Hide rates' : 'Show rates'}</span>
+          </button>
+
           <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
+
+          <FullscreenButton target={tableRef} />
 
           <button
             onClick={handleRegenerate}
@@ -137,14 +182,20 @@ export const Mr11Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Exchange rate box and department highlight key */}
-      <div className="flex items-stretch gap-3 mb-3.5 flex-shrink-0">
-        <ExchangeRateCard fxRate={fxRate} />
-
-        <LmePriceCard lmePrice={lmePrice} />
-
-        <div className="flex-1 flex items-center bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm">
-          <DepartmentLegend departmentColors={departmentColors} active={active} onToggle={toggle} />
+      {/* Exchange rate, LME and department highlight key (can be hidden) */}
+      <div
+        className={`grid transition-all duration-300 ease-out flex-shrink-0 ${
+          showRates ? 'grid-rows-[1fr] opacity-100 mb-3.5' : 'grid-rows-[0fr] opacity-0 mb-0'
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="flex flex-wrap items-stretch gap-3">
+            <ExchangeRateCard fxRate={fxRate} />
+            <LmePriceCard lmePrice={lmePrice} />
+            <div className="flex-1 min-w-[280px] flex items-center bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm">
+              <DepartmentLegend departmentColors={departmentColors} active={active} onToggle={toggle} />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -156,8 +207,26 @@ export const Mr11Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Clean Table Container */}
-      <div className="flex-1 bg-white border border-stone-200/90 rounded-xl shadow-sm overflow-hidden flex flex-col relative">
+      {/* Table */}
+      <div
+        ref={tableRef}
+        className="flex-1 bg-white border border-stone-200/90 rounded-xl shadow-sm overflow-hidden flex flex-col relative"
+      >
+        {hiddenGroups.length > 0 && !loading && filteredRecords.length > 0 && (
+          <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-amber-200/70 bg-amber-50/70 text-[11px] text-amber-900 flex-shrink-0">
+            <span>
+              {hiddenGroups.length} column group{hiddenGroups.length > 1 ? 's' : ''} hidden ·{' '}
+              {headers.length - visibleHeaders.length} of {headers.length} columns not shown
+            </span>
+            <button
+              type="button"
+              onClick={() => setHiddenGroups([])}
+              className="font-semibold underline-offset-2 hover:underline cursor-pointer"
+            >
+              Show all columns
+            </button>
+          </div>
+        )}
         {loading ? (
           <div className="flex flex-col items-center justify-center h-full text-stone-400">
             <RefreshCw className="w-7 h-7 animate-spin text-stone-700 mb-2" />
@@ -168,11 +237,27 @@ export const Mr11Dashboard: React.FC = () => {
         ) : filteredRecords.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-stone-400 p-8">
             <FileSpreadsheet className="w-10 h-10 stroke-1 mb-2 text-stone-300" />
-            <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No Contracts Loaded</p>
-            <p className="text-[11px] text-stone-400 mt-0.5">Upload the Business Development (BD) workbook to instantiate contracts</p>
+            {records.length > 0 ? (
+              <>
+                <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No matching contracts</p>
+                <p className="text-[11px] text-stone-400 mt-0.5">Nothing matches "{searchTerm}"</p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No Contracts Loaded</p>
+                <p className="text-[11px] text-stone-400 mt-0.5">Upload the Business Development (BD) workbook to instantiate contracts</p>
+              </>
+            )}
           </div>
         ) : (
-          <Mr11Table records={filteredRecords} headers={headers} headerGroups={headerGroups} numberFormats={numberFormats} highlightColumns={highlightColumns} zoom={zoom} />
+          <Mr11Table
+            records={filteredRecords}
+            headers={visibleHeaders}
+            headerGroups={headerGroups}
+            numberFormats={numberFormats}
+            highlightColumns={highlightColumns}
+            zoom={zoom}
+          />
         )}
       </div>
     </div>

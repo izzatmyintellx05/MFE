@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import { HighFidelityViewer } from '../components/workbook/HighFidelityViewer';
 import { ZoomControls } from '../components/common/ZoomControls';
+import { FullscreenButton } from '../components/common/FullscreenButton';
+import { usePersistentState } from '../utils/usePersistentState';
 import { Upload, History, FileSpreadsheet } from 'lucide-react';
 
 export const PlanningPage: React.FC = () => {
@@ -10,7 +12,9 @@ export const PlanningPage: React.FC = () => {
   const [seriesList, setSeriesList] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [zoom, setZoom] = useState<number>(100);
+  // Zoom is remembered in this browser; the sheet can be shown full screen
+  const [zoom, setZoom] = usePersistentState<number>('zoom.PLANNING', 100);
+  const sheetRef = useRef<HTMLDivElement>(null);
 
   const fetchDepartmentData = async () => {
     setLoading(true);
@@ -52,7 +56,7 @@ export const PlanningPage: React.FC = () => {
   return (
     <div className="flex flex-col h-full bg-[#F8FAFC] p-5 overflow-hidden select-none">
       {/* Top Header Deck */}
-      <div className="luxury-deck rounded-xl px-5 py-3 mb-3 flex items-center justify-between flex-shrink-0">
+      <div className="luxury-deck rounded-xl px-5 py-3 mb-3 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
         <div>
           <div className="flex items-center gap-2.5">
             <h1 className="text-xs font-black text-slate-900 tracking-wider uppercase leading-none">
@@ -69,6 +73,7 @@ export const PlanningPage: React.FC = () => {
 
         <div className="flex items-center gap-2">
           <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
+          <FullscreenButton target={sheetRef} />
 
           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
             <button
@@ -106,7 +111,7 @@ export const PlanningPage: React.FC = () => {
       </div>
 
       {/* Main Container */}
-      <div className="luxury-deck flex-1 rounded-xl overflow-hidden flex flex-col">
+      <div ref={sheetRef} className="luxury-deck bg-white flex-1 rounded-xl overflow-hidden flex flex-col">
         {activeTab === 'sheet' ? (
           <div
             className="flex-1 overflow-hidden"

@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { HighFidelityViewer } from '../components/workbook/HighFidelityViewer';
 import { ZoomControls } from '../components/common/ZoomControls';
+import { FullscreenButton } from '../components/common/FullscreenButton';
+import { usePersistentState } from '../utils/usePersistentState';
 import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
 
 const DEPARTMENT_NAMES: Record<string, string> = {
@@ -25,7 +27,9 @@ export const DepartmentPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [zoom, setZoom] = useState<number>(100);
+  // Zoom is remembered in this browser; the sheet can be shown full screen
+  const [zoom, setZoom] = usePersistentState<number>(`zoom.${deptCode}`, 100);
+  const sheetRef = useRef<HTMLDivElement>(null);
 
   const fetchDepartmentData = async () => {
     setLoading(true);
@@ -85,7 +89,7 @@ export const DepartmentPage: React.FC = () => {
   return (
     <div className="flex flex-col h-full bg-[#F8FAFC] p-5 overflow-hidden select-none">
       {/* Top Header Deck */}
-      <div className="luxury-deck rounded-xl px-5 py-3 mb-3 flex items-center justify-between flex-shrink-0">
+      <div className="luxury-deck rounded-xl px-5 py-3 mb-3 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
         <div>
           <div className="flex items-center gap-2.5">
             <h1 className="text-xs font-black text-slate-900 tracking-wider uppercase leading-none">
@@ -120,6 +124,7 @@ export const DepartmentPage: React.FC = () => {
 
         <div className="flex items-center gap-2">
           <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
+          <FullscreenButton target={sheetRef} />
 
           <label className="luxury-btn-black flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">
             <Upload className={`w-3.5 h-3.5 ${uploading ? 'animate-spin' : ''}`} />
@@ -144,7 +149,7 @@ export const DepartmentPage: React.FC = () => {
       )}
 
       {/* Sheet Container */}
-      <div className="luxury-deck flex-1 rounded-xl overflow-hidden flex flex-col">
+      <div ref={sheetRef} className="luxury-deck bg-white flex-1 rounded-xl overflow-hidden flex flex-col">
         {loading ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-400">
             <Clock className="w-7 h-7 stroke-1 mb-2 animate-spin text-slate-800" />

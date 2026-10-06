@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuthStore } from '../../store/auth.store';
 import { BrandLogo } from '../common/BrandLogo';
+import { usePersistentState } from '../../utils/usePersistentState';
 import { 
   FileSpreadsheet, 
   LayoutDashboard, 
@@ -27,7 +28,8 @@ const DEPARTMENT_LINKS = [
 
 export const Sidebar: React.FC = () => {
   const { user, token, logout, initAuth } = useAuthStore();
-  const [isOpen, setIsOpen] = useState(true);
+  // Collapsed or expanded is remembered in this browser
+  const [isOpen, setIsOpen] = usePersistentState<boolean>('sidebar.open', true);
 
   useEffect(() => {
     if (token && (!user || !user.roles || user.roles.length === 0)) {
@@ -88,6 +90,7 @@ export const Sidebar: React.FC = () => {
           <div className="space-y-0.5">
             <NavLink
               to="/mr11"
+              title={isOpen ? undefined : 'MR11 Master Schedule'}
               className={({ isActive }) =>
                 `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
                   isActive
@@ -111,6 +114,7 @@ export const Sidebar: React.FC = () => {
 
             <NavLink
                 to="/ceo"
+                title={isOpen ? undefined : 'CEO Executive Hub'}
                 className={({ isActive }) =>
                   `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
                     isActive
@@ -135,6 +139,7 @@ export const Sidebar: React.FC = () => {
             {isAdmin && (
               <NavLink
                 to="/admin"
+                title={isOpen ? undefined : 'Admin Permissions'}
                 className={({ isActive }) =>
                   `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
                     isActive
@@ -170,6 +175,7 @@ export const Sidebar: React.FC = () => {
                 <NavLink
                   key={dept.code}
                   to={dept.path}
+                  title={isOpen ? undefined : dept.label}
                   className={({ isActive }) =>
                     `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
                       isActive
