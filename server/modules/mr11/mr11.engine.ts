@@ -100,6 +100,27 @@ function closestColourGroup<T extends { fontColor?: string; fillColor?: string }
   return best;
 }
 
+// Rows whose fill colour is closest to the given one (no fill only matches no fill); for files
+// that mark their blocks by fill alone
+function closestFillGroup<T extends { fillColor?: string }>(rows: T[], fill: string): T[] {
+  if (!fill) return rows.filter((row) => !normalizeFillColor(row.fillColor));
+  let best: T[] = [];
+  let bestGap = Infinity;
+  for (const row of rows) {
+    const rowFill = normalizeFillColor(row.fillColor);
+    if (!rowFill) continue;
+    const gap = colourDistance(rowFill, fill);
+    if (gap > SAME_COLOUR_DISTANCE) continue;
+    if (gap < bestGap - 0.5) {
+      best = [row];
+      bestGap = gap;
+    } else if (Math.abs(gap - bestGap) <= 0.5) {
+      best.push(row);
+    }
+  }
+  return best;
+}
+
 // Identity of an MR11 row across runs (to compare with the previous MR11)
 function mr11RowKey(short: any, stream: any, font: any, fill: any, productType: any): string {
   return [cleanStr(short), normalizeStream(stream), normalizeColor(font), normalizeFillColor(fill), cleanStr(productType)].join('|');
@@ -1032,6 +1053,23 @@ export async function executeMr11Pipeline(
   const shellplanRows = datasetMap[RoleCode.SHELLPLAN] || [];
   const dispatchRows = datasetMap[RoleCode.DISPATCH] || [];
 
+  // The Shell Plan file has no Stream column: a building's stream is taken from the Design
+  // file, which lists each project's buildings (Tower A, Tower B ...) with their stream
+  const streamOfBuilding: Record<string, string> = {};
+  for (const d of designRows) {
+    const no = cleanStr(findCellValue(d.data, 'Project No') || findCellValue(d.data, 'Project No.'));
+    const building = cleanStr(findCellValue(d.data, 'Building Name'));
+    let stream: string | null = null;
+    for (const sh of STREAM_HEADER_CANDIDATES) {
+      const v = findCellValue(d.data, sh);
+      if (v !== null && v !== undefined && String(v).trim() !== '') {
+        stream = normalizeStream(v);
+        break;
+      }
+    }
+    if (no && building && stream && !streamOfBuilding[`${no}|${building}`]) streamOfBuilding[`${no}|${building}`] = stream;
+  }
+
   const derivedMr11Rows = bdRecords.map((bdRowItem) => {
     const bdData = bdRowItem.data;
     const projectNo = cleanStr(findCellValue(bdData, 'Project No') || findCellValue(bdData, 'Project No.') || bdRowItem.rawCells?.[1]);
@@ -1286,9 +1324,9 @@ export async function executeMr11Pipeline(
     outRow['Total 2027 m2'] = sum2027 > 0 ? sum2027 : null;
 
     // ------------------------------------------------------------------------
-    // DESIGN MAPPINGS (Matched strictly by Stream)
+    // DESIGN MAPPINGS (same project & stream, then the BD row's fill colour block)
     // ------------------------------------------------------------------------
-    const streamMatchedDesign = designRows.filter((dRow) => {
+    const designCandidates = designRows.filter((dRow) => {
       const dProjNo = cleanStr(findCellValue(dRow.data, 'Project No') || findCellValue(dRow.data, 'Project No.') || dRow.rawCells?.[0]);
       const dProjName = cleanStr(findCellValue(dRow.data, 'Project Name') || findCellValue(dRow.data, 'Customer & Project Name') || dRow.rawCells?.[1]);
       
@@ -1314,6 +1352,9 @@ export async function executeMr11Pipeline(
 
       return true;
     });
+    // Design marks its blocks by fill colour only (its fonts are all black): a filled BD row
+    // takes the block with the closest fill, an unfilled one the unfilled rows
+    const streamMatchedDesign = closestFillGroup(designCandidates, bdFillColor);
 
     const designStatuses = streamMatchedDesign
       .map((d) => 
@@ -1331,7 +1372,6 @@ export async function executeMr11Pipeline(
       .map((d) =>
         findCellValue(d.data, 'Actual Formwork Order Completion Date') ||
         findCellValue(d.data, 'Actual Completion Date') ||
-        findCellValue(d.data, 'estimated design completion date (should be date or tbc) ') ||
         findCellValue(d.data, 'Completion Date')
       )
       .filter((v) => v !== null && v !== undefined && String(v).trim() !== '');
@@ -1423,9 +1463,9 @@ export async function executeMr11Pipeline(
     outRow['processed qty'] = finalQuantityAN;
 
     // ------------------------------------------------------------------------
-    // SHELLPLAN MAPPINGS (Matched strictly by Stream)
+    // SHELLPLAN MAPPINGS (same project & stream, then the BD row's fill colour block)
     // ------------------------------------------------------------------------
-    const streamMatchedShellplan = shellplanRows.filter((spRow) => {
+    const shellplanCandidates = shellplanRows.filter((spRow) => {
       const spProjNo = cleanStr(findCellValue(spRow.data, 'Project No') || findCellValue(spRow.data, 'Project No.') || spRow.rawCells?.[0]);
       const spProjName = cleanStr(findCellValue(spRow.data, 'Project Name') || findCellValue(spRow.data, 'Customer & Project Name') || spRow.rawCells?.[1]);
 
@@ -1445,12 +1485,20 @@ export async function executeMr11Pipeline(
 
       if (!idMatches) return false;
 
+      // No Stream column: the stream of the row's building in the Design file
+      if (!spStream) {
+        const building = cleanStr(findCellValue(spRow.data, 'Building Name'));
+        spStream = streamOfBuilding[`${spProjNo}|${building}`] ?? null;
+      }
+
       if (spStream && spStream !== bdStream) {
         return false;
       }
 
       return true;
     });
+    // Shell Plan marks its blocks by fill colour only, like Design
+    const streamMatchedShellplan = closestFillGroup(shellplanCandidates, bdFillColor);
 
     const spStatuses = streamMatchedShellplan
       .map((c) =>

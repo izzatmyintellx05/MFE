@@ -1825,6 +1825,24 @@ function closestColourGroup(rows, font, fill) {
   }
   return best;
 }
+function closestFillGroup(rows, fill) {
+  if (!fill) return rows.filter((row) => !normalizeFillColor(row.fillColor));
+  let best = [];
+  let bestGap = Infinity;
+  for (const row of rows) {
+    const rowFill = normalizeFillColor(row.fillColor);
+    if (!rowFill) continue;
+    const gap = colourDistance(rowFill, fill);
+    if (gap > SAME_COLOUR_DISTANCE) continue;
+    if (gap < bestGap - 0.5) {
+      best = [row];
+      bestGap = gap;
+    } else if (Math.abs(gap - bestGap) <= 0.5) {
+      best.push(row);
+    }
+  }
+  return best;
+}
 function mr11RowKey(short, stream, font, fill, productType) {
   return [cleanStr(short), normalizeStream(stream), normalizeColor(font), normalizeFillColor(fill), cleanStr(productType)].join("|");
 }
@@ -2531,6 +2549,20 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const designRows = datasetMap["DESIGN" /* DESIGN */] || [];
   const shellplanRows = datasetMap["SHELLPLAN" /* SHELLPLAN */] || [];
   const dispatchRows = datasetMap["DISPATCH" /* DISPATCH */] || [];
+  const streamOfBuilding = {};
+  for (const d of designRows) {
+    const no = cleanStr(findCellValue(d.data, "Project No") || findCellValue(d.data, "Project No."));
+    const building = cleanStr(findCellValue(d.data, "Building Name"));
+    let stream = null;
+    for (const sh of STREAM_HEADER_CANDIDATES) {
+      const v = findCellValue(d.data, sh);
+      if (v !== null && v !== void 0 && String(v).trim() !== "") {
+        stream = normalizeStream(v);
+        break;
+      }
+    }
+    if (no && building && stream && !streamOfBuilding[`${no}|${building}`]) streamOfBuilding[`${no}|${building}`] = stream;
+  }
   const derivedMr11Rows = bdRecords.map((bdRowItem) => {
     const bdData = bdRowItem.data;
     const projectNo = cleanStr(findCellValue(bdData, "Project No") || findCellValue(bdData, "Project No.") || bdRowItem.rawCells?.[1]);
@@ -2714,7 +2746,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       sum2027 += val;
     });
     outRow["Total 2027 m2"] = sum2027 > 0 ? sum2027 : null;
-    const streamMatchedDesign = designRows.filter((dRow) => {
+    const designCandidates = designRows.filter((dRow) => {
       const dProjNo = cleanStr(findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No.") || dRow.rawCells?.[0]);
       const dProjName = cleanStr(findCellValue(dRow.data, "Project Name") || findCellValue(dRow.data, "Customer & Project Name") || dRow.rawCells?.[1]);
       let dStream = null;
@@ -2732,6 +2764,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
       return true;
     });
+    const streamMatchedDesign = closestFillGroup(designCandidates, bdFillColor);
     const designStatuses = streamMatchedDesign.map(
       (d) => findCellValue(d.data, "Formwork Design Status") || findCellValue(d.data, "design status") || findCellValue(d.data, "Design Status") || findCellValue(d.data, "Status")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
@@ -2739,7 +2772,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Formwork Design Status"] = resolvedFormworkStatus;
     outRow["design status"] = resolvedFormworkStatus;
     const designDates = streamMatchedDesign.map(
-      (d) => findCellValue(d.data, "Actual Formwork Order Completion Date") || findCellValue(d.data, "Actual Completion Date") || findCellValue(d.data, "estimated design completion date (should be date or tbc) ") || findCellValue(d.data, "Completion Date")
+      (d) => findCellValue(d.data, "Actual Formwork Order Completion Date") || findCellValue(d.data, "Actual Completion Date") || findCellValue(d.data, "Completion Date")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
     let latestDesignDate = null;
     for (const dv of designDates) {
@@ -2801,7 +2834,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Total Quantity Ordered (m2)"] = finalQuantityAN;
     outRow["Total Quantity Ordered"] = finalQuantityAN;
     outRow["processed qty"] = finalQuantityAN;
-    const streamMatchedShellplan = shellplanRows.filter((spRow) => {
+    const shellplanCandidates = shellplanRows.filter((spRow) => {
       const spProjNo = cleanStr(findCellValue(spRow.data, "Project No") || findCellValue(spRow.data, "Project No.") || spRow.rawCells?.[0]);
       const spProjName = cleanStr(findCellValue(spRow.data, "Project Name") || findCellValue(spRow.data, "Customer & Project Name") || spRow.rawCells?.[1]);
       let spStream = null;
@@ -2814,11 +2847,16 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
       const idMatches = projectNo && spProjNo && (spProjNo === projectNo || spProjNo.includes(projectNo) || projectNo.includes(spProjNo)) || projectName && spProjName && (spProjName === projectName || spProjName.includes(projectName) || projectName.includes(spProjName)) || shortName && spProjName && spProjName.includes(shortName);
       if (!idMatches) return false;
+      if (!spStream) {
+        const building = cleanStr(findCellValue(spRow.data, "Building Name"));
+        spStream = streamOfBuilding[`${spProjNo}|${building}`] ?? null;
+      }
       if (spStream && spStream !== bdStream) {
         return false;
       }
       return true;
     });
+    const streamMatchedShellplan = closestFillGroup(shellplanCandidates, bdFillColor);
     const spStatuses = streamMatchedShellplan.map(
       (c) => findCellValue(c.data, "Shell Plan Status") || findCellValue(c.data, "shellplan status") || findCellValue(c.data, "Shell Plan Status - Pending Consultant Drawings") || findCellValue(c.data, "Status")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
