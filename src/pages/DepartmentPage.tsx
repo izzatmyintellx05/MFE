@@ -119,7 +119,7 @@ export const DepartmentPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <ZoomControls zoom={zoom} setZoom={setZoom} min={75} max={135} step={5} />
+          <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
 
           <label className="luxury-btn-black flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">
             <Upload className={`w-3.5 h-3.5 ${uploading ? 'animate-spin' : ''}`} />

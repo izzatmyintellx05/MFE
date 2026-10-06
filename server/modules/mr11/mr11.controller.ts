@@ -4,7 +4,12 @@ import ExcelJS from 'exceljs';
 import { executeMr11Pipeline } from './mr11.engine';
 import { getLatestMr11Run, hydrateActiveVersionsFromDb } from '../../db/supabase';
 import * as mr11ConfigModule from '../../config/mr11.config';
-import { MR11_HEADER_GROUPS, MR11_NUMBER_FORMATS } from '../../config/mr11.config';
+import {
+  MR11_HEADER_GROUPS,
+  MR11_NUMBER_FORMATS,
+  MR11_COLUMN_DEPARTMENTS,
+  MR11_DEPARTMENT_COLORS,
+} from '../../config/mr11.config';
 import { getUsdToMyrRate, withMyrPrices } from '../../utils/fx';
 
 const prisma = new PrismaClient();
@@ -36,6 +41,9 @@ export async function getLatestMr11(req: Request, res: Response) {
         orderedHeaders: ORDERED_HEADER_LIST,
         headerGroups: MR11_HEADER_GROUPS,
         numberFormats: MR11_NUMBER_FORMATS,
+        // Lets a department user's own columns be highlighted in their department colour
+        columnDepartments: MR11_COLUMN_DEPARTMENTS,
+        departmentColors: MR11_DEPARTMENT_COLORS,
       },
     });
   } catch (err: any) {

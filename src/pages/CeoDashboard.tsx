@@ -602,7 +602,7 @@ export const CeoDashboard: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <ZoomControls zoom={rawZoom} setZoom={setRawZoom} min={70} max={135} step={5} />
+                <ZoomControls zoom={rawZoom} setZoom={setRawZoom} min={20} max={135} step={5} />
                 <button
                   type="button"
                   onClick={() => setShowRawData(false)}

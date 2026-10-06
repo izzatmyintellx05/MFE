@@ -266,3 +266,27 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'Formwork Quantity Sailed (m2)', sourceDept: RoleCode.DISPATCH, sourceColumn: 'Formwork Quantity Sailed (m2)', type: 'number' },
   { target: 'ATD', sourceDept: RoleCode.DISPATCH, sourceColumn: 'ATD', type: 'date' },
 ];
+/** Highlight colour per department: a department user's MR11 columns glow in this colour. */
+export const MR11_DEPARTMENT_COLORS: Record<string, string> = {
+  BD: '#2563EB', // blue
+  FINANCE: '#16A34A', // green
+  SHELLPLAN: '#9333EA', // purple
+  DESIGN: '#EA580C', // orange
+  PLANNING: '#0891B2', // teal
+  PRODUCTION: '#DB2777', // pink
+  DISPATCH: '#D97706', // amber
+};
+
+/**
+ * Which department's file each MR11 column comes from. Mapped columns use their source;
+ * the monthly columns come from Finance, and the ringgit price is BD's price converted.
+ */
+export const MR11_COLUMN_DEPARTMENTS: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
+  for (const h of ORDERED_HEADER_LIST) {
+    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = RoleCode.FINANCE;
+  }
+  map['Final Selling Price (MYR)'] = RoleCode.BD;
+  return map;
+})();
