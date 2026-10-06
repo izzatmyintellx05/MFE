@@ -1636,7 +1636,7 @@ export async function executeMr11Pipeline(
   });
 
   // --------------------------------------------------------------------------
-  // 5. SORTING: PROJECT -> STREAM -> NO FILL BEFORE FILLED -> FONT COLOR (BLACK FIRST) -> FILL COLOR
+  // 5. SORTING: PROJECT -> STREAM -> NO FILL BEFORE FILLED -> FILL COLOR -> FONT COLOR (BLACK FIRST)
   // --------------------------------------------------------------------------
   derivedMr11Rows.sort((a, b) => {
     const projA = getProjectIdentifier(a);
@@ -1656,6 +1656,11 @@ export async function executeMr11Pipeline(
     const filledB = normalizeFillColor(b['_fillColor']) !== '';
     if (filledA !== filledB) return filledA ? 1 : -1;
 
+    // Rows with the same fill sit together so they can merge
+    const fillA = normalizeFillColor(a['_fillColor']);
+    const fillB = normalizeFillColor(b['_fillColor']);
+    if (fillA !== fillB) return fillA.localeCompare(fillB);
+
     const colorA = normalizeColor(a['_fontColor']);
     const colorB = normalizeColor(b['_fontColor']);
 
@@ -1664,29 +1669,24 @@ export async function executeMr11Pipeline(
 
     if (isBlackA && !isBlackB) return -1;
     if (!isBlackA && isBlackB) return 1;
-    if (colorA !== colorB) return colorA.localeCompare(colorB);
-
-    const fillA = normalizeFillColor(a['_fillColor']);
-    const fillB = normalizeFillColor(b['_fillColor']);
-    return fillA.localeCompare(fillB);
+    return colorA.localeCompare(colorB);
   });
 
   // --------------------------------------------------------------------------
   // 6. ATTACH STREAM MERGE METADATA (ONLY MERGES FOR SHELLPLAN & DESIGN)
-  // A BD row with a fill colour always keeps its own ShellPlan & Design cells (fill takes
-  // priority). Rows without a fill (black or coloured font) merge across their Project & Stream.
+  // Rows of the same Project & Stream merge when they have the same fill colour (or none),
+  // whatever their font colour; a different fill colour always splits (fill takes priority).
   // --------------------------------------------------------------------------
-  const hasFill = (row: Record<string, any>) => normalizeFillColor(row['_fillColor']) !== '';
+  const fillOf = (row: Record<string, any>) => normalizeFillColor(row['_fillColor']);
   for (let i = 0; i < derivedMr11Rows.length; ) {
     const curProj = getProjectIdentifier(derivedMr11Rows[i]);
     const curStream = normalizeStream(derivedMr11Rows[i]['Stream']);
     let span = 1;
 
-    // Expand span across the unfilled rows sharing the exact same Project & Stream
+    // Expand span across the rows sharing the exact same Project, Stream and fill colour
     while (
-      !hasFill(derivedMr11Rows[i]) &&
       i + span < derivedMr11Rows.length &&
-      !hasFill(derivedMr11Rows[i + span]) &&
+      fillOf(derivedMr11Rows[i + span]) === fillOf(derivedMr11Rows[i]) &&
       getProjectIdentifier(derivedMr11Rows[i + span]) === curProj &&
       normalizeStream(derivedMr11Rows[i + span]['Stream']) === curStream
     ) {

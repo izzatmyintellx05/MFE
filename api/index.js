@@ -2898,23 +2898,23 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const filledA = normalizeFillColor(a["_fillColor"]) !== "";
     const filledB = normalizeFillColor(b["_fillColor"]) !== "";
     if (filledA !== filledB) return filledA ? 1 : -1;
+    const fillA = normalizeFillColor(a["_fillColor"]);
+    const fillB = normalizeFillColor(b["_fillColor"]);
+    if (fillA !== fillB) return fillA.localeCompare(fillB);
     const colorA = normalizeColor(a["_fontColor"]);
     const colorB = normalizeColor(b["_fontColor"]);
     const isBlackA = colorA === "#000000";
     const isBlackB = colorB === "#000000";
     if (isBlackA && !isBlackB) return -1;
     if (!isBlackA && isBlackB) return 1;
-    if (colorA !== colorB) return colorA.localeCompare(colorB);
-    const fillA = normalizeFillColor(a["_fillColor"]);
-    const fillB = normalizeFillColor(b["_fillColor"]);
-    return fillA.localeCompare(fillB);
+    return colorA.localeCompare(colorB);
   });
-  const hasFill = (row) => normalizeFillColor(row["_fillColor"]) !== "";
+  const fillOf = (row) => normalizeFillColor(row["_fillColor"]);
   for (let i = 0; i < derivedMr11Rows.length; ) {
     const curProj = getProjectIdentifier(derivedMr11Rows[i]);
     const curStream = normalizeStream(derivedMr11Rows[i]["Stream"]);
     let span = 1;
-    while (!hasFill(derivedMr11Rows[i]) && i + span < derivedMr11Rows.length && !hasFill(derivedMr11Rows[i + span]) && getProjectIdentifier(derivedMr11Rows[i + span]) === curProj && normalizeStream(derivedMr11Rows[i + span]["Stream"]) === curStream) {
+    while (i + span < derivedMr11Rows.length && fillOf(derivedMr11Rows[i + span]) === fillOf(derivedMr11Rows[i]) && getProjectIdentifier(derivedMr11Rows[i + span]) === curProj && normalizeStream(derivedMr11Rows[i + span]["Stream"]) === curStream) {
       span++;
     }
     derivedMr11Rows[i]["_isStreamLead"] = true;
