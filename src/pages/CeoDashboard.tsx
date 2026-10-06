@@ -132,12 +132,10 @@ export const CeoDashboard: React.FC = () => {
   const series = useMemo(() => monthlySeries(regionRows, months, today), [regionRows, months, today]);
   const selectedPoint = selectedMonth ? series.find((p) => p.key === selectedMonth.key) || null : null;
   const projectCount = useMemo(() => firstRowPerProject(regionRows).length, [regionRows]);
-  // Final Selling Price per m², weighted by m²: MYR column (at today's rate) and USD column
+  // Final Selling Price (USD) per m², weighted by m²; MYR at today's live exchange rate
   const avgPriceUsd = useMemo(() => averageSellingPrice(regionRows, months, monthKey), [regionRows, months, monthKey]);
-  const avgPriceMyr = useMemo(
-    () => averageSellingPrice(regionRows, months, monthKey, 'Final Selling Price (MYR)'),
-    [regionRows, months, monthKey]
-  );
+  const toMyr = (usd: number | null) => (usd !== null && fxRate ? usd * fxRate.rate : null);
+  const avgPriceMyr = toMyr(avgPriceUsd);
   // Contract LME from MR11: LME type, LME Rate (USD) and LME Adjusted (USD)
   const lmeTypes = useMemo(() => lmeTypeCounts(regionRows), [regionRows]);
   const avgLmeRate = useMemo(() => averageSellingPrice(regionRows, months, monthKey, 'LME Rate (USD)'), [regionRows, months, monthKey]);
@@ -392,7 +390,7 @@ export const CeoDashboard: React.FC = () => {
               {formatUsd(avgPriceUsd)} <span className="text-xs text-slate-500">USD</span>
             </span>
           </div>
-          <span className="text-[10px] text-slate-400 mt-1">Per m², Final Selling Price (MYR) and (USD) weighted by m²</span>
+          <span className="text-[10px] text-slate-400 mt-1">Per m², Final Selling Price (USD) weighted by m², MYR at today's rate</span>
         </div>
       </div>
 
@@ -503,7 +501,7 @@ export const CeoDashboard: React.FC = () => {
                       const p = series[ctx.dataIndex];
                       const kind = p.kind === 'actual' ? 'Actual' : p.isDefault ? 'Forecast (default, none entered)' : 'Forecast';
                       const price = averageSellingPrice(regionRows, months, p.key);
-                      const priceMyr = averageSellingPrice(regionRows, months, p.key, 'Final Selling Price (MYR)');
+                      const priceMyr = toMyr(price);
                       const usd =
                         price !== null && !p.isDefault
                           ? ` · avg ${formatUsd(priceMyr)} MYR / ${formatUsd(price)} USD per m² · ≈ ${formatUsd(price * p.value, 0)} USD`

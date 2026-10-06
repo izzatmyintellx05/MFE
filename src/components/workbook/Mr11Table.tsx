@@ -161,8 +161,15 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                         <td
                           key={cIdx}
                           rowSpan={streamSpan}
-                          className="p-2 border-r border-stone-200 whitespace-nowrap text-center align-middle font-bold text-stone-900 bg-stone-50/80"
-                          style={glowColor ? columnGlow(glowColor, rIdx + streamSpan >= records.length) : undefined}
+                          // A filled row's own cell shows the row's full fill colour; merged cells stay light grey
+                          className={`p-2 border-r border-stone-200 whitespace-nowrap text-center align-middle font-bold text-stone-900 ${
+                            rowBg ? '' : 'bg-stone-50/80'
+                          }`}
+                          style={{
+                            ...(glowColor ? columnGlow(glowColor, rIdx + streamSpan >= records.length) : {}),
+                            // An unmerged cell keeps its BD row's font colour
+                            ...(streamSpan === 1 && fontColor !== '#000000' ? { color: fontColor } : {}),
+                          }}
                         >
                           {cellText(h, row?.[h])}
                         </td>
@@ -188,11 +195,8 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                           ...(glowColor ? columnGlow(glowColor, rIdx === records.length - 1) : {}),
                           // keep the yellow ATD fill visible under the outline
                           ...(glowColor && isYellowAtd ? { backgroundColor: undefined } : {}),
-                          color: isYellowAtd
-                            ? '#78350F'
-                            : fontColor !== '#000000' && cIdx < 4
-                            ? fontColor
-                            : undefined,
+                          // The BD row's font colour runs across the whole row, as in the BD file
+                          color: isYellowAtd ? '#78350F' : fontColor !== '#000000' ? fontColor : undefined,
                           fontWeight: fontColor !== '#000000' && cIdx < 4 ? 'bold' : 'normal',
                         }}
                       >

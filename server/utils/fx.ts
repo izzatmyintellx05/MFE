@@ -1,5 +1,5 @@
 /**
- * Live USD -> MYR exchange rate for "Final Selling Price (MYR)".
+ * Live USD -> MYR exchange rate, shown on the MR11 page.
  *
  * Fetched from public rate services (ExchangeRate-API's open endpoint, then the European
  * Central Bank via Frankfurter) and cached for an hour. If both are unreachable the last
@@ -69,16 +69,4 @@ export async function getUsdToMyrRate(): Promise<FxRate | null> {
 
   if (cached) return { ...cached.value, live: false };
   return fixedSettingRate();
-}
-
-/** Adds "Final Selling Price (MYR)" to each MR11 record using the given rate. */
-export function withMyrPrices(records: any[], fx: FxRate | null): any[] {
-  return records.map((r) => {
-    const usd = Number(r?.['Final Selling Price (USD)']);
-    const hasUsd = r?.['Final Selling Price (USD)'] !== null && r?.['Final Selling Price (USD)'] !== '' && Number.isFinite(usd);
-    return {
-      ...r,
-      'Final Selling Price (MYR)': fx && hasUsd ? Math.round(usd * fx.rate * 100) / 100 : null,
-    };
-  });
 }

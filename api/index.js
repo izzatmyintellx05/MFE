@@ -1345,6 +1345,28 @@ function safeString(val) {
     return "";
   }
 }
+function readThemeColors(workbook) {
+  const xml = workbook._themes?.theme1 || "";
+  const scheme = xml.match(/<a:clrScheme[\s\S]*?<\/a:clrScheme>/)?.[0] || "";
+  const hexOf = (tag) => {
+    const block = scheme.match(new RegExp(`<a:${tag}>([\\s\\S]*?)</a:${tag}>`))?.[1] || "";
+    const hex = block.match(/srgbClr val="([0-9A-Fa-f]{6})"/)?.[1] || block.match(/lastClr="([0-9A-Fa-f]{6})"/)?.[1];
+    return hex ? `#${hex.toUpperCase()}` : "";
+  };
+  return ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"].map(hexOf);
+}
+function applyTint(hex, tint) {
+  if (!tint) return hex;
+  const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const tinted = channels.map((v) => Math.round(tint < 0 ? v * (1 + tint) : v + (255 - v) * tint));
+  return `#${tinted.map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+function colorHex(color, theme) {
+  if (!color) return void 0;
+  if (typeof color.argb === "string") return `#${color.argb.slice(-6).toUpperCase()}`;
+  if (typeof color.theme === "number" && theme[color.theme]) return applyTint(theme[color.theme], Number(color.tint) || 0);
+  return void 0;
+}
 async function parseAndNormalizeWorkbook(input) {
   const workbook = new ExcelJS.Workbook();
   if (Buffer.isBuffer(input)) {
@@ -1353,6 +1375,7 @@ async function parseAndNormalizeWorkbook(input) {
     await workbook.xlsx.readFile(input);
   }
   const sheets = [];
+  const theme = readThemeColors(workbook);
   workbook.eachSheet((worksheet, sheetId) => {
     const celldata = [];
     const mergeConfig = {};
@@ -1395,15 +1418,10 @@ async function parseAndNormalizeWorkbook(input) {
         const c = colNumber - 1;
         let bgHex;
         if (cell.fill && cell.fill.type === "pattern") {
-          const colorObj = cell.fill.fgColor;
-          if (colorObj?.argb && typeof colorObj.argb === "string") {
-            bgHex = `#${colorObj.argb.slice(-6).toUpperCase()}`;
-          }
+          bgHex = colorHex(cell.fill.fgColor, theme);
         }
         let fontColor;
-        if (cell.font?.color?.argb && typeof cell.font.color.argb === "string") {
-          fontColor = `#${cell.font.color.argb.slice(-6).toUpperCase()}`;
-        }
+        fontColor = colorHex(cell.font?.color, theme);
         let rawVal = extractRawValue(cellValue(cell));
         const parentMerge = mergeMap.get(`${r}_${c}`);
         if (parentMerge && (rawVal === null || rawVal === void 0 || rawVal === "")) {
@@ -1468,8 +1486,7 @@ var MR11_HEADER_GROUPS = [
 var MR11_NUMBER_FORMATS = {
   "LME Rate (USD)": 3,
   "LME Adjusted (USD)": 3,
-  "Final Selling Price (USD)": 2,
-  "Final Selling Price (MYR)": 2
+  "Final Selling Price (USD)": 2
 };
 var MR11_SOURCE_KEY_MAP = {
   BD: [
@@ -1571,7 +1588,6 @@ var ORDERED_HEADER_LIST = [
   "LME Adjusted (USD)",
   "Freight Adjusted (USD)",
   "Final Selling Price (USD)",
-  "Final Selling Price (MYR)",
   "Advance Received / Payment Status",
   "Actual Received",
   "Payment Date",
@@ -1593,7 +1609,7 @@ var ORDERED_HEADER_LIST = [
   "Dispatched Date",
   "Formwork Quantity Sailed (m2)",
   "ATD",
-  // --- 2026 Monthly Breakdown & Total ---
+  // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
   "Jan-26",
   "Feb-26",
   "Mar-26",
@@ -1623,43 +1639,76 @@ var ORDERED_HEADER_LIST = [
   "Total 2027 m2"
 ];
 var MR11_ORDERED_COLUMNS = [
-  // BD / Pre-Shellplan Columns
-  { target: "Customer & Project Name", sourceDept: "BD" /* BD */, sourceColumn: "Customer & Project Name", type: "string" },
-  { target: "Project No", sourceDept: "BD" /* BD */, sourceColumn: "Project No", type: "string" },
-  { target: "Short Name", sourceDept: "BD" /* BD */, sourceColumn: "Short Name", type: "string", aliases: ["Project Shortname", "Shortname"] },
-  { target: "Stream", sourceDept: "BD" /* BD */, sourceColumn: "Stream", type: "string" },
-  { target: "Countries", sourceDept: "BD" /* BD */, sourceColumn: "Countries", type: "string" },
-  { target: "PIC", sourceDept: "BD" /* BD */, sourceColumn: "PIC", type: "string" },
-  { target: "Status", sourceDept: "BD" /* BD */, sourceColumn: "Status", type: "string" },
-  { target: "Products type", sourceDept: "BD" /* BD */, sourceColumn: "Products type", type: "string", aliases: ["Product Type"] },
-  { target: "Formwork type", sourceDept: "BD" /* BD */, sourceColumn: "Formwork type", type: "string" },
-  { target: "Remarks", sourceDept: "BD" /* BD */, sourceColumn: "Remarks", type: "string" },
-  { target: "PO", sourceDept: "BD" /* BD */, sourceColumn: "PO", type: "string" },
-  { target: "PO date", sourceDept: "BD" /* BD */, sourceColumn: "PO date", type: "date" },
-  { target: "NCA", sourceDept: "BD" /* BD */, sourceColumn: "NCA", type: "string" },
-  { target: "NCA date", sourceDept: "BD" /* BD */, sourceColumn: "NCA date", type: "date" },
-  { target: "Original NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Original NCA Qty", type: "number" },
-  { target: "Revised NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Revised NCA Qty", type: "number" },
+  // BD columns A..AF, by the header names in the BD workbook. Each is matched by its whole
+  // name (any letter case); aliases are the names used by earlier versions of the BD file.
+  { target: "Customer & Project Name", sourceDept: "BD" /* BD */, sourceColumn: "Customer & Project Name", type: "string", exact: true, aliases: ["Project Name"] },
+  // A
+  { target: "Project No", sourceDept: "BD" /* BD */, sourceColumn: "Project No.", type: "string", exact: true, aliases: ["Project No"] },
+  // B
+  { target: "Short Name", sourceDept: "BD" /* BD */, sourceColumn: "Project Shortname", type: "string", exact: true, aliases: ["Short Name", "Shortname"] },
+  // C
+  { target: "Stream", sourceDept: "BD" /* BD */, sourceColumn: "Stream", type: "string", exact: true },
+  // D
+  { target: "Countries", sourceDept: "BD" /* BD */, sourceColumn: "Countries", type: "string", exact: true, aliases: ["Country"] },
+  // E
+  { target: "PIC", sourceDept: "BD" /* BD */, sourceColumn: "PIC", type: "string", exact: true },
+  // F
+  { target: "Status", sourceDept: "BD" /* BD */, sourceColumn: "Status", type: "string", exact: true },
+  // G
+  { target: "Products type", sourceDept: "BD" /* BD */, sourceColumn: "Product Type", type: "string", exact: true, aliases: ["Products type"] },
+  // H
+  { target: "Formwork type", sourceDept: "BD" /* BD */, sourceColumn: "Formwork Type", type: "string", exact: true, aliases: ["Formworks type"] },
+  // I
+  { target: "Remarks", sourceDept: "BD" /* BD */, sourceColumn: "Remarks", type: "string", exact: true },
+  // J
+  { target: "PO", sourceDept: "BD" /* BD */, sourceColumn: "PO", type: "string", exact: true },
+  // K
+  { target: "PO date", sourceDept: "BD" /* BD */, sourceColumn: "PO date", type: "date", exact: true },
+  // L
+  { target: "NCA", sourceDept: "BD" /* BD */, sourceColumn: "NCA", type: "string", exact: true },
+  // M
+  { target: "NCA date", sourceDept: "BD" /* BD */, sourceColumn: "NCA date", type: "date", exact: true },
+  // N
+  { target: "Original NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Original NCA Qty", type: "number", exact: true },
+  // O
+  { target: "Revised NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Revised NCA Qty", type: "number", exact: true },
+  // P
   // BD's second "Remarks" column (right after Revised NCA Qty) is the NCA remark
   { target: "NCA Remarks", sourceDept: "BD" /* BD */, sourceColumn: "Remarks 2", type: "string", exact: true },
-  // Payment terms sub-columns under the BD two-row "Payment terms" header (exact match:
-  // a missing "Type 3" must not fall back to "Type")
+  // Q
+  // Payment terms sub-columns under the two-row "Payment terms" header
   { target: "Payment terms - Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Percentage", type: "number", exact: true },
+  // R
   { target: "Payment terms - Type", sourceDept: "BD" /* BD */, sourceColumn: "Type", type: "string", exact: true },
+  // S
   { target: "Payment terms - Balance Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Balance Percentage", type: "number", exact: true },
+  // T
   { target: "Payment terms - Type 2", sourceDept: "BD" /* BD */, sourceColumn: "Type 2", type: "string", exact: true },
+  // U
   { target: "Payment terms - Balance Percentage 2", sourceDept: "BD" /* BD */, sourceColumn: "Balance Percentage 2", type: "number", exact: true },
+  // V
   { target: "Payment terms - Type 3", sourceDept: "BD" /* BD */, sourceColumn: "Type 3", type: "string", exact: true },
-  { target: "Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Selling Price (USD)", type: "number" },
-  { target: "LME", sourceDept: "BD" /* BD */, sourceColumn: "LME", type: "number" },
-  // LME price from BD column Z
-  { target: "LME Rate (USD)", sourceDept: "BD" /* BD */, sourceColumn: "LME Rate (USD)", type: "number", aliases: ["LME rate (USD)", "LME Rate"] },
-  { target: "Incoterms", sourceDept: "BD" /* BD */, sourceColumn: "Incoterms", type: "string" },
-  { target: "Props, WPB, Waler, Acc (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Props, WPB, Waler, Acc (USD)", type: "number" },
-  { target: "Aluminium Weight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Aluminium Weight Adjusted (USD)", type: "number" },
-  { target: "LME Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "LME Adjusted (USD)", type: "number" },
-  { target: "Freight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Freight Adjusted (USD)", type: "number" },
-  { target: "Final Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Final Selling Price (USD)", type: "number" },
+  // W
+  { target: "Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Selling Price (USD)", type: "number", exact: true },
+  // X
+  // Fixed / Freeze / Variable
+  { target: "LME", sourceDept: "BD" /* BD */, sourceColumn: "LME", type: "string", exact: true, aliases: ["LME (Fixed / Freeze / Variable - dropdown)"] },
+  // Y
+  { target: "LME Rate (USD)", sourceDept: "BD" /* BD */, sourceColumn: "LME Rate (USD)", type: "number", exact: true, aliases: ["LME Rate"] },
+  // Z
+  { target: "Incoterms", sourceDept: "BD" /* BD */, sourceColumn: "Incoterms", type: "string", exact: true },
+  // AA
+  { target: "Props, WPB, Waler, Acc (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Props, WPB, Waler, Acc (USD)", type: "number", exact: true },
+  // AB
+  { target: "Aluminium Weight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Aluminium Weight Adjusted (USD)", type: "number", exact: true },
+  // AC
+  // AD and AF are formulas in the BD file; MR11 recalculates them (resolveLmePricing)
+  { target: "LME Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "LME Adjusted (USD)", type: "number", exact: true },
+  // AD
+  { target: "Freight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Freight Adjusted (USD)", type: "number", exact: true },
+  // AE
+  { target: "Final Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Final Selling Price (USD)", type: "number", exact: true },
+  // AF
   { target: "Advance Received / Payment Status", sourceDept: "FINANCE" /* FINANCE */, sourceColumn: "Advance Received / Payment Status", type: "string" },
   { target: "Actual Received", sourceDept: "FINANCE" /* FINANCE */, sourceColumn: "Actual Received", type: "number" },
   { target: "Payment Date", sourceDept: "FINANCE" /* FINANCE */, sourceColumn: "Payment Date", type: "date" },
@@ -1700,9 +1749,8 @@ var MR11_COLUMN_DEPARTMENTS = (() => {
   const map = {};
   for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
   for (const h of ORDERED_HEADER_LIST) {
-    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "FINANCE" /* FINANCE */;
+    if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "BD" /* BD */;
   }
-  map["Final Selling Price (MYR)"] = "BD" /* BD */;
   return map;
 })();
 
@@ -1732,6 +1780,19 @@ function normalizeColor(color) {
   if (s === "WHITE" || s === "#FFF" || s === "#FFFFFF") return "#FFFFFF";
   return s.startsWith("#") ? s : `#${s}`;
 }
+function isBlueColor(color) {
+  const hex = normalizeColor(color);
+  if (!/^#[0-9A-F]{6}$/.test(hex)) return false;
+  const [r, g2, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g2, b);
+  const min = Math.min(r, g2, b);
+  const d = max - min;
+  if (max === 0 || d / max < 0.35 || max < 0.25) return false;
+  let hue = max === r ? (g2 - b) / d % 6 : max === g2 ? (b - r) / d + 2 : (r - g2) / d + 4;
+  hue = (hue * 60 + 360) % 360;
+  return hue >= 185 && hue <= 250;
+}
+var PRODUCTION_DISPATCH_COLUMN = /^(total produced|produced|production|total dispatch|dispatch|despatch|date dispatched|actual dispatch|formwork quantity sailed|atd|actual time of departure|actual departure)/i;
 function normalizeFillColor(color) {
   if (!color) return "";
   const s = String(color).trim().toUpperCase();
@@ -2160,7 +2221,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const datasetMap = {};
   let productionHeaders = {};
   let dispatchHeaders = {};
-  let financeMonthColumns = [];
+  let bdMonthColumns = [];
   let detectedProdSeries = 0;
   for (const dept of activeDepartments) {
     if (dept.activeVersion?.parsedWorkbook) {
@@ -2179,11 +2240,16 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         if (dept.code === "DISPATCH" /* DISPATCH */) {
           dispatchHeaders = headers;
         }
-        if (dept.code === "FINANCE" /* FINANCE */) {
-          financeMonthColumns = buildFinanceMonthColumns(headers);
+        if (dept.code === "BD" /* BD */) {
+          bdMonthColumns = buildFinanceMonthColumns(headers);
         }
       }
     }
+  }
+  if (datasetMap["BD" /* BD */]) {
+    datasetMap["BD" /* BD */] = datasetMap["BD" /* BD */].filter(
+      (row) => Object.values(row.rawCells || {}).some((v) => v !== null && v !== void 0 && String(v).trim() !== "")
+    );
   }
   const STREAM_HEADER_CANDIDATES = [
     "Stream",
@@ -2424,12 +2490,18 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const bdFillColor = normalizeFillColor(bdRowItem.fillColor);
     const outRow = {};
     const cellColors = {};
+    const exactValue = (name) => {
+      const target = name.toLowerCase().trim();
+      const key = Object.keys(bdData).find((k) => k.toLowerCase().trim() === target);
+      return key !== void 0 ? bdData[key] ?? null : null;
+    };
     for (const mapping of MR11_ORDERED_COLUMNS) {
       if (mapping.sourceDept === "BD" /* BD */) {
-        let value = mapping.exact ? bdData[mapping.sourceColumn] ?? null : findCellValue(bdData, mapping.sourceColumn);
+        const read = (name) => mapping.exact ? exactValue(name) : findCellValue(bdData, name);
+        let value = read(mapping.sourceColumn);
         for (const alias of mapping.aliases || []) {
           if (value !== null && value !== void 0 && value !== "") break;
-          value = findCellValue(bdData, alias);
+          value = read(alias);
         }
         outRow[mapping.target] = value;
       }
@@ -2671,13 +2743,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["_cellColors"] = cellColors;
     const MONTH_COLUMNS_26 = MONTH_LABELS.map((m) => `${m}-26`);
     const MONTH_COLUMNS_27 = MONTH_LABELS.map((m) => `${m}-27`);
-    const financeRow = findBestDeptRow("FINANCE" /* FINANCE */);
     const monthValues = {};
-    if (financeRow) {
-      for (const { header, label } of financeMonthColumns) {
-        const v = parseNumeric(financeRow[header]);
-        if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
-      }
+    for (const { header, label } of bdMonthColumns) {
+      const v = parseNumeric(bdData[header]);
+      if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
     }
     let sum2026 = 0;
     let sum2027 = 0;
@@ -2933,6 +3002,15 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
     }
     outRow["Produced Date"] = latestFilledDate;
+    if (isBlueColor(bdFontColor)) {
+      for (const key of Object.keys(outRow)) {
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = null;
+      }
+      for (const key of Object.keys(cellColors)) {
+        if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) delete cellColors[key];
+      }
+      outRow["_atdColor"] = null;
+    }
     outRow["_fontColor"] = bdFontColor;
     outRow["_fillColor"] = bdFillColor;
     return outRow;
@@ -2948,6 +3026,9 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     if (streamA !== streamB) {
       return streamA - streamB;
     }
+    const filledA = normalizeFillColor(a["_fillColor"]) !== "";
+    const filledB = normalizeFillColor(b["_fillColor"]) !== "";
+    if (filledA !== filledB) return filledA ? 1 : -1;
     const colorA = normalizeColor(a["_fontColor"]);
     const colorB = normalizeColor(b["_fontColor"]);
     const isBlackA = colorA === "#000000";
@@ -2959,11 +3040,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const fillB = normalizeFillColor(b["_fillColor"]);
     return fillA.localeCompare(fillB);
   });
+  const hasFill = (row) => normalizeFillColor(row["_fillColor"]) !== "";
   for (let i = 0; i < derivedMr11Rows.length; ) {
     const curProj = getProjectIdentifier(derivedMr11Rows[i]);
     const curStream = normalizeStream(derivedMr11Rows[i]["Stream"]);
     let span = 1;
-    while (i + span < derivedMr11Rows.length && getProjectIdentifier(derivedMr11Rows[i + span]) === curProj && normalizeStream(derivedMr11Rows[i + span]["Stream"]) === curStream) {
+    while (!hasFill(derivedMr11Rows[i]) && i + span < derivedMr11Rows.length && !hasFill(derivedMr11Rows[i + span]) && getProjectIdentifier(derivedMr11Rows[i + span]) === curProj && normalizeStream(derivedMr11Rows[i + span]["Stream"]) === curStream) {
       span++;
     }
     derivedMr11Rows[i]["_isStreamLead"] = true;
@@ -3344,16 +3426,6 @@ async function getUsdToMyrRate() {
   if (cached) return { ...cached.value, live: false };
   return fixedSettingRate();
 }
-function withMyrPrices(records, fx) {
-  return records.map((r) => {
-    const usd = Number(r?.["Final Selling Price (USD)"]);
-    const hasUsd = r?.["Final Selling Price (USD)"] !== null && r?.["Final Selling Price (USD)"] !== "" && Number.isFinite(usd);
-    return {
-      ...r,
-      "Final Selling Price (MYR)": fx && hasUsd ? Math.round(usd * fx.rate * 100) / 100 : null
-    };
-  });
-}
 
 // server/utils/lme.ts
 var URL = "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Al_cash";
@@ -3409,7 +3481,7 @@ async function getLatestMr11(req, res) {
     const latestRun = await getLatestMr11Run(prisma5);
     const config = await prisma5.mr11Config.findUnique({ where: { id: "singleton" } });
     const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
-    const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: withMyrPrices(latestRun.records, fx) } : latestRun;
+    const run = latestRun;
     return res.json({
       success: true,
       data: {
@@ -3472,7 +3544,7 @@ async function exportMr11ToExcel(req, res) {
     if (!latestRun || !Array.isArray(latestRun.records) || latestRun.records.length === 0) {
       return res.status(400).json({ success: false, error: { message: "No MR11 records to export" } });
     }
-    const records = withMyrPrices(latestRun.records, await getUsdToMyrRate());
+    const records = latestRun.records;
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
     const headers = ORDERED_HEADER_LIST2;
@@ -3511,11 +3583,9 @@ async function exportMr11ToExcel(req, res) {
       const addedRow = worksheet.addRow(orderedRowData);
       if (row["_fontColor"]) {
         const hex = String(row["_fontColor"]).replace("#", "");
-        const projCell = addedRow.getCell(1);
-        projCell.font = {
-          color: { argb: `FF${hex}` },
-          bold: true
-        };
+        addedRow.eachCell({ includeEmpty: true }, (cell, col) => {
+          cell.font = { color: { argb: `FF${hex}` }, bold: col <= 4 && hex !== "000000" };
+        });
       }
       if (row["_fillColor"]) {
         const hex = String(row["_fillColor"]).replace("#", "");

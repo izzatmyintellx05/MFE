@@ -1,7 +1,7 @@
 import React from 'react';
 import { ArrowRightLeft, TrendingUp, TrendingDown } from 'lucide-react';
 
-// Live USD -> MYR rate used for "Final Selling Price (MYR)" (returned by GET /mr11)
+// Live USD -> MYR exchange rate (returned by GET /mr11)
 export interface FxRate {
   rate: number;
   source: string;
@@ -49,7 +49,7 @@ export const ExchangeRateCard: React.FC<{ fxRate: FxRate | null; className?: str
           </div>
         </>
       ) : (
-        <div className="text-xs font-semibold text-rose-600">Unavailable: MYR prices not shown</div>
+        <div className="text-xs font-semibold text-rose-600">Unavailable</div>
       )}
     </div>
   </div>
