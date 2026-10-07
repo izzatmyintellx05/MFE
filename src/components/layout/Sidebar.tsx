@@ -14,14 +14,14 @@ import {
   LineChart,
 } from 'lucide-react';
 
+// Shell Plan and Design share one workbook and one page; either role opens it
 const DEPARTMENT_LINKS = [
-  { code: 'BD', label: 'Business Development', path: '/departments/BD', badge: 'BD' },
-  { code: 'FINANCE', label: 'Finance', path: '/departments/FINANCE', badge: 'FN' },
-  { code: 'SHELLPLAN', label: 'ShellPlan', path: '/departments/SHELLPLAN', badge: 'SP' },
-  { code: 'DESIGN', label: 'Design', path: '/departments/DESIGN', badge: 'DS' },
-  { code: 'PLANNING', label: 'Planning', path: '/departments/PLANNING', badge: 'PL' },
-  { code: 'PRODUCTION', label: 'Production', path: '/departments/PRODUCTION', badge: 'PR' },
-  { code: 'DISPATCH', label: 'Dispatch', path: '/departments/DISPATCH', badge: 'DP' },
+  { code: 'BD', roles: ['BD'], label: 'Business Development', path: '/departments/BD', badge: 'BD' },
+  { code: 'FINANCE', roles: ['FINANCE'], label: 'Finance', path: '/departments/FINANCE', badge: 'FN' },
+  { code: 'DESIGN', roles: ['SHELLPLAN', 'DESIGN'], label: 'Shell Plan & Design', path: '/departments/DESIGN', badge: 'SD' },
+  { code: 'PLANNING', roles: ['PLANNING'], label: 'Planning', path: '/departments/PLANNING', badge: 'PL' },
+  { code: 'PRODUCTION', roles: ['PRODUCTION'], label: 'Production', path: '/departments/PRODUCTION', badge: 'PR' },
+  { code: 'DISPATCH', roles: ['DISPATCH'], label: 'Dispatch', path: '/departments/DISPATCH', badge: 'DP' },
 ];
 
 type LinkTone = 'dark' | 'amber' | 'light';
@@ -86,7 +86,7 @@ export const Sidebar: React.FC = () => {
 
   const visibleDepartments = DEPARTMENT_LINKS.filter((dept) => {
     if (isAdmin) return true;
-    return user?.roles?.includes(dept.code) || (user as any)?.departmentRole === dept.code;
+    return dept.roles.some((r) => user?.roles?.includes(r) || (user as any)?.departmentRole === r);
   });
 
   const userName = user?.fullName || user?.name || 'Authorized User';

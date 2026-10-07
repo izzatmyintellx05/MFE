@@ -10,8 +10,8 @@ import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock } from 'luci
 const DEPARTMENT_NAMES: Record<string, string> = {
   BD: 'Business Development',
   FINANCE: 'Finance',
-  SHELLPLAN: 'ShellPlan',
-  DESIGN: 'Design',
+  SHELLPLAN: 'Shell Plan & Design',
+  DESIGN: 'Shell Plan & Design',
   PLANNING: 'Planning',
   PRODUCTION: 'Production',
   DISPATCH: 'Dispatch',
@@ -19,7 +19,9 @@ const DEPARTMENT_NAMES: Record<string, string> = {
 
 export const DepartmentPage: React.FC = () => {
   const { code } = useParams<{ code: string }>();
-  const deptCode = (code || 'BD').toUpperCase();
+  // Shell Plan and Design share one workbook, kept under DESIGN
+  const requested = (code || 'BD').toUpperCase();
+  const deptCode = requested === 'SHELLPLAN' ? 'DESIGN' : requested;
   const deptDisplayName = DEPARTMENT_NAMES[deptCode] || deptCode;
 
   const [department, setDepartment] = useState<any>(null);

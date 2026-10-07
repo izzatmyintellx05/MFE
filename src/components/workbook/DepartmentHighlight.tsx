@@ -24,7 +24,10 @@ export function useDepartmentHighlight(
     const roles: string[] = ((user?.roles as string[]) || []).concat(user?.departmentRole ? [user.departmentRole] : []);
     // Admin and CEO accounts see every department, so nothing is highlighted until they pick one
     if (roles.includes('ADMIN') || roles.includes('CEO')) return [];
-    return roles.filter((r) => r in DEPARTMENT_LABELS);
+    const own = roles.filter((r) => r in DEPARTMENT_LABELS);
+    // Shell Plan and Design share one workbook, so either role highlights both
+    if (own.includes('SHELLPLAN') || own.includes('DESIGN')) return [...new Set([...own, 'SHELLPLAN', 'DESIGN'])];
+    return own;
   });
 
   const toggle = (dept: string) =>

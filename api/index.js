@@ -2175,20 +2175,25 @@ function isUsableValue(val) {
   const s = String(val).trim();
   return s !== "" && !s.startsWith("#");
 }
+var LME_BASE_PRICE = 3060;
+var LME_USD_PER_1000 = 22.5;
+function lmeAdjustmentFor(rate) {
+  return rate >= 1e3 ? Math.round((rate - LME_BASE_PRICE) / 1e3 * LME_USD_PER_1000 * 1e6) / 1e6 : rate;
+}
 function resolveLmePricing(bdData) {
   const keyWhere = (test) => Object.keys(bdData).find((k) => test(k.toLowerCase().trim()));
   const lmeType = String(bdData[keyWhere((k) => k === "lme" || k.startsWith("lme ("))] ?? "").trim().toLowerCase();
   const lmeRate = bdData[keyWhere((k) => k.startsWith("lme rate"))];
   const rateIsNumber = isUsableValue(lmeRate) && !isNaN(Number(lmeRate));
   let computedAdjusted = null;
-  if (lmeType === "fixed") computedAdjusted = rateIsNumber ? Number(lmeRate) : 0;
+  if (lmeType === "fixed") computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : 0;
   else if (lmeType === "freeze") computedAdjusted = "Check";
-  else if (lmeType === "variable") computedAdjusted = rateIsNumber ? Number(lmeRate) : "Check";
+  else if (lmeType === "variable") computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : "Check";
   const col = (prefix) => bdData[keyWhere((k) => k.startsWith(prefix))];
   const bdAdjusted = col("lme adjusted");
   let lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
   const replacedCheck = String(lmeAdjusted ?? "").trim().toLowerCase() === "check" && rateIsNumber;
-  if (replacedCheck) lmeAdjusted = Number(lmeRate);
+  if (replacedCheck) lmeAdjusted = lmeAdjustmentFor(Number(lmeRate));
   const bdFinal = col("final selling price");
   if (isUsableValue(bdFinal) && !replacedCheck) return { lmeAdjusted, finalSellingPrice: bdFinal };
   const isNumber = (v) => isUsableValue(v) && !isNaN(Number(v));
@@ -2251,6 +2256,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
     }
   }
+  const designHasShellplan = (datasetMap["DESIGN" /* DESIGN */] || []).some(
+    (row) => Object.keys(row.data).some((k) => /^shell plan status/i.test(k.trim()))
+  );
+  if (designHasShellplan) datasetMap["SHELLPLAN" /* SHELLPLAN */] = datasetMap["DESIGN" /* DESIGN */];
   if (datasetMap["BD" /* BD */]) {
     datasetMap["BD" /* BD */] = datasetMap["BD" /* BD */].filter(
       (row) => Object.values(row.rawCells || {}).some((v) => v !== null && v !== void 0 && String(v).trim() !== "")
@@ -2511,6 +2520,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         break;
       }
     }
+    const streamInProjectNo = /^\d{6}$/.test(projectNo) && projectNo.slice(-1) !== "0" ? projectNo.slice(-1) : null;
+    if (streamInProjectNo) bdStream = streamInProjectNo;
     const bdFontColor = normalizeColor(bdRowItem.fontColor);
     const bdFillColor = normalizeFillColor(bdRowItem.fillColor);
     const outRow = {};
@@ -2531,6 +2542,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         outRow[mapping.target] = value;
       }
     }
+    if (streamInProjectNo) outRow["Stream"] = bdStream;
     const lmePricing = resolveLmePricing(bdData);
     outRow["LME Adjusted (USD)"] = lmePricing.lmeAdjusted;
     outRow["Final Selling Price (USD)"] = lmePricing.finalSellingPrice;
@@ -3057,10 +3069,14 @@ var DEPT_NAMES = {
   PRODUCTION: "Production",
   DISPATCH: "Dispatch"
 };
+function combinedDepartment(code) {
+  const upper = code.toUpperCase();
+  return upper === "SHELLPLAN" /* SHELLPLAN */ ? "DESIGN" /* DESIGN */ : upper;
+}
 async function getActiveDepartmentWorkbook(req, res) {
   try {
     const rawParam = (req.params.code || req.params.id || req.params.deptCode || "").trim();
-    const deptCode = rawParam.toUpperCase();
+    const deptCode = combinedDepartment(rawParam);
     const validRoleCodes = Object.keys(DEPT_NAMES);
     let dept = null;
     const dbVersion = validRoleCodes.includes(deptCode) ? await fetchActiveVersionForDepartment(deptCode) : null;
@@ -3123,7 +3139,7 @@ async function getActiveDepartmentWorkbook(req, res) {
 }
 async function uploadDepartmentWorkbook(req, res) {
   const rawParam = (req.params.code || req.params.id || "").trim();
-  const deptCode = rawParam.toUpperCase();
+  const deptCode = combinedDepartment(rawParam);
   const user = req.user;
   const file = req.file;
   if (!file) {
@@ -3132,7 +3148,8 @@ async function uploadDepartmentWorkbook(req, res) {
       error: { code: "FILE_REQUIRED", message: "No file uploaded" }
     });
   }
-  if (user && !user.roles.includes("ADMIN" /* ADMIN */) && !user.roles.includes(deptCode)) {
+  const allowedRoles = deptCode === "DESIGN" /* DESIGN */ ? ["DESIGN" /* DESIGN */, "SHELLPLAN" /* SHELLPLAN */] : [deptCode];
+  if (user && !user.roles.includes("ADMIN" /* ADMIN */) && !allowedRoles.some((r) => user.roles.includes(r))) {
     if (file.path && fs.existsSync(file.path)) {
       try {
         fs.unlinkSync(file.path);
@@ -3173,7 +3190,7 @@ async function uploadDepartmentWorkbook(req, res) {
 async function downloadOriginalFile(req, res) {
   try {
     const rawParam = (req.params.code || req.params.id || "").trim();
-    const deptCode = rawParam.toUpperCase();
+    const deptCode = combinedDepartment(rawParam);
     const dept = await prisma4.department.findFirst({
       where: {
         OR: [{ code: deptCode }, { id: rawParam }]

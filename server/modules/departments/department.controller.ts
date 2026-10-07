@@ -17,10 +17,17 @@ const DEPT_NAMES: Record<string, string> = {
 };
 
 // GET /api/departments/:code
+// Shell Plan and Design share one workbook ("Shell Plan & Design"), kept under DESIGN;
+// SHELLPLAN requests are served from it
+function combinedDepartment(code: string): RoleCode {
+  const upper = code.toUpperCase();
+  return (upper === RoleCode.SHELLPLAN ? RoleCode.DESIGN : upper) as RoleCode;
+}
+
 export async function getActiveDepartmentWorkbook(req: Request, res: Response) {
   try {
     const rawParam = (req.params.code || req.params.id || req.params.deptCode || '').trim();
-    const deptCode = rawParam.toUpperCase() as RoleCode;
+    const deptCode = combinedDepartment(rawParam);
     const validRoleCodes = Object.keys(DEPT_NAMES) as RoleCode[];
 
     let dept: any = null;
@@ -94,7 +101,7 @@ export async function getActiveDepartmentWorkbook(req: Request, res: Response) {
 // POST /api/departments/:code/upload
 export async function uploadDepartmentWorkbook(req: Request, res: Response) {
   const rawParam = (req.params.code || req.params.id || '').trim();
-  const deptCode = rawParam.toUpperCase() as RoleCode;
+  const deptCode = combinedDepartment(rawParam);
   const user = (req as any).user;
   const file = req.file;
 
@@ -105,7 +112,9 @@ export async function uploadDepartmentWorkbook(req: Request, res: Response) {
     });
   }
 
-  if (user && !user.roles.includes(RoleCode.ADMIN) && !user.roles.includes(deptCode)) {
+  // Shell Plan and Design users both upload the combined Shell Plan & Design workbook
+  const allowedRoles: RoleCode[] = deptCode === RoleCode.DESIGN ? [RoleCode.DESIGN, RoleCode.SHELLPLAN] : [deptCode];
+  if (user && !user.roles.includes(RoleCode.ADMIN) && !allowedRoles.some((r) => user.roles.includes(r))) {
     if (file.path && fs.existsSync(file.path)) {
       try { fs.unlinkSync(file.path); } catch {}
     }
@@ -148,7 +157,7 @@ export async function uploadDepartmentWorkbook(req: Request, res: Response) {
 export async function downloadOriginalFile(req: Request, res: Response) {
   try {
     const rawParam = (req.params.code || req.params.id || '').trim();
-    const deptCode = rawParam.toUpperCase() as RoleCode;
+    const deptCode = combinedDepartment(rawParam);
 
     const dept = await prisma.department.findFirst({
       where: {

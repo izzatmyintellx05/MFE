@@ -622,11 +622,20 @@ function isUsableValue(val: any): boolean {
  * LME Adjusted and Final Selling Price for a BD row. BD's own (cached) values are used
  * when present; when a formula has no saved result or returns an Excel error, the value
  * is worked out with the same rules as the BD workbook formulas:
- *   LME Adjusted = Fixed -> LME rate (0 if blank), Freeze -> "Check",
- *                  Variable -> LME rate (or "Check" if blank)
+ *   LME Adjusted = Fixed -> adjustment for the LME rate (0 if blank), Freeze -> "Check",
+ *                  Variable -> adjustment for the LME rate (or "Check" if blank)
  *   Final Selling Price = Selling Price + Props + Aluminium + Freight
  *                         + LME Adjusted when it is a number (a "Check" counts as 0)
+ * The LME rate is either the adjustment itself (a small figure, e.g. 10) or the aluminium
+ * market price in USD/t (e.g. 3107), which BD turns into (rate - 3060) / 1000 x 22.5.
  */
+const LME_BASE_PRICE = 3060; // USD/t the selling price already allows for
+const LME_USD_PER_1000 = 22.5; // USD per m2 for every USD 1,000/t above the base
+
+function lmeAdjustmentFor(rate: number): number {
+  return rate >= 1000 ? Math.round(((rate - LME_BASE_PRICE) / 1000) * LME_USD_PER_1000 * 1e6) / 1e6 : rate;
+}
+
 export function resolveLmePricing(bdData: Record<string, any>): {
   lmeAdjusted: number | string | null;
   finalSellingPrice: number | string | null;
@@ -640,9 +649,9 @@ export function resolveLmePricing(bdData: Record<string, any>): {
 
   const rateIsNumber = isUsableValue(lmeRate) && !isNaN(Number(lmeRate));
   let computedAdjusted: number | string | null = null;
-  if (lmeType === 'fixed') computedAdjusted = rateIsNumber ? Number(lmeRate) : 0;
+  if (lmeType === 'fixed') computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : 0;
   else if (lmeType === 'freeze') computedAdjusted = 'Check';
-  else if (lmeType === 'variable') computedAdjusted = rateIsNumber ? Number(lmeRate) : 'Check';
+  else if (lmeType === 'variable') computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : 'Check';
 
   // Strict lookups: a loose prefix match would take the "LME" column for "LME Adjusted"
   const col = (prefix: string) => bdData[keyWhere((k) => k.startsWith(prefix))!];
@@ -650,10 +659,10 @@ export function resolveLmePricing(bdData: Record<string, any>): {
   const bdAdjusted = col('lme adjusted');
   let lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
 
-  // A "Check" (Freeze, or Variable without a confirmed price) takes the same value as the
+  // A "Check" (Freeze, or Variable without a confirmed price) takes the adjustment for the
   // LME rate when one is entered, and the final price is then recalculated to include it
   const replacedCheck = String(lmeAdjusted ?? '').trim().toLowerCase() === 'check' && rateIsNumber;
-  if (replacedCheck) lmeAdjusted = Number(lmeRate);
+  if (replacedCheck) lmeAdjusted = lmeAdjustmentFor(Number(lmeRate));
 
   const bdFinal = col('final selling price');
   if (isUsableValue(bdFinal) && !replacedCheck) return { lmeAdjusted, finalSellingPrice: bdFinal };
@@ -733,6 +742,13 @@ export async function executeMr11Pipeline(
       }
     }
   }
+
+  // Shell Plan and Design share one workbook: when the Design file has the Shell Plan columns,
+  // its rows are the Shell Plan rows too (an older separate Shell Plan file is then ignored)
+  const designHasShellplan = (datasetMap[RoleCode.DESIGN] || []).some((row) =>
+    Object.keys(row.data).some((k) => /^shell plan status/i.test(k.trim()))
+  );
+  if (designHasShellplan) datasetMap[RoleCode.SHELLPLAN] = datasetMap[RoleCode.DESIGN];
 
   // A BD row only counts when one of its own cells holds a value: empty formatted rows
   // (e.g. merged blocks below the data) would otherwise inherit the project above them
@@ -1084,6 +1100,10 @@ export async function executeMr11Pipeline(
         break;
       }
     }
+    // A project number may carry the stream as an extra last digit (251242 = project 25124,
+    // stream 2), as the Shell Plan & Design file does; that digit then decides the stream
+    const streamInProjectNo = /^\d{6}$/.test(projectNo) && projectNo.slice(-1) !== '0' ? projectNo.slice(-1) : null;
+    if (streamInProjectNo) bdStream = streamInProjectNo;
 
     const bdFontColor = normalizeColor(bdRowItem.fontColor);
     const bdFillColor = normalizeFillColor(bdRowItem.fillColor);
@@ -1108,6 +1128,8 @@ export async function executeMr11Pipeline(
         outRow[mapping.target] = value;
       }
     }
+    // MR11 shows the stream the row was matched on
+    if (streamInProjectNo) outRow['Stream'] = bdStream;
     const lmePricing = resolveLmePricing(bdData);
     outRow['LME Adjusted (USD)'] = lmePricing.lmeAdjusted;
     outRow['Final Selling Price (USD)'] = lmePricing.finalSellingPrice;
