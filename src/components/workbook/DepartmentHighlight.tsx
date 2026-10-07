@@ -45,15 +45,19 @@ interface DepartmentLegendProps {
   departmentColors: Record<string, string>;
   active: string[];
   onToggle: (dept: string) => void;
+  /** Leave out the "Highlight columns:" label (when the surrounding section already says it) */
+  hideLabel?: boolean;
 }
 
 // Colour key for the department outlines; click a department to show or hide its columns
-export const DepartmentLegend: React.FC<DepartmentLegendProps> = ({ departmentColors, active, onToggle }) => {
+export const DepartmentLegend: React.FC<DepartmentLegendProps> = ({ departmentColors, active, onToggle, hideLabel }) => {
   const depts = Object.keys(departmentColors);
   if (depts.length === 0) return null;
   return (
     <div className="flex items-center flex-wrap gap-1.5">
-      <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mr-1">Highlight columns:</span>
+      {!hideLabel && (
+        <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mr-1">Highlight columns:</span>
+      )}
       {depts.map((dept) => {
         const color = departmentColors[dept];
         const on = active.includes(dept);
@@ -61,7 +65,7 @@ export const DepartmentLegend: React.FC<DepartmentLegendProps> = ({ departmentCo
           <button
             key={dept}
             onClick={() => onToggle(dept)}
-            title={`${on ? 'Hide' : 'Show'} ${DEPARTMENT_LABELS[dept] || dept} columns`}
+            title={`${on ? 'Stop highlighting' : 'Highlight'} ${DEPARTMENT_LABELS[dept] || dept} columns`}
             className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold border transition cursor-pointer"
             style={
               on

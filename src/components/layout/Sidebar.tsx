@@ -3,18 +3,16 @@ import { NavLink } from 'react-router-dom';
 import { useAuthStore } from '../../store/auth.store';
 import { BrandLogo } from '../common/BrandLogo';
 import { usePersistentState } from '../../utils/usePersistentState';
-import { 
-  FileSpreadsheet, 
-  LayoutDashboard, 
-  LogOut, 
+import {
+  FileSpreadsheet,
+  LayoutDashboard,
+  LogOut,
   ShieldCheck,
   PanelLeftClose,
   PanelLeftOpen,
   SlidersHorizontal,
-  LineChart
+  LineChart,
 } from 'lucide-react';
-
-
 
 const DEPARTMENT_LINKS = [
   { code: 'BD', label: 'Business Development', path: '/departments/BD', badge: 'BD' },
@@ -25,6 +23,53 @@ const DEPARTMENT_LINKS = [
   { code: 'PRODUCTION', label: 'Production', path: '/departments/PRODUCTION', badge: 'PR' },
   { code: 'DISPATCH', label: 'Dispatch', path: '/departments/DISPATCH', badge: 'DP' },
 ];
+
+type LinkTone = 'dark' | 'amber' | 'light';
+
+// One navigation link: icon and label when open, just the icon (with a tooltip) when collapsed
+const SideLink: React.FC<{
+  to: string;
+  label: string;
+  icon: React.ReactNode;
+  open: boolean;
+  tone?: LinkTone;
+  badge?: React.ReactNode;
+  collapsedBadge?: string;
+}> = ({ to, label, icon, open, tone = 'light', badge, collapsedBadge }) => {
+  const activeClass =
+    tone === 'dark'
+      ? 'bg-slate-900 text-white shadow-sm'
+      : tone === 'amber'
+      ? 'bg-amber-50 text-amber-900 ring-1 ring-amber-200'
+      : 'bg-slate-100 text-slate-950 ring-1 ring-slate-200';
+  return (
+    <NavLink
+      to={to}
+      title={open ? undefined : label}
+      className={({ isActive }) =>
+        `group relative flex items-center rounded-lg text-xs font-semibold tracking-tight transition-all ${
+          open ? 'gap-2.5 px-2.5 py-1.5' : 'justify-center w-9 h-9 mx-auto'
+        } ${isActive ? activeClass : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'}`
+      }
+    >
+      <span className="flex items-center justify-center w-4 h-4 flex-shrink-0">{icon}</span>
+      {open && <span className="truncate">{label}</span>}
+      {open && badge && <span className="ml-auto flex-shrink-0">{badge}</span>}
+      {!open && collapsedBadge && (
+        <span className="absolute -bottom-0.5 -right-0.5 text-[7px] font-mono font-bold leading-none px-0.5 rounded bg-white text-slate-400 ring-1 ring-slate-200">
+          {collapsedBadge}
+        </span>
+      )}
+    </NavLink>
+  );
+};
+
+const SectionLabel: React.FC<{ open: boolean; children: React.ReactNode }> = ({ open, children }) =>
+  open ? (
+    <div className="px-2.5 mb-1.5 text-[9px] font-bold uppercase tracking-[0.16em] text-slate-400">{children}</div>
+  ) : (
+    <div className="mx-auto mb-1.5 w-5 border-t border-slate-200" />
+  );
 
 export const Sidebar: React.FC = () => {
   const { user, token, logout, initAuth } = useAuthStore();
@@ -44,196 +89,123 @@ export const Sidebar: React.FC = () => {
     return user?.roles?.includes(dept.code) || (user as any)?.departmentRole === dept.code;
   });
 
+  const userName = user?.fullName || user?.name || 'Authorized User';
+  const userEmail = user?.email || 'user@mfeformwork.com';
+
   return (
     <aside
-      className={`relative z-40 flex flex-col h-full bg-white border-r border-slate-200/80 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] select-none flex-shrink-0 ${
-        isOpen ? 'w-64 shadow-[4px_0_24px_-4px_rgba(15,23,42,0.03)]' : 'w-[72px]'
+      className={`relative z-40 flex flex-col h-full bg-white border-r border-slate-200/80 transition-[width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] select-none flex-shrink-0 ${
+        isOpen ? 'w-56 shadow-[4px_0_24px_-4px_rgba(15,23,42,0.03)]' : 'w-14'
       }`}
     >
-      {/* Brand Header with Corporate Logo */}
-      <div className="h-20 px-3.5 border-b border-slate-100 flex items-center justify-between">
-        <div className="flex items-center overflow-hidden min-w-0">
-          {isOpen ? (
-            <BrandLogo size="md" showSubtitle={true} className="transition-opacity duration-200" />
-          ) : (
-            <div className="w-10 h-10 flex items-center justify-center p-1 rounded-lg bg-slate-50 border border-slate-200 shadow-sm">
-              <img
-                src="/doka-mfe-logo.png"
-                alt="MFE Doka Logo"
-                className="w-full h-full object-contain"
-                onError={(e) => {
-                  (e.target as HTMLElement).style.display = 'none';
-                }}
-              />
-            </div>
-          )}
-        </div>
-
+      {/* Brand header: logo and the collapse button when open, just the button when collapsed */}
+      <div
+        className={`border-b border-slate-100 flex items-center flex-shrink-0 ${
+          isOpen ? 'h-14 px-3 justify-between' : 'h-14 justify-center'
+        }`}
+      >
+        {isOpen && <BrandLogo size="sm" showSubtitle={true} className="min-w-0 overflow-hidden" />}
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100/80 rounded-lg transition-colors cursor-pointer flex-shrink-0 ml-1"
-          title={isOpen ? 'Collapse Navigation' : 'Expand Navigation'}
+          className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100/80 rounded-lg transition-colors cursor-pointer flex-shrink-0"
+          title={isOpen ? 'Collapse navigation' : 'Expand navigation'}
         >
           {isOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
         </button>
       </div>
 
-      {/* Navigation Links */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2.5 space-y-6">
+      {/* Navigation links */}
+      <nav className={`flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-4 ${isOpen ? 'px-2' : 'px-1'}`}>
         <div>
-          {isOpen && (
-            <div className="px-3 mb-2 text-[9px] font-bold uppercase tracking-[0.16em] text-slate-400">
-              Master System
-            </div>
-          )}
+          <SectionLabel open={isOpen}>Master System</SectionLabel>
           <div className="space-y-0.5">
-            <NavLink
+            <SideLink
               to="/mr11"
-              title={isOpen ? undefined : 'MR11 Master Schedule'}
-              className={({ isActive }) =>
-                `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
-                  isActive
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
-                }`
-              }
-            >
-              <div className="flex items-center justify-center w-5 h-5 flex-shrink-0">
-                <FileSpreadsheet className="w-4 h-4" />
-              </div>
-              <span className={`whitespace-nowrap transition-opacity duration-200 ${isOpen ? 'opacity-100' : 'opacity-0'}`}>
-                MR11 Master Schedule
-              </span>
-              {isOpen && (
-                <span className="ml-auto text-[8px] font-mono font-bold tracking-widest uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 border border-amber-300/40">
-                  Live
-                </span>
-              )}
-            </NavLink>
-
-            <NavLink
-                to="/ceo"
-                title={isOpen ? undefined : 'CEO Executive Hub'}
-                className={({ isActive }) =>
-                  `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
-                    isActive
-                      ? 'bg-slate-900 text-white shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
-                  }`
-                }
-              >
-                <div className="flex items-center justify-center w-5 h-5 flex-shrink-0">
-                  <LineChart className="w-4 h-4 text-amber-400" />
-                </div>
-                <span className={`whitespace-nowrap transition-opacity duration-200 ${isOpen ? 'opacity-100' : 'opacity-0'}`}>
-                  CEO Executive Hub
-                </span>
-                {isOpen && (
-                  <span className="ml-auto text-[8px] font-mono font-bold tracking-widest uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 border border-amber-300/40">
-                    C-Level
-                  </span>
-                )}
-              </NavLink>
-
+              label="MR11 Master Schedule"
+              icon={<FileSpreadsheet className="w-4 h-4" />}
+              open={isOpen}
+              tone="dark"
+            />
+            <SideLink
+              to="/ceo"
+              label="CEO Executive Hub"
+              icon={<LineChart className="w-4 h-4 text-amber-500" />}
+              open={isOpen}
+              tone="dark"
+            />
             {isAdmin && (
-              <NavLink
+              <SideLink
                 to="/admin"
-                title={isOpen ? undefined : 'Admin Permissions'}
-                className={({ isActive }) =>
-                  `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
-                    isActive
-                      ? 'bg-amber-50 text-amber-900 border border-amber-200/90 shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 border border-transparent'
-                  }`
-                }
-              >
-                <div className="flex items-center justify-center w-5 h-5 flex-shrink-0">
-                  <SlidersHorizontal className="w-4 h-4 text-amber-700" />
-                </div>
-                <span className={`whitespace-nowrap transition-opacity duration-200 ${isOpen ? 'opacity-100' : 'opacity-0'}`}>
-                  Admin Permissions
-                </span>
-              </NavLink>
+                label="Admin Permissions"
+                icon={<SlidersHorizontal className="w-4 h-4 text-amber-700" />}
+                open={isOpen}
+                tone="amber"
+              />
             )}
           </div>
         </div>
 
         <div>
-          {isOpen && (
-            <div className="px-3 mb-2 text-[9px] font-bold uppercase tracking-[0.16em] text-slate-400">
-              Authorized Departments
-            </div>
-          )}
+          <SectionLabel open={isOpen}>Departments</SectionLabel>
           <div className="space-y-0.5">
             {visibleDepartments.length === 0 ? (
-              <div className="px-3 py-2 text-[11px] text-slate-400 italic">
-                No department tabs assigned
-              </div>
+              isOpen && <div className="px-2.5 py-1.5 text-[11px] text-slate-400 italic">No department tabs assigned</div>
             ) : (
               visibleDepartments.map((dept) => (
-                <NavLink
+                <SideLink
                   key={dept.code}
                   to={dept.path}
-                  title={isOpen ? undefined : dept.label}
-                  className={({ isActive }) =>
-                    `group flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold tracking-tight transition-all ${
-                      isActive
-                        ? 'bg-slate-100 text-slate-950 font-bold border border-slate-200/90 shadow-sm'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 border border-transparent'
-                    }`
-                  }
-                >
-                  <div className="flex items-center justify-center w-5 h-5 flex-shrink-0">
-                    <LayoutDashboard className="w-4 h-4" />
-                  </div>
-                  <span className={`whitespace-nowrap transition-opacity duration-200 ${isOpen ? 'opacity-100' : 'opacity-0'}`}>
-                    {dept.label}
-                  </span>
-                  {isOpen && (
-                    <span className="ml-auto text-[9px] font-mono text-slate-400 group-hover:text-slate-600">
-                      {dept.badge}
-                    </span>
-                  )}
-                </NavLink>
+                  label={dept.label}
+                  icon={<LayoutDashboard className="w-4 h-4" />}
+                  open={isOpen}
+                  collapsedBadge={dept.badge}
+                  badge={<span className="text-[9px] font-mono text-slate-400 group-hover:text-slate-600">{dept.badge}</span>}
+                />
               ))
             )}
           </div>
         </div>
-      </div>
+      </nav>
 
-      {/* User Session Profile */}
-      <div className="p-3 border-t border-slate-100 bg-slate-50/40">
-        <div className="flex items-center gap-3 px-1 py-1">
-          <div className="w-7 h-7 rounded-lg bg-slate-200/70 flex items-center justify-center text-slate-700 flex-shrink-0">
-            <ShieldCheck className="w-3.5 h-3.5" />
+      {/* Signed-in user and sign out */}
+      <div className={`border-t border-slate-100 bg-slate-50/40 flex-shrink-0 ${isOpen ? 'p-2.5' : 'py-2.5 px-1'}`}>
+        {isOpen ? (
+          <div className="flex items-center gap-2.5 px-1">
+            <div className="w-7 h-7 rounded-lg bg-slate-200/70 flex items-center justify-center text-slate-700 flex-shrink-0">
+              <ShieldCheck className="w-3.5 h-3.5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-slate-900 truncate leading-tight">{userName}</p>
+              <p className="text-[10px] text-slate-400 font-mono truncate mt-0.5">{userEmail}</p>
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer flex-shrink-0"
+              title="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
-
-          <div
-            className={`min-w-0 transition-opacity duration-200 ${
-              isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
-            }`}
-          >
-            <p className="text-xs font-bold text-slate-900 truncate leading-tight">
-              {user?.fullName || user?.name || 'Authorized User'}
-            </p>
-            <p className="text-[10px] text-slate-400 font-mono truncate mt-0.5">
-              {user?.email || 'user@mfeformwork.com'}
-            </p>
+        ) : (
+          <div className="flex flex-col items-center gap-1.5">
+            <div
+              className="w-8 h-8 rounded-lg bg-slate-200/70 flex items-center justify-center text-slate-700"
+              title={`${userName}\n${userEmail}`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+              title="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={logout}
-          className={`mt-2 w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-semibold text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer ${
-            isOpen ? 'justify-start' : 'justify-center'
-          }`}
-          title="Sign Out"
-        >
-          <LogOut className="w-3.5 h-3.5 flex-shrink-0" />
-          {isOpen && <span>Sign Out</span>}
-        </button>
+        )}
       </div>
     </aside>
   );
