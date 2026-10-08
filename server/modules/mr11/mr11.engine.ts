@@ -1381,11 +1381,9 @@ export async function executeMr11Pipeline(
       return previousValue === current && /^\d{4}-\d{2}-\d{2}$/.test(previousDate) ? previousDate : uploadDateStr;
     };
 
-    // Formwork Sailed Date = the upload date on which Formwork Quantity Sailed (m2) last changed
-    outRow['Formwork Sailed Date'] = dateOfChange(totalSailed, 'Formwork Quantity Sailed (m2)', 'Formwork Sailed Date');
     // Local projects are delivered by road and never sail
     if (dispatchPart === 'LOCAL') {
-      for (const key of ['Formwork Quantity Sailed (m2)', 'Formwork Quantity Sailed m2', 'Formwork Quantity Sailed', 'Formwork Sailed Date']) {
+      for (const key of ['Formwork Quantity Sailed (m2)', 'Formwork Quantity Sailed m2', 'Formwork Quantity Sailed']) {
         outRow[key] = '-';
       }
     }
@@ -1393,6 +1391,11 @@ export async function executeMr11Pipeline(
     // Single dates for month grouping on the CEO dashboard: dispatched = when Total Dispatch
     // last changed, sailed = latest ATD
     outRow['_dispatchedDate'] = dateOfChange(totalDispatched, 'Total Dispatch', '_dispatchedDate');
+
+    // Dispatch Date: the Local file's latest day with a dispatch; the Overseas file has no
+    // dispatch days, so the upload date on which Total Dispatch last changed
+    outRow['Dispatch Date'] =
+      dispatchPart === 'LOCAL' ? latestOf(dispatchedByDate) : totalDispatched === null ? null : outRow['_dispatchedDate'];
     outRow['_atdDate'] = latestOf(atdByDate);
     outRow['_atdColor'] = null;
 

@@ -168,9 +168,9 @@ export const ORDERED_HEADER_LIST = [
 
   // --- Dispatch Columns ---
   'Total Dispatch',
-  'ETD/ATD',
+  'Dispatch Date',
   'Formwork Quantity Sailed (m2)',
-  'Formwork Sailed Date',
+  'ETD/ATD',
 
   // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
   'Jan-26',
@@ -266,11 +266,11 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   // Dispatch & ATD
   // Sum of "Cumulative Dispatched (Project)" over the BD row's Dispatch blocks
   { target: 'Total Dispatch', sourceDept: RoleCode.DISPATCH, sourceColumn: 'Cumulative Dispatched (Project)', type: 'number' },
+  // Local file: the latest day with a dispatch; Overseas file: the upload date on which Total Dispatch last changed
+  { target: 'Dispatch Date', sourceDept: RoleCode.DISPATCH, sourceColumn: 'daily date columns', type: 'date' },
+  { target: 'Formwork Quantity Sailed (m2)', sourceDept: RoleCode.DISPATCH, sourceColumn: 'Formwork Quantity Sailed (m2)', type: 'number' },
   // Each Dispatch row's latest ETD (ETA POL, Rev ETD .. Rev 7 ETD) and its ATD, with m2, one line each
   { target: 'ETD/ATD', sourceDept: RoleCode.DISPATCH, sourceColumn: 'ATD', type: 'string' },
-  { target: 'Formwork Quantity Sailed (m2)', sourceDept: RoleCode.DISPATCH, sourceColumn: 'Formwork Quantity Sailed (m2)', type: 'number' },
-  // The upload date on which Formwork Quantity Sailed (m2) last changed (not read from the file)
-  { target: 'Formwork Sailed Date', sourceDept: RoleCode.DISPATCH, sourceColumn: 'Formwork Quantity Sailed (m2)', type: 'date' },
 ];
 /** Highlight colour per department: a department user's MR11 columns glow in this colour. */
 export const MR11_DEPARTMENT_COLORS: Record<string, string> = {
