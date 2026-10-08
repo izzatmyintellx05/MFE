@@ -16,7 +16,7 @@ function dispatchStage(row: Record<string, any>): string {
   if (text === '-') return 'Not applicable (-)';
   const hasEtd = /^ETD:/m.test(text);
   const hasAtd = /^ATD:/m.test(text);
-  if (/^Dispatched:/m.test(text)) return 'Dispatched (local)';
+  if (/^Delivered:/m.test(text)) return 'Delivered (local)';
   if (hasAtd && hasEtd) return 'Partly sailed (ETD + ATD)';
   if (hasAtd) return 'Sailed (ATD)';
   if (hasEtd) return 'Awaiting departure (ETD)';

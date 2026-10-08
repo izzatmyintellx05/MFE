@@ -1375,10 +1375,10 @@ export async function executeMr11Pipeline(
     const etdText = formatDispatchDates(etdByDate);
     const atdText = formatDispatchDates(atdByDate);
     // A Local project never sails: the column lists its dispatch days instead
-    //   Dispatched: 3/12/2026 (500 m2), 1/12/2026 (600 m2)
+    //   Delivered: 3/12/2026 (500 m2), 1/12/2026 (600 m2)
     const dispatchedText = formatDispatchDates(dispatchedByDate);
     const etdAtd =
-      [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`, dispatchedText && `Dispatched: ${dispatchedText}`]
+      [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`, dispatchedText && `Delivered: ${dispatchedText}`]
         .filter(Boolean)
         .join('\n') || null;
     outRow['ETD/ATD'] = etdAtd;
