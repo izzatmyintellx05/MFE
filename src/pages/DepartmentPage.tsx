@@ -5,7 +5,8 @@ import { HighFidelityViewer } from '../components/workbook/HighFidelityViewer';
 import { ZoomControls } from '../components/common/ZoomControls';
 import { FullscreenButton } from '../components/common/FullscreenButton';
 import { usePersistentState } from '../utils/usePersistentState';
-import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock, History } from 'lucide-react';
+import { ApprovalHistoryTable } from '../components/workbook/ApprovalHistoryTable';
 
 const DEPARTMENT_NAMES: Record<string, string> = {
   BD: 'Business Development',
@@ -32,6 +33,10 @@ export const DepartmentPage: React.FC = () => {
   // Zoom is remembered in this browser; the sheet can be shown full screen
   const [zoom, setZoom] = usePersistentState<number>(`zoom.${deptCode}`, 100);
   const sheetRef = useRef<HTMLDivElement>(null);
+  // Shell Plan & Design only: the approval history table, shown or hidden (remembered)
+  const isShellplanDesign = deptCode === 'DESIGN';
+  const [showHistory, setShowHistory] = usePersistentState<boolean>('design.showApprovalHistory', true);
+  const [historyReload, setHistoryReload] = useState(0);
 
   const fetchDepartmentData = async () => {
     setLoading(true);
@@ -78,6 +83,7 @@ export const DepartmentPage: React.FC = () => {
     try {
       await api.post(`/departments/${deptCode}/upload`, formData);
       await fetchDepartmentData();
+      setHistoryReload((k) => k + 1);
     } catch (err: any) {
       setError(err.response?.data?.error?.message || err.message || 'File upload failed');
     } finally {
@@ -127,6 +133,20 @@ export const DepartmentPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
           <FullscreenButton target={sheetRef} />
+          {isShellplanDesign && (
+            <button
+              type="button"
+              onClick={() => setShowHistory(!showHistory)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 border rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer ${
+                showHistory ? 'bg-slate-900 text-amber-200 border-slate-900' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+              }`}
+              title={showHistory ? 'Hide the Shell Plan approval history' : 'Show the Shell Plan approval history'}
+              aria-pressed={showHistory}
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>Approval history</span>
+            </button>
+          )}
 
           <label className="luxury-btn-black flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">
             <Upload className={`w-3.5 h-3.5 ${uploading ? 'animate-spin' : ''}`} />
@@ -141,6 +161,13 @@ export const DepartmentPage: React.FC = () => {
           </label>
         </div>
       </div>
+
+      {/* Shell Plan approval history (Shell Plan & Design page only, can be hidden) */}
+      {isShellplanDesign && showHistory && (
+        <div className="luxury-deck bg-white rounded-xl mb-3 flex-shrink-0 h-64 overflow-hidden">
+          <ApprovalHistoryTable reloadKey={historyReload} />
+        </div>
+      )}
 
       {/* Error Alert */}
       {error && (

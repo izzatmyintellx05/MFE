@@ -162,9 +162,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                           key={cIdx}
                           rowSpan={streamSpan}
                           // A filled row's own cell shows the row's full fill colour; merged cells stay light grey
-                          className={`p-2 border-r border-stone-200 whitespace-nowrap text-center align-middle font-bold text-stone-900 ${
-                            rowBg ? '' : 'bg-stone-50/80'
-                          }`}
+                          className={`p-2 border-r border-stone-200 align-middle font-bold text-stone-900 ${
+                            String(row?.[h] ?? '').includes('\n') ? 'whitespace-pre text-left text-[11px]' : 'whitespace-nowrap text-center'
+                          } ${rowBg ? '' : 'bg-stone-50/80'}`}
                           style={{
                             ...(glowColor ? columnGlow(glowColor, rIdx + streamSpan >= records.length) : {}),
                             // An unmerged cell keeps its BD row's font colour

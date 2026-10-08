@@ -121,6 +121,37 @@ function closestFillGroup<T extends { fillColor?: string }>(rows: T[], fill: str
   return best;
 }
 
+// A project code is the 5-digit project number, optionally followed by the stream:
+// 251242 = project 25124 stream 2, 2512410 = project 25124 stream 10
+function splitProjectCode(code: any): { project: string; stream: string | null } {
+  const c = cleanStr(code);
+  if (/^\d{6,7}$/.test(c)) {
+    const stream = String(parseInt(c.slice(5), 10));
+    return { project: c.slice(0, 5), stream: stream === '0' || stream === 'NaN' ? null : stream };
+  }
+  return { project: c, stream: null };
+}
+
+// One entry of a stream's Shell Plan approval history
+export interface ApprovalEntry {
+  key: string;
+  status: string;
+  revision: string | null;
+  approvedDate: string | null;
+  submittedDate: string | null;
+  recordedOn: string;
+}
+
+// A stream's Shell Plan approval history, with the project it belongs to
+export interface ApprovalHistoryGroup {
+  projectNo: string | null;
+  shortName: string | null;
+  projectName: string | null;
+  stream: string;
+  fillColor: string;
+  entries: ApprovalEntry[];
+}
+
 // Identity of an MR11 row across runs (to compare with the previous MR11)
 function mr11RowKey(short: any, stream: any, font: any, fill: any, productType: any): string {
   return [cleanStr(short), normalizeStream(stream), normalizeColor(font), normalizeFillColor(fill), cleanStr(productType)].join('|');
@@ -1005,6 +1036,10 @@ export async function executeMr11Pipeline(
   // Previous MR11 rows, for Processed Date (kept while Total Processed doesn't change)
   const uploadDateStr = malaysiaDate();
   const previousRecordsByRow: Record<string, Record<string, any>[]> = {};
+  // Shell Plan approval history kept with each MR11, continued from the previous one
+  const approvalHistory: Record<string, ApprovalHistoryGroup> = JSON.parse(
+    JSON.stringify((previousRun?.sourceSnapshot as any)?.shellplanApprovalHistory || {})
+  );
   for (const r of (previousRun?.records as Record<string, any>[]) || []) {
     const k = mr11RowKey(r['Short Name'] || r['Project Shortname'], r['Stream'], r['_fontColor'], r['_fillColor'], r['Products type']);
     (previousRecordsByRow[k] ||= []).push(r);
@@ -1102,7 +1137,15 @@ export async function executeMr11Pipeline(
     }
     // A project number may carry the stream as an extra last digit (251242 = project 25124,
     // stream 2), as the Shell Plan & Design file does; that digit then decides the stream
-    const streamInProjectNo = /^\d{6}$/.test(projectNo) && projectNo.slice(-1) !== '0' ? projectNo.slice(-1) : null;
+    const streamInProjectNo = splitProjectCode(projectNo).stream;
+    // Same project code as another file's: a full code with the stream must match exactly,
+    // otherwise the 5-digit project number is compared
+    const codeMatches = (other: string): boolean => {
+      if (!projectNo || !other) return false;
+      const mine = splitProjectCode(projectNo);
+      const theirs = splitProjectCode(other);
+      return mine.stream && theirs.stream ? projectNo === other : mine.project === theirs.project;
+    };
     if (streamInProjectNo) bdStream = streamInProjectNo;
 
     const bdFontColor = normalizeColor(bdRowItem.fontColor);
@@ -1331,7 +1374,7 @@ export async function executeMr11Pipeline(
       }
 
       const idMatches =
-        (projectNo && dProjNo && (dProjNo === projectNo || dProjNo.includes(projectNo) || projectNo.includes(dProjNo))) ||
+        codeMatches(dProjNo) ||
         (projectName && dProjName && (dProjName === projectName || dProjName.includes(projectName) || projectName.includes(dProjName))) ||
         (shortName && dProjName && dProjName.includes(shortName));
 
@@ -1358,6 +1401,17 @@ export async function executeMr11Pipeline(
     const resolvedFormworkStatus = resolveConsolidatedDesignStatus(designStatuses.map(String));
     outRow['Formwork Design Status'] = resolvedFormworkStatus;
     outRow['design status'] = resolvedFormworkStatus;
+    // Where this stream's design stands (all levels completed / under way / not started); the
+    // project-level status (Fully / Partially Complete...) is worked out once every row is built
+    const doneLevels = designStatuses.filter((s) => /complete/i.test(String(s)) && !/not/i.test(String(s))).length;
+    outRow['_designState'] =
+      designStatuses.length === 0
+        ? 'none'
+        : doneLevels === designStatuses.length
+        ? 'completed'
+        : doneLevels > 0 || designStatuses.some((s) => /ongoing|progress/i.test(String(s)))
+        ? 'ongoing'
+        : 'tostart';
 
     const designDates = streamMatchedDesign
       .map((d) =>
@@ -1373,8 +1427,27 @@ export async function executeMr11Pipeline(
         latestDesignDate = fDate;
       }
     }
-    outRow['Actual Formwork Order Completion Date'] = latestDesignDate;
+    // Completion date per level ("Typical: 2026-11-04, Upper lv.10: 2026-11-05"); one date when
+    // every level has the same date
+    const dateByLevel = new Map<string, string>();
+    for (const d of streamMatchedDesign) {
+      const date = formatDateString(
+        findCellValue(d.data, 'Actual Formwork Order Completion Date') ||
+          findCellValue(d.data, 'Actual Completion Date') ||
+          findCellValue(d.data, 'Completion Date')
+      );
+      if (!date) continue;
+      const level = String(findCellValue(d.data, 'Level') ?? findCellValue(d.data, 'Building type') ?? '').trim() || 'Other';
+      const current = dateByLevel.get(level);
+      if (!current || date > current) dateByLevel.set(level, date);
+    }
+    const levelDates = [...dateByLevel.entries()];
+    outRow['Actual Formwork Order Completion Date'] =
+      levelDates.length > 1 && new Set(levelDates.map(([, d]) => d)).size > 1
+        ? levelDates.map(([level, d]) => `${level}: ${d}`).join(', ')
+        : latestDesignDate;
     outRow['latest design date'] = latestDesignDate;
+    outRow['_designDate'] = latestDesignDate;
 
     const holingStatuses = streamMatchedDesign
       .map((d) => 
@@ -1470,7 +1543,7 @@ export async function executeMr11Pipeline(
       }
 
       const idMatches =
-        (projectNo && spProjNo && (spProjNo === projectNo || spProjNo.includes(projectNo) || projectNo.includes(spProjNo))) ||
+        codeMatches(spProjNo) ||
         (projectName && spProjName && (spProjName === projectName || spProjName.includes(projectName) || projectName.includes(spProjName))) ||
         (shortName && spProjName && spProjName.includes(shortName));
 
@@ -1536,6 +1609,44 @@ export async function executeMr11Pipeline(
     }
     outRow['shellplan approval date'] = latestApprovedDateStr;
     outRow['Shell Plan Approved Date'] = latestApprovedDateStr;
+
+    // Approval history (shown on the Shell Plan & Design page): every Approved / Reapprove, with
+    // its revision and date, seen for this stream is kept from one MR11 to the next, with the
+    // date it was first seen
+    const historyKey = `${projectNo || shortName}|${bdStream}|${bdFillColor}`;
+    const historyGroup = (approvalHistory[historyKey] ||= {
+      projectNo: null,
+      shortName: null,
+      projectName: null,
+      stream: bdStream,
+      fillColor: bdFillColor,
+      entries: [],
+    });
+    historyGroup.projectNo = outRow['Project No'] != null ? String(outRow['Project No']) : historyGroup.projectNo;
+    historyGroup.shortName = outRow['Short Name'] ?? historyGroup.shortName;
+    historyGroup.projectName = outRow['Customer & Project Name'] ?? historyGroup.projectName;
+    const history = historyGroup.entries;
+    for (const sp of streamMatchedShellplan) {
+      const status = String(findCellValue(sp.data, 'Shell Plan Status') || findCellValue(sp.data, 'shellplan status') || '').trim();
+      if (!/approv/i.test(status)) continue;
+      const rawRevision = findCellValue(sp.data, 'Latest Revision') ?? findCellValue(sp.data, 'latest revision version');
+      let revision = isCellFilled(rawRevision) ? String(rawRevision).trim() : null;
+      // A revision number typed into a date-formatted cell reads as a date in early 1900
+      // (2 -> 1900-01-01); turn it back into the number
+      if (revision && /^1900-\d{2}-\d{2}/.test(revision)) {
+        revision = String(
+          Math.round(
+            (Date.UTC(1900, Number(revision.slice(5, 7)) - 1, Number(revision.slice(8, 10))) - Date.UTC(1899, 11, 30)) / 86400000
+          )
+        );
+      }
+      const approvedDate = formatDateString(findCellValue(sp.data, 'Shell Plan Approved Date') || findCellValue(sp.data, 'Approved Date'));
+      const submittedDate = formatDateString(findCellValue(sp.data, 'Latest Submission Date'));
+      const key = `${status.toLowerCase()}|${revision ?? ''}|${approvedDate ?? ''}`;
+      if (!history.some((h) => h.key === key)) {
+        history.push({ key, status, revision, approvedDate, submittedDate, recordedOn: uploadDateStr });
+      }
+    }
 
     // ------------------------------------------------------------------------
     // PLANNING MAPPINGS (Color & Fill Aware)
@@ -1658,6 +1769,32 @@ export async function executeMr11Pipeline(
   });
 
   // --------------------------------------------------------------------------
+  // Formwork Design Status for a project (per fill colour block): Fully Complete when every
+  // stream's design is completed, Partially Complete when at least one stream is, Ongoing when
+  // any is under way, otherwise To Start
+  const designStatesByProject = new Map<string, Map<string, string>>();
+  const projectKeyOf = (r: Record<string, any>) =>
+    `${splitProjectCode(r['Project No']).project || cleanStr(r['Short Name'])}|${normalizeFillColor(r['_fillColor'])}`;
+  for (const r of derivedMr11Rows) {
+    const streams = designStatesByProject.get(projectKeyOf(r)) || new Map<string, string>();
+    streams.set(normalizeStream(r['Stream']), r['_designState'] || 'none');
+    designStatesByProject.set(projectKeyOf(r), streams);
+  }
+  for (const r of derivedMr11Rows) {
+    const states = [...(designStatesByProject.get(projectKeyOf(r))?.values() || [])];
+    const completed = states.filter((s) => s === 'completed').length;
+    const status =
+      states.length > 0 && completed === states.length
+        ? 'Fully Complete'
+        : completed > 0
+        ? 'Partially Complete'
+        : states.includes('ongoing')
+        ? 'Ongoing'
+        : 'To Start';
+    r['Formwork Design Status'] = status;
+    r['design status'] = status;
+  }
+
   // 5. SORTING: PROJECT -> STREAM -> NO FILL BEFORE FILLED -> FILL COLOR -> FONT COLOR (BLACK FIRST)
   // --------------------------------------------------------------------------
   derivedMr11Rows.sort((a, b) => {
@@ -1748,6 +1885,7 @@ export async function executeMr11Pipeline(
       sourceSnapshot: {
         ...sourceSnapshot,
         dispatchTracker: newDispatchTracker,
+        shellplanApprovalHistory: approvalHistory,
       },
       recordCount: derivedMr11Rows.length,
       records: derivedMr11Rows as any,
@@ -1759,7 +1897,12 @@ export async function executeMr11Pipeline(
     try {
       await saveMr11RunToDb({
         id: run.id,
-        sourceSnapshot: { ...sourceSnapshot, dispatchTracker: newDispatchTracker, engineHistory: exportEngineHistory() },
+        sourceSnapshot: {
+          ...sourceSnapshot,
+          dispatchTracker: newDispatchTracker,
+          shellplanApprovalHistory: approvalHistory,
+          engineHistory: exportEngineHistory(),
+        },
         records: derivedMr11Rows,
       });
     } catch (mr11DbErr: any) {

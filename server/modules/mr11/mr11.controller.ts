@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import ExcelJS from 'exceljs';
-import { executeMr11Pipeline } from './mr11.engine';
+import { executeMr11Pipeline, ApprovalHistoryGroup } from './mr11.engine';
 import { getLatestMr11Run, hydrateActiveVersionsFromDb } from '../../db/supabase';
 import * as mr11ConfigModule from '../../config/mr11.config';
 import {
@@ -55,6 +55,39 @@ export async function triggerMr11Regenerate(req: Request, res: Response) {
     await hydrateActiveVersionsFromDb(prisma);
     const runId = await executeMr11Pipeline(prisma);
     return res.json({ success: true, message: 'MR11 regenerated', runId });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
+// Shell Plan approval history (every Approved / Reapprove with its revision), one row per
+// approval, newest first; kept with each MR11 and shown on the Shell Plan & Design page
+export async function getShellplanApprovalHistory(req: Request, res: Response) {
+  try {
+    const latestRun: any = await getLatestMr11Run(prisma);
+    const groups: Record<string, ApprovalHistoryGroup> = latestRun?.sourceSnapshot?.shellplanApprovalHistory || {};
+    const rows = Object.values(groups).flatMap((g) =>
+      (g.entries || []).map((e) => ({
+        projectNo: g.projectNo,
+        shortName: g.shortName,
+        projectName: g.projectName,
+        stream: g.stream,
+        fillColor: g.fillColor,
+        status: e.status,
+        revision: e.revision,
+        approvedDate: e.approvedDate,
+        submittedDate: e.submittedDate,
+        recordedOn: e.recordedOn,
+      }))
+    );
+    rows.sort(
+      (a, b) =>
+        String(b.recordedOn).localeCompare(String(a.recordedOn)) ||
+        String(b.approvedDate ?? '').localeCompare(String(a.approvedDate ?? '')) ||
+        String(a.shortName ?? '').localeCompare(String(b.shortName ?? '')) ||
+        String(a.stream).localeCompare(String(b.stream), undefined, { numeric: true })
+    );
+    return res.json({ success: true, data: rows });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }

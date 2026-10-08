@@ -29,7 +29,8 @@ export const STAGE_LABELS: Record<Stage, string> = {
 
 // MR11 quantity and date column for each pipeline stage
 const STAGE_COLUMNS: Record<Stage, { qty: string; date: string }> = {
-  design: { qty: 'Total Quantity Ordered m2', date: 'Actual Formwork Order Completion Date' },
+  // Completion dates may be listed per level; MR11 keeps the latest single date for months
+  design: { qty: 'Total Quantity Ordered m2', date: '_designDate' },
   processed: { qty: 'Total Processed', date: 'Processed Date' },
   produced: { qty: 'Total Produced', date: 'Produced Date' },
   // ETD/ATD lists several dates with their m2; MR11 keeps single dates for grouping by month

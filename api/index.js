@@ -1778,6 +1778,14 @@ function closestFillGroup(rows, fill) {
   }
   return best;
 }
+function splitProjectCode(code) {
+  const c = cleanStr(code);
+  if (/^\d{6,7}$/.test(c)) {
+    const stream = String(parseInt(c.slice(5), 10));
+    return { project: c.slice(0, 5), stream: stream === "0" || stream === "NaN" ? null : stream };
+  }
+  return { project: c, stream: null };
+}
 function mr11RowKey(short, stream, font, fill, productType) {
   return [cleanStr(short), normalizeStream(stream), normalizeColor(font), normalizeFillColor(fill), cleanStr(productType)].join("|");
 }
@@ -2446,6 +2454,9 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   });
   const uploadDateStr = malaysiaDate();
   const previousRecordsByRow = {};
+  const approvalHistory = JSON.parse(
+    JSON.stringify(previousRun?.sourceSnapshot?.shellplanApprovalHistory || {})
+  );
   for (const r of previousRun?.records || []) {
     const k = mr11RowKey(r["Short Name"] || r["Project Shortname"], r["Stream"], r["_fontColor"], r["_fillColor"], r["Products type"]);
     (previousRecordsByRow[k] ||= []).push(r);
@@ -2520,7 +2531,13 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         break;
       }
     }
-    const streamInProjectNo = /^\d{6}$/.test(projectNo) && projectNo.slice(-1) !== "0" ? projectNo.slice(-1) : null;
+    const streamInProjectNo = splitProjectCode(projectNo).stream;
+    const codeMatches = (other) => {
+      if (!projectNo || !other) return false;
+      const mine = splitProjectCode(projectNo);
+      const theirs = splitProjectCode(other);
+      return mine.stream && theirs.stream ? projectNo === other : mine.project === theirs.project;
+    };
     if (streamInProjectNo) bdStream = streamInProjectNo;
     const bdFontColor = normalizeColor(bdRowItem.fontColor);
     const bdFillColor = normalizeFillColor(bdRowItem.fillColor);
@@ -2684,7 +2701,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           break;
         }
       }
-      const idMatches = projectNo && dProjNo && (dProjNo === projectNo || dProjNo.includes(projectNo) || projectNo.includes(dProjNo)) || projectName && dProjName && (dProjName === projectName || dProjName.includes(projectName) || projectName.includes(dProjName)) || shortName && dProjName && dProjName.includes(shortName);
+      const idMatches = codeMatches(dProjNo) || projectName && dProjName && (dProjName === projectName || dProjName.includes(projectName) || projectName.includes(dProjName)) || shortName && dProjName && dProjName.includes(shortName);
       if (!idMatches) return false;
       if (dStream && dStream !== bdStream) {
         return false;
@@ -2698,6 +2715,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const resolvedFormworkStatus = resolveConsolidatedDesignStatus(designStatuses.map(String));
     outRow["Formwork Design Status"] = resolvedFormworkStatus;
     outRow["design status"] = resolvedFormworkStatus;
+    const doneLevels = designStatuses.filter((s) => /complete/i.test(String(s)) && !/not/i.test(String(s))).length;
+    outRow["_designState"] = designStatuses.length === 0 ? "none" : doneLevels === designStatuses.length ? "completed" : doneLevels > 0 || designStatuses.some((s) => /ongoing|progress/i.test(String(s))) ? "ongoing" : "tostart";
     const designDates = streamMatchedDesign.map(
       (d) => findCellValue(d.data, "Actual Formwork Order Completion Date") || findCellValue(d.data, "Actual Completion Date") || findCellValue(d.data, "Completion Date")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
@@ -2708,8 +2727,20 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         latestDesignDate = fDate;
       }
     }
-    outRow["Actual Formwork Order Completion Date"] = latestDesignDate;
+    const dateByLevel = /* @__PURE__ */ new Map();
+    for (const d of streamMatchedDesign) {
+      const date = formatDateString(
+        findCellValue(d.data, "Actual Formwork Order Completion Date") || findCellValue(d.data, "Actual Completion Date") || findCellValue(d.data, "Completion Date")
+      );
+      if (!date) continue;
+      const level = String(findCellValue(d.data, "Level") ?? findCellValue(d.data, "Building type") ?? "").trim() || "Other";
+      const current = dateByLevel.get(level);
+      if (!current || date > current) dateByLevel.set(level, date);
+    }
+    const levelDates = [...dateByLevel.entries()];
+    outRow["Actual Formwork Order Completion Date"] = levelDates.length > 1 && new Set(levelDates.map(([, d]) => d)).size > 1 ? levelDates.map(([level, d]) => `${level}: ${d}`).join(", ") : latestDesignDate;
     outRow["latest design date"] = latestDesignDate;
+    outRow["_designDate"] = latestDesignDate;
     const holingStatuses = streamMatchedDesign.map(
       (d) => findCellValue(d.data, "holing status (Completed/Not Completed/) -dropdown") || findCellValue(d.data, "holing status") || findCellValue(d.data, "Holing Status")
     ).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
@@ -2772,7 +2803,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           break;
         }
       }
-      const idMatches = projectNo && spProjNo && (spProjNo === projectNo || spProjNo.includes(projectNo) || projectNo.includes(spProjNo)) || projectName && spProjName && (spProjName === projectName || spProjName.includes(projectName) || projectName.includes(spProjName)) || shortName && spProjName && spProjName.includes(shortName);
+      const idMatches = codeMatches(spProjNo) || projectName && spProjName && (spProjName === projectName || spProjName.includes(projectName) || projectName.includes(spProjName)) || shortName && spProjName && spProjName.includes(shortName);
       if (!idMatches) return false;
       if (!spStream) {
         const building = cleanStr(findCellValue(spRow.data, "Building Name"));
@@ -2815,6 +2846,38 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     }
     outRow["shellplan approval date"] = latestApprovedDateStr;
     outRow["Shell Plan Approved Date"] = latestApprovedDateStr;
+    const historyKey = `${projectNo || shortName}|${bdStream}|${bdFillColor}`;
+    const historyGroup = approvalHistory[historyKey] ||= {
+      projectNo: null,
+      shortName: null,
+      projectName: null,
+      stream: bdStream,
+      fillColor: bdFillColor,
+      entries: []
+    };
+    historyGroup.projectNo = outRow["Project No"] != null ? String(outRow["Project No"]) : historyGroup.projectNo;
+    historyGroup.shortName = outRow["Short Name"] ?? historyGroup.shortName;
+    historyGroup.projectName = outRow["Customer & Project Name"] ?? historyGroup.projectName;
+    const history = historyGroup.entries;
+    for (const sp of streamMatchedShellplan) {
+      const status = String(findCellValue(sp.data, "Shell Plan Status") || findCellValue(sp.data, "shellplan status") || "").trim();
+      if (!/approv/i.test(status)) continue;
+      const rawRevision = findCellValue(sp.data, "Latest Revision") ?? findCellValue(sp.data, "latest revision version");
+      let revision = isCellFilled(rawRevision) ? String(rawRevision).trim() : null;
+      if (revision && /^1900-\d{2}-\d{2}/.test(revision)) {
+        revision = String(
+          Math.round(
+            (Date.UTC(1900, Number(revision.slice(5, 7)) - 1, Number(revision.slice(8, 10))) - Date.UTC(1899, 11, 30)) / 864e5
+          )
+        );
+      }
+      const approvedDate = formatDateString(findCellValue(sp.data, "Shell Plan Approved Date") || findCellValue(sp.data, "Approved Date"));
+      const submittedDate = formatDateString(findCellValue(sp.data, "Latest Submission Date"));
+      const key = `${status.toLowerCase()}|${revision ?? ""}|${approvedDate ?? ""}`;
+      if (!history.some((h) => h.key === key)) {
+        history.push({ key, status, revision, approvedDate, submittedDate, recordedOn: uploadDateStr });
+      }
+    }
     const sameProject = (otherNo, otherShort) => shortName && otherShort ? otherShort === shortName : Boolean(projectNo && otherNo === projectNo);
     const planningCandidates = planningRows.filter((p) => {
       const pNo = cleanStr(findCellValue(p.data, "Project No") || findCellValue(p.data, "Project No.") || findCellValue(p.data, "Project No. (from design column A)"));
@@ -2896,6 +2959,20 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["_fillColor"] = bdFillColor;
     return outRow;
   });
+  const designStatesByProject = /* @__PURE__ */ new Map();
+  const projectKeyOf = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
+  for (const r of derivedMr11Rows) {
+    const streams = designStatesByProject.get(projectKeyOf(r)) || /* @__PURE__ */ new Map();
+    streams.set(normalizeStream(r["Stream"]), r["_designState"] || "none");
+    designStatesByProject.set(projectKeyOf(r), streams);
+  }
+  for (const r of derivedMr11Rows) {
+    const states = [...designStatesByProject.get(projectKeyOf(r))?.values() || []];
+    const completed = states.filter((s) => s === "completed").length;
+    const status = states.length > 0 && completed === states.length ? "Fully Complete" : completed > 0 ? "Partially Complete" : states.includes("ongoing") ? "Ongoing" : "To Start";
+    r["Formwork Design Status"] = status;
+    r["design status"] = status;
+  }
   derivedMr11Rows.sort((a, b) => {
     const projA = getProjectIdentifier(a);
     const projB = getProjectIdentifier(b);
@@ -2948,7 +3025,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       status: "READY",
       sourceSnapshot: {
         ...sourceSnapshot,
-        dispatchTracker: newDispatchTracker
+        dispatchTracker: newDispatchTracker,
+        shellplanApprovalHistory: approvalHistory
       },
       recordCount: derivedMr11Rows.length,
       records: derivedMr11Rows
@@ -2958,7 +3036,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     try {
       await saveMr11RunToDb({
         id: run.id,
-        sourceSnapshot: { ...sourceSnapshot, dispatchTracker: newDispatchTracker, engineHistory: exportEngineHistory() },
+        sourceSnapshot: {
+          ...sourceSnapshot,
+          dispatchTracker: newDispatchTracker,
+          shellplanApprovalHistory: approvalHistory,
+          engineHistory: exportEngineHistory()
+        },
         records: derivedMr11Rows
       });
     } catch (mr11DbErr) {
@@ -3396,6 +3479,32 @@ async function triggerMr11Regenerate(req, res) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
 }
+async function getShellplanApprovalHistory(req, res) {
+  try {
+    const latestRun = await getLatestMr11Run(prisma5);
+    const groups = latestRun?.sourceSnapshot?.shellplanApprovalHistory || {};
+    const rows = Object.values(groups).flatMap(
+      (g2) => (g2.entries || []).map((e) => ({
+        projectNo: g2.projectNo,
+        shortName: g2.shortName,
+        projectName: g2.projectName,
+        stream: g2.stream,
+        fillColor: g2.fillColor,
+        status: e.status,
+        revision: e.revision,
+        approvedDate: e.approvedDate,
+        submittedDate: e.submittedDate,
+        recordedOn: e.recordedOn
+      }))
+    );
+    rows.sort(
+      (a, b) => String(b.recordedOn).localeCompare(String(a.recordedOn)) || String(b.approvedDate ?? "").localeCompare(String(a.approvedDate ?? "")) || String(a.shortName ?? "").localeCompare(String(b.shortName ?? "")) || String(a.stream).localeCompare(String(b.stream), void 0, { numeric: true })
+    );
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
 async function getPlanningSeriesHistory(req, res) {
   try {
     const data = await prisma5.planningSeriesHistory.findMany({
@@ -3533,6 +3642,7 @@ router3.post("/regenerate", triggerMr11Regenerate);
 router3.get("/export", exportMr11ToExcel);
 router3.get("/planning-series", getPlanningSeriesHistory);
 router3.get("/production-series", getProductionSeriesHistory);
+router3.get("/shellplan-history", getShellplanApprovalHistory);
 var mr11_routes_default = router3;
 
 // server/modules/admin/admin.routes.ts
