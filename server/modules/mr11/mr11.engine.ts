@@ -1242,19 +1242,8 @@ export async function executeMr11Pipeline(
     // ------------------------------------------------------------------------
     // DISPATCH MAPPINGS
     // ------------------------------------------------------------------------
-    // Which Dispatch file the project is in: Malaysia (BD "Countries") is Local, every other
-    // country Overseas. Until that file is uploaded, the other one is used.
-    const country = String(outRow['Countries'] ?? '').trim() || String(findCellValue(bdData, 'Customer & Project Name') ?? '').split(' - ')[0];
-    const homePart: DispatchPart = /^malaysia\b/i.test(country.trim()) ? 'LOCAL' : 'OVERSEAS';
-    const otherPart: DispatchPart = homePart === 'LOCAL' ? 'OVERSEAS' : 'LOCAL';
-    const dispatchPart: DispatchPart = dispatchHeadersByPart[homePart] || !dispatchHeadersByPart[otherPart] ? homePart : otherPart;
-    const dispatchHeaders: Record<number, string> = dispatchHeadersByPart[dispatchPart] || {};
-    outRow['_dispatchFile'] = dispatchPart === 'LOCAL' ? 'Local' : 'Overseas';
-
-    // The Dispatch blocks for this BD row: same file, project & stream, and the closest font and
-    // fill colour (Dispatch uses its own shades, e.g. #FF9933 for BD's #FF9900)
-    const dispatchCandidates = dispatchRows.filter((dRow) => {
-      if (dRow.dispatchPart !== dispatchPart) return false;
+    // Dispatch rows of this project & stream, in either file
+    const isThisProjectDispatch = (dRow: ExtractedRow): boolean => {
       const dShort = cleanStr(findCellValue(dRow.data, 'Short Name') || findCellValue(dRow.data, 'Project Shortname') || findCellValue(dRow.data, 'Project Shortname (from bd column C)'));
       const dNo = cleanStr(findCellValue(dRow.data, 'Project No') || findCellValue(dRow.data, 'Project No.'));
       const idMatches = shortName && dShort ? dShort === shortName : Boolean(projectNo && dNo === projectNo);
@@ -1268,7 +1257,32 @@ export async function executeMr11Pipeline(
         }
       }
       return dStream === bdStream;
-    });
+    };
+    const projectDispatchRows = dispatchRows.filter(isThisProjectDispatch);
+
+    // Which Dispatch file the project is in: the file that lists it. When both or neither do,
+    // by BD "Countries": Peninsular Malaysia is Local; Sabah, Sarawak, Labuan and every other
+    // country are Overseas. Until that file is uploaded, the other one is used.
+    const inLocal = projectDispatchRows.some((d) => d.dispatchPart === 'LOCAL');
+    const inOverseas = projectDispatchRows.some((d) => d.dispatchPart === 'OVERSEAS');
+    const country = String(outRow['Countries'] ?? '').trim() || String(findCellValue(bdData, 'Customer & Project Name') ?? '').split(' - ')[0];
+    const eastMalaysia = /sabah|sarawak|labuan/i.test(`${country} ${findCellValue(bdData, 'Customer & Project Name') ?? ''}`);
+    const homePart: DispatchPart = /^malaysia\b/i.test(country.trim()) && !eastMalaysia ? 'LOCAL' : 'OVERSEAS';
+    const otherPart: DispatchPart = homePart === 'LOCAL' ? 'OVERSEAS' : 'LOCAL';
+    const dispatchPart: DispatchPart =
+      inLocal !== inOverseas
+        ? inLocal
+          ? 'LOCAL'
+          : 'OVERSEAS'
+        : dispatchHeadersByPart[homePart] || !dispatchHeadersByPart[otherPart]
+          ? homePart
+          : otherPart;
+    const dispatchHeaders: Record<number, string> = dispatchHeadersByPart[dispatchPart] || {};
+    outRow['_dispatchFile'] = dispatchPart === 'LOCAL' ? 'Local' : 'Overseas';
+
+    // The Dispatch blocks for this BD row: same file, project & stream, and the closest font and
+    // fill colour (Dispatch uses its own shades, e.g. #FF9933 for BD's #FF9900)
+    const dispatchCandidates = projectDispatchRows.filter((dRow) => dRow.dispatchPart === dispatchPart);
     const dispatchMatches = closestColourGroup(dispatchCandidates, bdFontColor, bdFillColor);
 
     // A column's values summed over those blocks, each merged cell counted once
