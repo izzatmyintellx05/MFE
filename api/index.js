@@ -2728,17 +2728,26 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
     }
     const dateByLevel = /* @__PURE__ */ new Map();
+    const levelDone = /* @__PURE__ */ new Map();
+    const levelOf = (d) => String(findCellValue(d.data, "Level") ?? findCellValue(d.data, "Building type") ?? "").trim() || "Other";
+    for (const d of streamMatchedDesign) {
+      const status = String(findCellValue(d.data, "Formwork Design Status") || findCellValue(d.data, "Design Status") || "");
+      const done = /complete/i.test(status) && !/not/i.test(status);
+      levelDone.set(levelOf(d), (levelDone.get(levelOf(d)) ?? true) && done);
+    }
     for (const d of streamMatchedDesign) {
       const date = formatDateString(
         findCellValue(d.data, "Actual Formwork Order Completion Date") || findCellValue(d.data, "Actual Completion Date") || findCellValue(d.data, "Completion Date")
       );
       if (!date) continue;
-      const level = String(findCellValue(d.data, "Level") ?? findCellValue(d.data, "Building type") ?? "").trim() || "Other";
+      const level = levelOf(d);
       const current = dateByLevel.get(level);
       if (!current || date > current) dateByLevel.set(level, date);
     }
     const levelDates = [...dateByLevel.entries()];
-    outRow["Actual Formwork Order Completion Date"] = levelDates.length > 1 && new Set(levelDates.map(([, d]) => d)).size > 1 ? levelDates.map(([level, d]) => `${level}: ${d}`).join(", ") : latestDesignDate;
+    const splitByLevel = levelDates.length > 1 && new Set(levelDates.map(([, d]) => d)).size > 1;
+    outRow["Actual Formwork Order Completion Date"] = splitByLevel ? levelDates.map(([level, d]) => `${level}: ${d}`).join(", ") : latestDesignDate;
+    outRow["_designDateParts"] = splitByLevel ? levelDates.map(([level, date]) => ({ level, date, completed: levelDone.get(level) === true })) : latestDesignDate ? [{ level: null, date: latestDesignDate, completed: levelDone.size > 0 && [...levelDone.values()].every(Boolean) }] : [];
     outRow["latest design date"] = latestDesignDate;
     outRow["_designDate"] = latestDesignDate;
     const holingStatuses = streamMatchedDesign.map(
@@ -3016,6 +3025,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       derivedMr11Rows[i + j]["Shell Plan Approved Date"] = derivedMr11Rows[i]["Shell Plan Approved Date"];
       derivedMr11Rows[i + j]["Formwork Design Status"] = derivedMr11Rows[i]["Formwork Design Status"];
       derivedMr11Rows[i + j]["Actual Formwork Order Completion Date"] = derivedMr11Rows[i]["Actual Formwork Order Completion Date"];
+      derivedMr11Rows[i + j]["_designDateParts"] = derivedMr11Rows[i]["_designDateParts"];
       derivedMr11Rows[i + j]["Total Quantity Ordered m2"] = derivedMr11Rows[i]["Total Quantity Ordered m2"];
     }
     i += span;
@@ -3596,6 +3606,23 @@ async function exportMr11ToExcel(req, res) {
         });
       }
     });
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(/* @__PURE__ */ new Date());
+    const designDateCol = headers.indexOf("Actual Formwork Order Completion Date") + 1;
+    if (designDateCol > 0) {
+      records.forEach((row, i) => {
+        const parts = row["_designDateParts"] || [];
+        if (parts.length === 0) return;
+        const color = (p) => !p.completed ? "FFDC2626" : p.date <= today ? "FF166534" : "FFA16207";
+        const cell = worksheet.getCell(i + 3, designDateCol);
+        cell.value = {
+          richText: parts.flatMap((p, j) => [
+            ...j > 0 ? [{ text: ", " }] : [],
+            ...p.level ? [{ text: `${p.level}: `, font: { color: { argb: "FF57534E" } } }] : [],
+            { text: p.date, font: { bold: true, color: { argb: color(p) } } }
+          ])
+        };
+      });
+    }
     const STREAM_MERGE_COLS = [
       "Shell Plan Status - Pending Consultant Drawings",
       // Col AJ

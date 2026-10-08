@@ -1,4 +1,22 @@
 import React from 'react';
+import { DesignDatePart, designDateColor, todayInMalaysia } from '../../utils/designDates';
+
+const DESIGN_DATE_COLUMN = 'Actual Formwork Order Completion Date';
+
+// Completion dates coloured by status: dark green done, yellow done but ahead, red not done
+const DesignDates: React.FC<{ parts: DesignDatePart[]; today: string }> = ({ parts, today }) => (
+  <>
+    {parts.map((p, i) => (
+      <React.Fragment key={i}>
+        {i > 0 && ', '}
+        {p.level && <span className="font-normal text-stone-500">{p.level}: </span>}
+        <span style={{ color: designDateColor(p, today) }} className="font-bold">
+          {p.date}
+        </span>
+      </React.Fragment>
+    ))}
+  </>
+);
 
 const STREAM_MERGE_COLUMNS = [
   'Shell Plan Status - Pending Consultant Drawings',
@@ -60,6 +78,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
     const n = Number(v);
     return places !== undefined && String(v).trim() !== '' && !isNaN(n) ? n.toFixed(places) : String(v);
   };
+  const today = todayInMalaysia();
   const groupOf = (h: string) => headerGroups.find((g) => g.columns.some((c) => c.key === h));
   const subLabelOf = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
   const groupSpan = (idx: number) => {
@@ -171,7 +190,11 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                             ...(streamSpan === 1 && fontColor !== '#000000' ? { color: fontColor } : {}),
                           }}
                         >
-                          {cellText(h, row?.[h])}
+                          {h === DESIGN_DATE_COLUMN && Array.isArray(row?._designDateParts) && row._designDateParts.length > 0 ? (
+                            <DesignDates parts={row._designDateParts} today={today} />
+                          ) : (
+                            cellText(h, row?.[h])
+                          )}
                         </td>
                       );
                     }

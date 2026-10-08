@@ -203,6 +203,26 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       }
     });
 
+    // Completion dates coloured by status (dark green done, yellow done but ahead, red not done)
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+    const designDateCol = headers.indexOf('Actual Formwork Order Completion Date') + 1;
+    if (designDateCol > 0) {
+      records.forEach((row, i) => {
+        const parts: { level: string | null; date: string; completed: boolean }[] = row['_designDateParts'] || [];
+        if (parts.length === 0) return;
+        const color = (p: { date: string; completed: boolean }) =>
+          !p.completed ? 'FFDC2626' : p.date <= today ? 'FF166534' : 'FFA16207';
+        const cell = worksheet.getCell(i + 3, designDateCol);
+        cell.value = {
+          richText: parts.flatMap((p, j) => [
+            ...(j > 0 ? [{ text: ', ' }] : []),
+            ...(p.level ? [{ text: `${p.level}: `, font: { color: { argb: 'FF57534E' } } }] : []),
+            { text: p.date, font: { bold: true, color: { argb: color(p) } } },
+          ]),
+        };
+      });
+    }
+
     // Merged ONLY for ShellPlan and Design across the [Project, Stream] span
     const STREAM_MERGE_COLS = [
       'Shell Plan Status - Pending Consultant Drawings', // Col AJ
