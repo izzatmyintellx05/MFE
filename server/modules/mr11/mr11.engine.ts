@@ -329,7 +329,7 @@ function resolveConsolidatedShellplanStatus(statuses: string[]): string {
   return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
-// The date of a Local Dispatch day column, whose header is a date (an Excel day number such
+// The date of a daily column (Local Dispatch, Production), whose header is a date (an Excel day number such
 // as 46357, or text such as 2026-12-01 / 1/12/2026); null for any other column
 function dispatchDayOf(header: string): string | null {
   const h = String(header ?? '').trim();
@@ -1153,6 +1153,12 @@ export async function executeMr11Pipeline(
   const dispatchByMonth: Record<string, Record<string, number>> = JSON.parse(
     JSON.stringify((previousRun?.sourceSnapshot as any)?.dispatchByMonth || {})
   );
+  // Each Local MR11 row's m2 dispatched per month, from the Local file's daily columns. The
+  // Dispatch files are monthly (a new month's file starts with empty days), so the months
+  // that are no longer in the file are kept from here
+  const localDispatchByMonth: Record<string, Record<string, number>> = JSON.parse(
+    JSON.stringify((previousRun?.sourceSnapshot as any)?.localDispatchByMonth || {})
+  );
   // Shell Plan approval history kept with each MR11, continued from the previous one
   const approvalHistory: Record<string, ApprovalHistoryGroup> = JSON.parse(
     JSON.stringify((previousRun?.sourceSnapshot as any)?.shellplanApprovalHistory || {})
@@ -1492,8 +1498,14 @@ export async function executeMr11Pipeline(
 
     // Dispatch Date: the Local file's latest day with a dispatch; the Overseas file has no
     // dispatch days, so the upload date on which Total Dispatch last changed
+    // (a new month's Local file has no days filled yet: the date from before is kept)
+    const previousDispatchDate = /^\d{4}-\d{2}-\d{2}$/.test(String(previousRow?.['Dispatch Date'] ?? '')) ? previousRow!['Dispatch Date'] : null;
     outRow['Dispatch Date'] =
-      dispatchPart === 'LOCAL' ? latestOf(dispatchedByDate) : totalDispatched === null ? null : outRow['_dispatchedDate'];
+      dispatchPart === 'LOCAL'
+        ? latestOf(dispatchedByDate) ?? (totalDispatched !== null ? previousDispatchDate : null)
+        : totalDispatched === null
+          ? null
+          : outRow['_dispatchedDate'];
     outRow['_atdDate'] = latestOf(atdByDate);
     outRow['_atdColor'] = null;
 
@@ -1921,7 +1933,7 @@ export async function executeMr11Pipeline(
     // date (the daily columns, any month), across all of those blocks' rows
     let latestFilledDate: string | null = null;
     const dayColumns = Object.entries(productionHeaders)
-      .map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null }))
+      .map(([c, h]) => ({ c: Number(c), date: dispatchDayOf(h) }))
       .filter((d): d is { c: number; date: string } => Boolean(d.date));
     for (const pRow of productionMatches) {
       for (const { c, date } of dayColumns) {
@@ -1933,7 +1945,10 @@ export async function executeMr11Pipeline(
       }
     }
 
-    outRow['Produced Date'] = latestFilledDate;
+    // The Production file is monthly (a new month's file starts with empty days): until a day
+    // is filled in, the date from before is kept
+    const previousProducedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(previousRow?.['Produced Date'] ?? '')) ? previousRow!['Produced Date'] : null;
+    outRow['Produced Date'] = latestFilledDate ?? (producedTotal !== null ? previousProducedDate : null);
 
     // Blue-font BD rows only go as far as Planning: Production and Dispatch have no rows for
     // them, so their Production and Dispatch columns show "-"
@@ -1962,8 +1977,14 @@ export async function executeMr11Pipeline(
     const dispatchedInMonth: Record<string, number> = {};
     if (!isBlueColor(bdFontColor)) {
       if (dispatchPart === 'LOCAL') {
-        for (const { date } of localDayColumns) dispatchedInMonth[date.slice(0, 7)] ??= 0;
-        for (const [date, m2] of dispatchedByDate) dispatchedInMonth[date.slice(0, 7)] = (dispatchedInMonth[date.slice(0, 7)] || 0) + (m2 || 0);
+        const historyKey = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']);
+        const history = (localDispatchByMonth[historyKey] ||= {});
+        // The months the file has days for are read from it; earlier months are kept
+        const inFile: Record<string, number> = {};
+        for (const { date } of localDayColumns) inFile[date.slice(0, 7)] ??= 0;
+        for (const [date, m2] of dispatchedByDate) inFile[date.slice(0, 7)] = (inFile[date.slice(0, 7)] || 0) + (m2 || 0);
+        Object.assign(history, inFile);
+        Object.assign(dispatchedInMonth, history);
       } else {
         const historyKey = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']);
         const history = (dispatchByMonth[historyKey] ||= {});
@@ -2114,6 +2135,7 @@ export async function executeMr11Pipeline(
         ...sourceSnapshot,
         dispatchTracker: newDispatchTracker,
         dispatchByMonth,
+        localDispatchByMonth,
         shellplanApprovalHistory: approvalHistory,
       },
       recordCount: derivedMr11Rows.length,
@@ -2130,6 +2152,7 @@ export async function executeMr11Pipeline(
           ...sourceSnapshot,
           dispatchTracker: newDispatchTracker,
           dispatchByMonth,
+          localDispatchByMonth,
           shellplanApprovalHistory: approvalHistory,
           engineHistory: exportEngineHistory(),
         },
