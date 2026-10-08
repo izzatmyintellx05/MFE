@@ -744,6 +744,85 @@ function findCellValue(row: Record<string, any>, candidateHeader: string): any {
   return null;
 }
 
+/**
+ * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2).
+ *
+ * A row's m2 starts as BD's forecast. Design's Total Quantity Ordered (one value for every BD row
+ * of the same project, stream and fill colour, shared by their BD forecasts) replaces it when
+ * higher, or when lower once every level is completed. Total Processed then replaces that when
+ * higher, or when lower once every Planning row's Order Status is Completed. The difference goes
+ * to the current month first; a cut also takes from the months after it. A month that has ended
+ * shows the m2 dispatched in it instead (actual). A row without a BD forecast gets none from
+ * Design or Processed; only its ended months fill in with what was dispatched.
+ */
+function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string): void {
+  const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
+  const monthKeyOf = (label: string) => `20${label.slice(-2)}-${String(MONTH_LABELS.indexOf(label.slice(0, 3)) + 1).padStart(2, '0')}`;
+  const sum = (v: Record<string, number>) => labels.reduce((t, l) => t + (v[l] || 0), 0);
+
+  const groups = new Map<string, Record<string, any>[]>();
+  for (const row of rows) {
+    const input = row['_forecastInput'];
+    if (!input) continue;
+    if (!groups.has(input.designGroup)) groups.set(input.designGroup, []);
+    groups.get(input.designGroup)!.push(row);
+  }
+
+  for (const group of groups.values()) {
+    // Design's value for the block, shared by its rows in proportion to their BD forecasts
+    const { designQty, designDone } = group[0]['_forecastInput'];
+    const bdTotals = group.map((row) => sum(row['_forecastInput'].bdMonthValues));
+    const groupBd = bdTotals.reduce((t, v) => t + v, 0);
+    // Only a BD forecast is ever replaced: rows without one get no forecast from Design or Processed
+    const designApplies = designQty !== null && groupBd > 0 && (designQty > groupBd || designDone);
+
+    group.forEach((row, idx) => {
+      const input = row['_forecastInput'];
+      const values: Record<string, number> = { ...input.bdMonthValues };
+      let target: number | null = bdTotals[idx] > 0 ? bdTotals[idx] : null;
+      let source = 'BD';
+      if (designApplies && target !== null) {
+        target = (designQty * bdTotals[idx]) / groupBd;
+        source = 'Design';
+      }
+      if (target !== null && input.processed !== null && (input.processed > target || input.planningDone)) {
+        target = input.processed;
+        source = 'Processed';
+      }
+
+      let difference = target === null ? 0 : target - bdTotals[idx];
+      const openLabels = labels.filter((l) => monthKeyOf(l) >= currentMonth);
+      if (difference > 0 && openLabels.length > 0) {
+        values[openLabels[0]] += difference;
+      } else if (difference < 0) {
+        for (const l of openLabels) {
+          const cut = Math.min(values[l], -difference);
+          values[l] -= cut;
+          difference += cut;
+          if (difference >= 0) break;
+        }
+      }
+
+      for (const l of labels) {
+        const key = monthKeyOf(l);
+        if (key < currentMonth && input.dispatchedInMonth[key] !== undefined) values[l] = input.dispatchedInMonth[key];
+      }
+
+      let total2026 = 0;
+      let total2027 = 0;
+      for (const l of labels) {
+        row[l] = values[l] > 0 ? Number(values[l].toFixed(2)) : null;
+        if (l.endsWith('-26')) total2026 += values[l];
+        else total2027 += values[l];
+      }
+      row['Total 2026 m2'] = total2026 > 0 ? Number(total2026.toFixed(2)) : null;
+      row['Total 2027 m2'] = total2027 > 0 ? Number(total2027.toFixed(2)) : null;
+      row['_forecastSource'] = target === null ? null : source;
+      delete row['_forecastInput'];
+    });
+  }
+}
+
 export async function executeMr11Pipeline(
   prisma: PrismaClient,
   options: { persist?: boolean } = {}
@@ -1069,6 +1148,11 @@ export async function executeMr11Pipeline(
   // Previous MR11 rows, for Processed Date (kept while Total Processed doesn't change)
   const uploadDateStr = malaysiaDate();
   const previousRecordsByRow: Record<string, Record<string, any>[]> = {};
+  // Each MR11 row's Total Dispatch at the last upload of every month ("2026-10": 4000), for the
+  // m2 an Overseas project dispatched in a month (the Overseas file has no daily columns)
+  const dispatchByMonth: Record<string, Record<string, number>> = JSON.parse(
+    JSON.stringify((previousRun?.sourceSnapshot as any)?.dispatchByMonth || {})
+  );
   // Shell Plan approval history kept with each MR11, continued from the previous one
   const approvalHistory: Record<string, ApprovalHistoryGroup> = JSON.parse(
     JSON.stringify((previousRun?.sourceSnapshot as any)?.shellplanApprovalHistory || {})
@@ -1863,11 +1947,53 @@ export async function executeMr11Pipeline(
       outRow['_atdColor'] = null;
     }
 
+    // ------------------------------------------------------------------------
+    // MONTHLY FORECAST / ACTUAL: what each row brings; worked out once every row is built
+    // ------------------------------------------------------------------------
+    const bdMonthValues: Record<string, number> = {};
+    for (const label of [...MONTH_COLUMNS_26, ...MONTH_COLUMNS_27]) bdMonthValues[label] = monthValues[label] || 0;
+    const orderStatuses = planningMatches
+      .map((p) => findCellValue(p.data, 'Order Status'))
+      .filter((v) => v !== null && v !== undefined && String(v).trim() !== '');
+
+    // m2 dispatched in each month: Local from its daily columns; Overseas from how much Total
+    // Dispatch went up between the last uploads of that month and of the month before
+    const currentMonth = uploadDateStr.slice(0, 7);
+    const dispatchedInMonth: Record<string, number> = {};
+    if (!isBlueColor(bdFontColor)) {
+      if (dispatchPart === 'LOCAL') {
+        for (const { date } of localDayColumns) dispatchedInMonth[date.slice(0, 7)] ??= 0;
+        for (const [date, m2] of dispatchedByDate) dispatchedInMonth[date.slice(0, 7)] = (dispatchedInMonth[date.slice(0, 7)] || 0) + (m2 || 0);
+      } else {
+        const historyKey = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']);
+        const history = (dispatchByMonth[historyKey] ||= {});
+        if (totalDispatched !== null) history[currentMonth] = totalDispatched;
+        const months = Object.keys(history).sort();
+        for (let k = 1; k < months.length; k++) {
+          // A month without an upload shows nothing dispatched; the next upload's month counts it
+          dispatchedInMonth[months[k]] = Math.max(0, history[months[k]] - history[months[k - 1]]);
+        }
+      }
+    }
+    // Kept with the row for the Dispatch page's monthly dispatched table ("2026-10": 500)
+    outRow['_dispatchedByMonth'] = dispatchedInMonth;
+    outRow['_forecastInput'] = {
+      designGroup: `${cleanStr(shortName)}|${bdStream}|${bdFillColor}`,
+      bdMonthValues,
+      designQty: isCellFilled(outRow['Total Quantity Ordered m2']) ? parseNumeric(outRow['Total Quantity Ordered m2']) : null,
+      designDone: outRow['_designState'] === 'completed',
+      processed: processedTotal,
+      planningDone: orderStatuses.length > 0 && orderStatuses.every((v) => /complete/i.test(String(v)) && !/not/i.test(String(v))),
+      dispatchedInMonth,
+    };
+
     outRow['_fontColor'] = bdFontColor;
     outRow['_fillColor'] = bdFillColor;
 
     return outRow;
   });
+
+  applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7));
 
   // --------------------------------------------------------------------------
   // Formwork Design Status for a project (per fill colour block): Fully Complete when every
@@ -1987,6 +2113,7 @@ export async function executeMr11Pipeline(
       sourceSnapshot: {
         ...sourceSnapshot,
         dispatchTracker: newDispatchTracker,
+        dispatchByMonth,
         shellplanApprovalHistory: approvalHistory,
       },
       recordCount: derivedMr11Rows.length,
@@ -2002,6 +2129,7 @@ export async function executeMr11Pipeline(
         sourceSnapshot: {
           ...sourceSnapshot,
           dispatchTracker: newDispatchTracker,
+          dispatchByMonth,
           shellplanApprovalHistory: approvalHistory,
           engineHistory: exportEngineHistory(),
         },

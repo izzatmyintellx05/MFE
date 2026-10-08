@@ -93,6 +93,32 @@ export async function getShellplanApprovalHistory(req: Request, res: Response) {
   }
 }
 
+// m2 dispatched in each month, one row per MR11 row that has any (Dispatch page). Local rows
+// come from the Local file's daily columns; Overseas rows from how much Total Dispatch went up
+// between the last uploads of a month and of the month before (the current month so far).
+export async function getDispatchMonthly(req: Request, res: Response) {
+  try {
+    const latestRun: any = await getLatestMr11Run(prisma);
+    const records: Record<string, any>[] = Array.isArray(latestRun?.records) ? latestRun.records : [];
+    const rows = records
+      .filter((r) => Object.values(r._dispatchedByMonth || {}).some((v: any) => Number(v) > 0))
+      .map((r) => ({
+        shortName: r['Short Name'] ?? null,
+        projectNo: r['Project No.'] ?? r['Project No'] ?? null,
+        stream: String(r['Stream'] ?? ''),
+        productType: r['Products type'] ?? null,
+        file: r._dispatchFile ?? null,
+        fontColor: r._fontColor ?? null,
+        fillColor: r._fillColor ?? null,
+        totalDispatch: r['Total Dispatch'] ?? null,
+        months: r._dispatchedByMonth as Record<string, number>,
+      }));
+    return res.json({ success: true, data: rows });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
 export async function getPlanningSeriesHistory(req: Request, res: Response) {
   try {
     const data = await prisma.planningSeriesHistory.findMany({
@@ -148,7 +174,16 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     // their sub-labels below; every other column is merged across both rows.
     const groupOf = (h: string) => MR11_HEADER_GROUPS.find((g) => g.columns.some((c) => c.key === h));
     const subLabel = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
-    worksheet.addRow(headers.map((h) => groupOf(h)?.label ?? h));
+    // Month columns say whether they hold actuals (month ended) or the forecast
+    const currentMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date()).slice(0, 7);
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const headerText = (h: string) => {
+      const m = /^([A-Z][a-z]{2})-(\d{2})$/.exec(h);
+      if (!m || !MONTHS.includes(m[1])) return h;
+      const key = `20${m[2]}-${String(MONTHS.indexOf(m[1]) + 1).padStart(2, '0')}`;
+      return `${h}\n${key < currentMonth ? 'ACTUAL' : "F'CAST"}`;
+    };
+    worksheet.addRow(headers.map((h) => groupOf(h)?.label ?? headerText(h)));
     worksheet.addRow(headers.map((h) => (groupOf(h) ? subLabel(h) : h)));
 
     for (let c = 1; c <= headers.length; ) {

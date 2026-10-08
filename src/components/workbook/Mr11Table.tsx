@@ -1,5 +1,5 @@
 import React from 'react';
-import { DesignDatePart, designDateColor, todayInMalaysia } from '../../utils/designDates';
+import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 
 const DESIGN_DATE_COLUMN = 'Actual Formwork Order Completion Date';
 
@@ -118,6 +118,16 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                       style={highlightColumns[h] ? headerGlow(highlightColumns[h]) : undefined}
                     >
                       {h}
+                      {/* Month columns: ACTUAL once the month has ended, F'CAST until then */}
+                      {monthColumnKind(h, today) && (
+                        <div
+                          className={`mt-0.5 text-[9px] font-mono ${
+                            monthColumnKind(h, today) === 'ACTUAL' ? 'text-emerald-700' : 'text-amber-700'
+                          }`}
+                        >
+                          {monthColumnKind(h, today)}
+                        </div>
+                      )}
                     </th>
                   );
                 }

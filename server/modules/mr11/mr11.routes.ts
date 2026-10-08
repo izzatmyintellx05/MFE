@@ -6,6 +6,7 @@ import {
   getPlanningSeriesHistory,
   getProductionSeriesHistory,
   getShellplanApprovalHistory,
+  getDispatchMonthly,
 } from './mr11.controller';
 
 const router = Router();
@@ -16,5 +17,6 @@ router.get('/export', exportMr11ToExcel);
 router.get('/planning-series', getPlanningSeriesHistory);
 router.get('/production-series', getProductionSeriesHistory);
 router.get('/shellplan-history', getShellplanApprovalHistory);
+router.get('/dispatch-monthly', getDispatchMonthly);
 
 export default router;

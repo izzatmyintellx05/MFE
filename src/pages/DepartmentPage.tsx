@@ -5,8 +5,9 @@ import { HighFidelityViewer } from '../components/workbook/HighFidelityViewer';
 import { ZoomControls } from '../components/common/ZoomControls';
 import { FullscreenButton } from '../components/common/FullscreenButton';
 import { usePersistentState } from '../utils/usePersistentState';
-import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock, History } from 'lucide-react';
+import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock, History, CalendarDays } from 'lucide-react';
 import { ApprovalHistoryTable } from '../components/workbook/ApprovalHistoryTable';
+import { DispatchMonthlyTable } from '../components/workbook/DispatchMonthlyTable';
 
 const DEPARTMENT_NAMES: Record<string, string> = {
   BD: 'Business Development',
@@ -57,6 +58,7 @@ export const DepartmentPage: React.FC = () => {
   // Dispatch only: which of its two files is shown and uploaded (remembered)
   const isDispatch = deptCode === 'DISPATCH';
   const [dispatchPart, setDispatchPart] = usePersistentState<DispatchPart>('dispatch.part', 'LOCAL');
+  const [showMonthly, setShowMonthly] = usePersistentState<boolean>('dispatch.showMonthly', true);
 
   const fetchDepartmentData = async () => {
     setLoading(true);
@@ -218,6 +220,21 @@ export const DepartmentPage: React.FC = () => {
             </button>
           )}
 
+          {isDispatch && (
+            <button
+              type="button"
+              onClick={() => setShowMonthly(!showMonthly)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 border rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer ${
+                showMonthly ? 'bg-slate-900 text-amber-200 border-slate-900' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+              }`}
+              title={showMonthly ? 'Hide the m2 dispatched per month' : 'Show the m2 dispatched per month'}
+              aria-pressed={showMonthly}
+            >
+              <CalendarDays className="w-3.5 h-3.5" />
+              <span>Monthly dispatched</span>
+            </button>
+          )}
+
           <label className="luxury-btn-black flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">
             <Upload className={`w-3.5 h-3.5 ${uploading ? 'animate-spin' : ''}`} />
             {uploading ? 'Deploying...' : isDispatch ? `Upload ${dispatchPartLabel}` : 'Upload & Deploy'}
@@ -236,6 +253,13 @@ export const DepartmentPage: React.FC = () => {
       {isShellplanDesign && showHistory && (
         <div className="luxury-deck bg-white rounded-xl mb-3 flex-shrink-0 h-64 overflow-hidden">
           <ApprovalHistoryTable reloadKey={historyReload} />
+        </div>
+      )}
+
+      {/* Dispatch only: m2 dispatched per month (can be hidden) */}
+      {isDispatch && showMonthly && (
+        <div className="luxury-deck bg-white rounded-xl mb-3 flex-shrink-0 h-64 overflow-hidden">
+          <DispatchMonthlyTable reloadKey={historyReload} />
         </div>
       )}
 
