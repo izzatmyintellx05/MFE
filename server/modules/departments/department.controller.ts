@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { PrismaClient, RoleCode } from '@prisma/client';
-import { processAtomicWorkbookUpload } from './department.service';
+import { processAtomicWorkbookUpload, parseDispatchPart } from './department.service';
 import { fetchActiveVersionForDepartment, fetchActiveFileSummariesFromDb } from '../../db/supabase';
 import fs from 'fs';
 
@@ -125,6 +125,9 @@ export async function uploadDepartmentWorkbook(req: Request, res: Response) {
     // Pass either in-memory buffer (serverless-friendly) or file.path
     const inputContent = file.buffer || file.path;
 
+    // Dispatch: which of its two files this is (?part=local / overseas); guessed when not given
+    const dispatchPart = parseDispatchPart(req.query.part ?? req.body?.part);
+
     await processAtomicWorkbookUpload(
       prisma,
       deptCode,
@@ -132,7 +135,8 @@ export async function uploadDepartmentWorkbook(req: Request, res: Response) {
       file.originalname,
       file.mimetype,
       file.size,
-      user?.id
+      user?.id,
+      { dispatchPart }
     );
 
     // Clean up temporary disk file if one was written

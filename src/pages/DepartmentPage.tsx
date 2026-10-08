@@ -18,6 +18,23 @@ const DEPARTMENT_NAMES: Record<string, string> = {
   DISPATCH: 'Dispatch',
 };
 
+// Dispatch keeps two files: Local (Malaysia projects) and Overseas (every other country)
+type DispatchPart = 'LOCAL' | 'OVERSEAS';
+const DISPATCH_PARTS: { key: DispatchPart; label: string }[] = [
+  { key: 'LOCAL', label: 'Local' },
+  { key: 'OVERSEAS', label: 'Overseas' },
+];
+
+// A Dispatch file's sheets; a workbook saved before the split is the Overseas file
+function dispatchFileOf(parsed: any, part: DispatchPart, filename?: string): { sheets: any[]; originalFilename: string | null } {
+  if (parsed?.dispatchFiles) {
+    const f = parsed.dispatchFiles[part];
+    return { sheets: Array.isArray(f?.sheets) ? f.sheets : [], originalFilename: f?.originalFilename ?? null };
+  }
+  const sheets = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.sheets) ? parsed.sheets : [];
+  return part === 'OVERSEAS' ? { sheets, originalFilename: sheets.length ? filename ?? null : null } : { sheets: [], originalFilename: null };
+}
+
 export const DepartmentPage: React.FC = () => {
   const { code } = useParams<{ code: string }>();
   // Shell Plan and Design share one workbook, kept under DESIGN
@@ -37,6 +54,9 @@ export const DepartmentPage: React.FC = () => {
   const isShellplanDesign = deptCode === 'DESIGN';
   const [showHistory, setShowHistory] = usePersistentState<boolean>('design.showApprovalHistory', true);
   const [historyReload, setHistoryReload] = useState(0);
+  // Dispatch only: which of its two files is shown and uploaded (remembered)
+  const isDispatch = deptCode === 'DISPATCH';
+  const [dispatchPart, setDispatchPart] = usePersistentState<DispatchPart>('dispatch.part', 'LOCAL');
 
   const fetchDepartmentData = async () => {
     setLoading(true);
@@ -47,7 +67,9 @@ export const DepartmentPage: React.FC = () => {
       setDepartment(deptData);
 
       const parsed = deptData?.activeVersion?.parsedWorkbook;
-      if (Array.isArray(parsed)) {
+      if (isDispatch) {
+        setWorkbookData(dispatchFileOf(parsed, dispatchPart).sheets);
+      } else if (Array.isArray(parsed)) {
         setWorkbookData(parsed);
       } else if (parsed?.sheets && Array.isArray(parsed.sheets)) {
         setWorkbookData(parsed.sheets);
@@ -70,6 +92,21 @@ export const DepartmentPage: React.FC = () => {
     fetchDepartmentData();
   }, [deptCode]);
 
+  // Switching between the Local and Overseas files shows that file's sheets
+  useEffect(() => {
+    if (isDispatch && department) {
+      setWorkbookData(dispatchFileOf(department.activeVersion?.parsedWorkbook, dispatchPart).sheets);
+    }
+  }, [dispatchPart]);
+  const dispatchFiles = isDispatch
+    ? DISPATCH_PARTS.map((p) => ({
+        ...p,
+        originalFilename: dispatchFileOf(department?.activeVersion?.parsedWorkbook, p.key, department?.activeVersion?.originalFilename)
+          .originalFilename,
+      }))
+    : [];
+  const dispatchPartLabel = DISPATCH_PARTS.find((p) => p.key === dispatchPart)?.label ?? 'Local';
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -81,7 +118,8 @@ export const DepartmentPage: React.FC = () => {
     formData.append('file', file);
 
     try {
-      await api.post(`/departments/${deptCode}/upload`, formData);
+      // Dispatch: the file goes in as the Local or Overseas file, whichever is selected
+      await api.post(`/departments/${deptCode}/upload${isDispatch ? `?part=${dispatchPart.toLowerCase()}` : ''}`, formData);
       await fetchDepartmentData();
       setHistoryReload((k) => k + 1);
     } catch (err: any) {
@@ -114,7 +152,21 @@ export const DepartmentPage: React.FC = () => {
             )}
           </div>
           <p className="text-[11px] text-slate-400 font-normal mt-0.5">
-            {department?.activeVersion?.originalFilename ? (
+            {isDispatch ? (
+              <span>
+                {dispatchFiles.map((f, i) => (
+                  <React.Fragment key={f.key}>
+                    {i > 0 && <span> • </span>}
+                    {f.label}:{' '}
+                    {f.originalFilename ? (
+                      <strong className="text-slate-800 font-semibold font-mono">{f.originalFilename}</strong>
+                    ) : (
+                      <span className="italic">not uploaded</span>
+                    )}
+                  </React.Fragment>
+                ))}
+              </span>
+            ) : department?.activeVersion?.originalFilename ? (
               <span>
                 Active ledger:{' '}
                 <strong className="text-slate-800 font-semibold font-mono">
@@ -131,6 +183,24 @@ export const DepartmentPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {isDispatch && (
+            <div className="flex items-center p-0.5 bg-slate-100 border border-slate-200 rounded-lg" role="group" aria-label="Dispatch file">
+              {DISPATCH_PARTS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => setDispatchPart(p.key)}
+                  aria-pressed={dispatchPart === p.key}
+                  title={`Show and upload the ${p.label} Dispatch file`}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
+                    dispatchPart === p.key ? 'bg-slate-900 text-amber-200 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          )}
           <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
           <FullscreenButton target={sheetRef} />
           {isShellplanDesign && (
@@ -150,7 +220,7 @@ export const DepartmentPage: React.FC = () => {
 
           <label className="luxury-btn-black flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">
             <Upload className={`w-3.5 h-3.5 ${uploading ? 'animate-spin' : ''}`} />
-            {uploading ? 'Deploying...' : 'Upload & Deploy'}
+            {uploading ? 'Deploying...' : isDispatch ? `Upload ${dispatchPartLabel}` : 'Upload & Deploy'}
             <input
               type="file"
               accept=".xlsx"
@@ -198,9 +268,15 @@ export const DepartmentPage: React.FC = () => {
             <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center mb-2.5 text-slate-400">
               <FileSpreadsheet className="w-5 h-5" />
             </div>
-            <p className="text-xs font-bold text-slate-800 uppercase tracking-widest">No Active Ledger</p>
+            <p className="text-xs font-bold text-slate-800 uppercase tracking-widest">
+              {isDispatch ? `No ${dispatchPartLabel} file yet` : 'No Active Ledger'}
+            </p>
             <p className="text-[11px] text-slate-400 mt-0.5 max-w-sm text-center">
-              Upload an authorized Excel (.xlsx) file to initialize {deptDisplayName} data.
+              {isDispatch
+                ? `Upload the ${dispatchPartLabel} Dispatch file (.xlsx). ${
+                    dispatchPart === 'LOCAL' ? 'Malaysia projects' : 'Projects outside Malaysia'
+                  } are read from it in MR11.`
+                : `Upload an authorized Excel (.xlsx) file to initialize ${deptDisplayName} data.`}
             </p>
           </div>
         )}

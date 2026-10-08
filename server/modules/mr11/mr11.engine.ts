@@ -20,7 +20,13 @@ interface ExtractedRow {
   rawCells?: Record<number, any>;
   /** Headers whose value here is a copy from a merged cell above / to the left */
   mergedCopyHeaders?: string[];
+  /** Dispatch only: which Dispatch file the row came from */
+  dispatchPart?: DispatchPart;
 }
+
+// Dispatch keeps two files: Local (Malaysia) and Overseas (every other country)
+export type DispatchPart = 'LOCAL' | 'OVERSEAS';
+export const DISPATCH_PARTS: DispatchPart[] = ['LOCAL', 'OVERSEAS'];
 
 function parseNumeric(val: any): number {
   if (typeof val === 'number') return isNaN(val) ? 0 : val;
@@ -321,6 +327,20 @@ function resolveConsolidatedShellplanStatus(statuses: string[]): string {
 
   const first = statuses[0].trim();
   return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+// The date of a Local Dispatch day column, whose header is a date (an Excel day number such
+// as 46357, or text such as 2026-12-01 / 1/12/2026); null for any other column
+function dispatchDayOf(header: string): string | null {
+  const h = String(header ?? '').trim();
+  if (/^\d{5}(\.0+)?$/.test(h)) {
+    const serial = Number(h);
+    return serial > 40000 && serial < 60000 ? formatDateString(serial) : null;
+  }
+  if (/^\d{4}-\d{2}-\d{2}(T|$)/.test(h) || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(h)) {
+    return parseFlexibleDate(h) ? formatDateString(h) : null;
+  }
+  return null;
 }
 
 function isCellFilled(val: any): boolean {
@@ -742,7 +762,7 @@ export async function executeMr11Pipeline(
   const sourceSnapshot: Record<string, any> = {};
   const datasetMap: Partial<Record<RoleCode, ExtractedRow[]>> = {};
   let productionHeaders: Record<number, string> = {};
-  let dispatchHeaders: Record<number, string> = {};
+  const dispatchHeadersByPart: Partial<Record<DispatchPart, Record<number, string>>> = {};
   let bdMonthColumns: { header: string; label: string }[] = [];
   let detectedProdSeries = 0;
 
@@ -755,6 +775,22 @@ export async function executeMr11Pipeline(
         ? (rawWb as unknown as FortuneSheet[])
         : (((rawWb as any)?.sheets as unknown as FortuneSheet[]) || []);
 
+      // Dispatch's Local and Overseas files are kept together, each read with its own headers;
+      // a workbook saved before the split is the Overseas file
+      if (dept.code === RoleCode.DISPATCH) {
+        const files = (rawWb as any)?.dispatchFiles;
+        const dispatchRowsAll: ExtractedRow[] = [];
+        for (const part of DISPATCH_PARTS) {
+          const partSheets: FortuneSheet[] | undefined = files ? files[part]?.sheets : part === 'OVERSEAS' ? sheets : undefined;
+          if (!partSheets || partSheets.length === 0) continue;
+          const { rows, headers } = sheetToRecordsWithStyles(partSheets[0]);
+          dispatchHeadersByPart[part] = headers;
+          dispatchRowsAll.push(...rows.map((row) => ({ ...row, dispatchPart: part })));
+        }
+        datasetMap[RoleCode.DISPATCH] = dispatchRowsAll;
+        continue;
+      }
+
       if (sheets.length > 0) {
         const { rows, detectedSeries, headers } = sheetToRecordsWithStyles(sheets[0]);
         datasetMap[dept.code as RoleCode] = rows;
@@ -763,9 +799,6 @@ export async function executeMr11Pipeline(
           if (detectedSeries > 0) {
             detectedProdSeries = detectedSeries;
           }
-        }
-        if (dept.code === RoleCode.DISPATCH) {
-          dispatchHeaders = headers;
         }
         if (dept.code === RoleCode.BD) {
           bdMonthColumns = buildFinanceMonthColumns(headers);
@@ -1209,9 +1242,19 @@ export async function executeMr11Pipeline(
     // ------------------------------------------------------------------------
     // DISPATCH MAPPINGS
     // ------------------------------------------------------------------------
-    // The Dispatch blocks for this BD row: same project & stream, and the closest font and fill
-    // colour (Dispatch uses its own shades, e.g. #FF9933 for BD's #FF9900)
+    // Which Dispatch file the project is in: Malaysia (BD "Countries") is Local, every other
+    // country Overseas. Until that file is uploaded, the other one is used.
+    const country = String(outRow['Countries'] ?? '').trim() || String(findCellValue(bdData, 'Customer & Project Name') ?? '').split(' - ')[0];
+    const homePart: DispatchPart = /^malaysia\b/i.test(country.trim()) ? 'LOCAL' : 'OVERSEAS';
+    const otherPart: DispatchPart = homePart === 'LOCAL' ? 'OVERSEAS' : 'LOCAL';
+    const dispatchPart: DispatchPart = dispatchHeadersByPart[homePart] || !dispatchHeadersByPart[otherPart] ? homePart : otherPart;
+    const dispatchHeaders: Record<number, string> = dispatchHeadersByPart[dispatchPart] || {};
+    outRow['_dispatchFile'] = dispatchPart === 'LOCAL' ? 'Local' : 'Overseas';
+
+    // The Dispatch blocks for this BD row: same file, project & stream, and the closest font and
+    // fill colour (Dispatch uses its own shades, e.g. #FF9933 for BD's #FF9900)
     const dispatchCandidates = dispatchRows.filter((dRow) => {
+      if (dRow.dispatchPart !== dispatchPart) return false;
       const dShort = cleanStr(findCellValue(dRow.data, 'Short Name') || findCellValue(dRow.data, 'Project Shortname') || findCellValue(dRow.data, 'Project Shortname (from bd column C)'));
       const dNo = cleanStr(findCellValue(dRow.data, 'Project No') || findCellValue(dRow.data, 'Project No.'));
       const idMatches = shortName && dShort ? dShort === shortName : Boolean(projectNo && dNo === projectNo);
@@ -1268,8 +1311,14 @@ export async function executeMr11Pipeline(
       return latest;
     };
 
+    // Local file: one column per day (header 1/12/2026), holding the m2 dispatched that day
+    const localDayColumns = Object.entries(dispatchHeaders)
+      .map(([c, h]) => ({ c: Number(c), h, date: dispatchDayOf(h) }))
+      .filter((d): d is { c: number; h: string; date: string } => d.date !== null);
+
     const etdByDate = new Map<string, number | null>();
     const atdByDate = new Map<string, number | null>();
+    const dispatchedByDate = new Map<string, number | null>();
     const addDate = (byDate: Map<string, number | null>, date: string, m2: number | null) => {
       const current = byDate.has(date) ? byDate.get(date)! : null;
       byDate.set(date, m2 === null ? current : (current ?? 0) + m2);
@@ -1280,6 +1329,13 @@ export async function executeMr11Pipeline(
         areaKey && !dRow.mergedCopyHeaders?.includes(areaKey) && isCellFilled(dRow.data[areaKey])
           ? parseNumeric(dRow.data[areaKey])
           : null;
+      if (dispatchPart === 'LOCAL') {
+        for (const { c, h, date } of localDayColumns) {
+          const v = dRow.rawCells?.[c] ?? dRow.data[h];
+          if (!dRow.mergedCopyHeaders?.includes(h) && isCellFilled(v)) addDate(dispatchedByDate, date, parseNumeric(v));
+        }
+        continue;
+      }
       const atd = latestDateIn(dRow, atdColumns);
       const etd = latestDateIn(dRow, etdColumns);
       if (atd) addDate(atdByDate, atd, m2);
@@ -1304,7 +1360,13 @@ export async function executeMr11Pipeline(
     //   ATD: 9/11/2026 (300 m2)
     const etdText = formatDispatchDates(etdByDate);
     const atdText = formatDispatchDates(atdByDate);
-    const etdAtd = [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`].filter(Boolean).join('\n') || null;
+    // A Local project never sails: the column lists its dispatch days instead
+    //   Dispatched: 3/12/2026 (500 m2), 1/12/2026 (600 m2)
+    const dispatchedText = formatDispatchDates(dispatchedByDate);
+    const etdAtd =
+      [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`, dispatchedText && `Dispatched: ${dispatchedText}`]
+        .filter(Boolean)
+        .join('\n') || null;
     outRow['ETD/ATD'] = etdAtd;
 
     // The previous MR11's version of this row (for dates kept while a total is unchanged)
@@ -1321,6 +1383,12 @@ export async function executeMr11Pipeline(
 
     // Formwork Sailed Date = the upload date on which Formwork Quantity Sailed (m2) last changed
     outRow['Formwork Sailed Date'] = dateOfChange(totalSailed, 'Formwork Quantity Sailed (m2)', 'Formwork Sailed Date');
+    // Local projects are delivered by road and never sail
+    if (dispatchPart === 'LOCAL') {
+      for (const key of ['Formwork Quantity Sailed (m2)', 'Formwork Quantity Sailed m2', 'Formwork Quantity Sailed', 'Formwork Sailed Date']) {
+        outRow[key] = '-';
+      }
+    }
 
     // Single dates for month grouping on the CEO dashboard: dispatched = when Total Dispatch
     // last changed, sailed = latest ATD

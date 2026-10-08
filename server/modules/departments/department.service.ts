@@ -1,7 +1,7 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
 import { parseAndNormalizeWorkbook } from '../../utils/excel-normalizer';
-import { executeMr11Pipeline } from '../mr11/mr11.engine';
-import { hydrateActiveVersionsFromDb, saveFileVersionToDb } from '../../db/supabase';
+import { executeMr11Pipeline, DispatchPart, DISPATCH_PARTS } from '../mr11/mr11.engine';
+import { hydrateActiveVersionsFromDb, saveFileVersionToDb, fetchActiveVersionForDepartment } from '../../db/supabase';
 
 const prisma = new PrismaClient();
 
@@ -270,6 +270,68 @@ export function aggregateDesignForMR11(records: any[]) {
   return rolledUp;
 }
 
+export const DISPATCH_PART_LABELS: Record<DispatchPart, string> = { LOCAL: 'Local', OVERSEAS: 'Overseas' };
+
+/** "local" / "overseas" (any case) as a Dispatch file, or null. */
+export function parseDispatchPart(value: any): DispatchPart | null {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (v.startsWith('local')) return 'LOCAL';
+  if (v.startsWith('oversea')) return 'OVERSEAS';
+  return null;
+}
+
+/**
+ * Which Dispatch file an upload is when the uploader did not say: by its name, otherwise by its
+ * columns (the Overseas file has ETD / ATD shipping columns, the Local file daily columns).
+ */
+function detectDispatchPart(filename: string, sheets: any[]): DispatchPart {
+  const byName = /oversea|export/i.test(filename) ? 'OVERSEAS' : /local/i.test(filename) ? 'LOCAL' : null;
+  if (byName) return byName;
+  const headerTexts = (sheets?.[0]?.celldata || [])
+    .filter((cell: any) => cell.r === 0)
+    .map((cell: any) => String(cell.v?.v ?? cell.v?.m ?? '').trim());
+  return headerTexts.some((h: string) => /^(atd|eta pol)$|\betd\b/i.test(h)) ? 'OVERSEAS' : 'LOCAL';
+}
+
+/**
+ * Dispatch keeps its Local and Overseas files together in one workbook version: an upload
+ * replaces only its own file and keeps the other. A version saved before the split is the
+ * Overseas file.
+ */
+async function combineDispatchFiles(
+  prisma: PrismaClient,
+  deptId: string,
+  part: DispatchPart,
+  sheets: any[],
+  originalFilename: string
+): Promise<{ parsedWorkbook: any; originalFilename: string }> {
+  let previous: any = await fetchActiveVersionForDepartment(RoleCode.DISPATCH);
+  if (!previous) {
+    const dept: any = await prisma.department.findUnique({ where: { id: deptId }, include: { activeVersion: true } } as any);
+    previous = dept?.activeVersion ?? null;
+  }
+  const prevWb = previous?.parsedWorkbook;
+  const prevSheets = Array.isArray(prevWb) ? prevWb : Array.isArray(prevWb?.sheets) ? prevWb.sheets : [];
+  const files: Record<string, any> = prevWb?.dispatchFiles
+    ? { ...prevWb.dispatchFiles }
+    : prevSheets.length > 0
+      ? { OVERSEAS: { originalFilename: previous.originalFilename, uploadedAt: previous.uploadedAt ?? null, sheets: prevSheets } }
+      : {};
+  files[part] = { originalFilename, uploadedAt: new Date().toISOString(), sheets };
+
+  const present = DISPATCH_PARTS.filter((p) => files[p]?.sheets?.length);
+  return {
+    parsedWorkbook: {
+      // Every sheet, named by its file, for anything that reads a plain list of sheets
+      sheets: present.flatMap((p) =>
+        files[p].sheets.map((sheet: any) => ({ ...sheet, name: `${DISPATCH_PART_LABELS[p]} - ${sheet.name}` }))
+      ),
+      dispatchFiles: files,
+    },
+    originalFilename: present.map((p) => `${DISPATCH_PART_LABELS[p]}: ${files[p].originalFilename}`).join(' | '),
+  };
+}
+
 /**
  * 4. STORE AN UPLOADED DEPARTMENT WORKBOOK AS THE ACTIVE VERSION
  * Parses the file, saves it as a new FileVersion, and regenerates the MR11 master.
@@ -282,10 +344,11 @@ export async function processAtomicWorkbookUpload(
   mimeType: string,
   fileSize: number,
   userId?: string,
-  options: { persist?: boolean; regenerate?: boolean } = {}
+  options: { persist?: boolean; regenerate?: boolean; dispatchPart?: DispatchPart | null } = {}
 ) {
   const { persist = true, regenerate = true } = options;
-  const parsedWorkbook = await parseAndNormalizeWorkbook(filePathOrBuffer);
+  let parsedWorkbook: any = await parseAndNormalizeWorkbook(filePathOrBuffer);
+  const uploadedFilename = originalFilename;
 
   let dept = await prisma.department.findUnique({
     where: { code: deptCode },
@@ -312,8 +375,14 @@ export async function processAtomicWorkbookUpload(
     validUserId = adminUser ? adminUser.id : null;
   }
 
+  // Dispatch: the upload is its Local or Overseas file, kept beside the other one
+  if (deptCode === RoleCode.DISPATCH) {
+    const part = options.dispatchPart ?? detectDispatchPart(originalFilename, parsedWorkbook);
+    ({ parsedWorkbook, originalFilename } = await combineDispatchFiles(prisma, dept.id, part, parsedWorkbook, originalFilename));
+  }
+
   const storageKey = Buffer.isBuffer(filePathOrBuffer)
-    ? `buffer://${originalFilename}`
+    ? `buffer://${uploadedFilename}`
     : filePathOrBuffer;
 
   const newVersion = await prisma.fileVersion.create({
