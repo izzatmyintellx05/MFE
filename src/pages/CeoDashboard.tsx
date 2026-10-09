@@ -50,6 +50,10 @@ import {
   monthlySeries,
   regionOf,
   stageTotals,
+  MONTH_STAGES,
+  MONTH_STAGE_LABELS,
+  MonthStage,
+  monthPipeline,
 } from '../utils/ceoMetrics';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Filler, Title, Tooltip, Legend);
@@ -72,6 +76,14 @@ const STAGE_COLORS: Record<Stage, string> = {
   produced: '#38BDF8',
   dispatched: '#FFDA00', // Doka Yellow
   sailed: '#10B981',
+};
+
+const MONTH_STAGE_COLORS: Record<MonthStage, string> = {
+  bd: '#94A3B8',
+  design: STAGE_COLORS.design,
+  processed: STAGE_COLORS.processed,
+  produced: STAGE_COLORS.produced,
+  dispatched: STAGE_COLORS.dispatched,
 };
 
 const REGION_COLORS: Record<string, string> = {
@@ -249,6 +261,11 @@ export const CeoDashboard: React.FC = () => {
 
   const regionRows = useMemo(() => filterByRegion(records, region), [records, region]);
   const totals = useMemo(() => stageTotals(regionRows, monthKey), [regionRows, monthKey]);
+  // One month selected: its own pipeline (forecast by stage, then produced and dispatched)
+  const pipeline = useMemo(
+    () => (selectedMonth ? monthPipeline(regionRows, selectedMonth, today) : null),
+    [regionRows, selectedMonth, today]
+  );
   const series = useMemo(() => monthlySeries(regionRows, months, today), [regionRows, months, today]);
   const selectedPoint = selectedMonth ? series.find((p) => p.key === selectedMonth.key) || null : null;
   const projectCount = useMemo(() => firstRowPerProject(regionRows).length, [regionRows]);
@@ -652,8 +669,63 @@ export const CeoDashboard: React.FC = () => {
               <SectionHeading
                 title="Production Pipeline"
                 icon={Workflow}
-                description={`${filterLabel} · m²${selectedMonth ? ' · each stage counted by its own date column' : ''}`}
+                description={`${filterLabel} · m²${
+                  pipeline ? (pipeline.ended ? ' · month ended: dispatched is the actual' : ' · forecast by stage, produced and dispatched so far') : ''
+                }`}
               />
+              {pipeline ? (
+                <>
+                  <ol className="mt-6 grid grid-cols-1 gap-x-4 gap-y-6 @lg:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-5">
+                    {MONTH_STAGES.map((s) => {
+                      const base = Math.max(...MONTH_STAGES.map((x) => pipeline.main[x]), 0);
+                      const pct = base > 0 ? Math.min(100, (pipeline.main[s] / base) * 100) : 0;
+                      const actual = pipeline.ended && s !== 'bd';
+                      return (
+                        <li key={s} className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="grid h-6 w-6 flex-shrink-0 place-items-center rounded-full bg-white"
+                              style={{ boxShadow: `0 0 0 2px ${MONTH_STAGE_COLORS[s]}` }}
+                              aria-hidden="true"
+                            >
+                              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: MONTH_STAGE_COLORS[s] }} />
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${
+                                actual ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                              }`}
+                            >
+                              {actual ? 'ACTUAL' : s === 'bd' || s === 'design' || s === 'processed' ? "F'CAST" : 'SO FAR'}
+                            </span>
+                          </div>
+                          <div className="mt-3 text-xs font-medium text-slate-500">{MONTH_STAGE_LABELS[s]}</div>
+                          <div className="mt-1 font-mono text-xl font-semibold tracking-tight text-slate-900 tabular-nums">
+                            {formatNum(pipeline.main[s])}
+                            <span className="ml-1 text-xs font-medium text-slate-500">m²</span>
+                          </div>
+                          {pipeline.designOnly[s] > 0 && (
+                            <div className="mt-0.5 font-mono text-xs text-slate-500 tabular-nums">
+                              +{formatNum(pipeline.designOnly[s])} (Re-Design Only)
+                            </div>
+                          )}
+                          <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              className="h-full rounded-full transition-[width] duration-300"
+                              style={{ width: `${pct}%`, backgroundColor: MONTH_STAGE_COLORS[s] }}
+                            />
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  {pipeline.ended && pipeline.notDispatched > 0 && (
+                    <p className="mt-5 text-xs text-slate-600">
+                      <span className="font-mono font-semibold text-slate-900 tabular-nums">{formatNum(pipeline.notDispatched)} m²</span> planned
+                      for {selectedMonth?.key} was not dispatched and moves to {pipeline.nextMonthKey}.
+                    </p>
+                  )}
+                </>
+              ) : (
               <ol className="mt-6 grid grid-cols-1 gap-x-4 gap-y-6 @lg:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-5">
                 {STAGES.map((s, idx) => {
                   const base = totals.design || Math.max(...STAGES.map((x) => totals[x]), 0);
@@ -703,6 +775,7 @@ export const CeoDashboard: React.FC = () => {
                   );
                 })}
               </ol>
+              )}
             </section>
 
             {/* Breakdown by region */}
