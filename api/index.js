@@ -2311,10 +2311,12 @@ function findCellValue(row, candidateHeader) {
   }
   return null;
 }
-function applyMonthlyForecast(rows, currentMonth) {
+function applyMonthlyForecast(rows, currentMonth, stageHistory) {
   const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
   const monthKeyOf = (label) => `20${label.slice(-2)}-${String(MONTH_LABELS.indexOf(label.slice(0, 3)) + 1).padStart(2, "0")}`;
   const sum = (v) => labels.reduce((t, l) => t + (v[l] || 0), 0);
+  const ended = labels.filter((l) => monthKeyOf(l) < currentMonth);
+  const open = labels.filter((l) => monthKeyOf(l) >= currentMonth);
   const groups = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const input = row["_forecastInput"];
@@ -2329,33 +2331,37 @@ function applyMonthlyForecast(rows, currentMonth) {
     const designApplies = designQty !== null && groupBd > 0 && (designQty > groupBd || designDone);
     group.forEach((row, idx) => {
       const input = row["_forecastInput"];
-      const values = { ...input.bdMonthValues };
-      let target = bdTotals[idx] > 0 ? bdTotals[idx] : null;
-      let source = "BD";
-      if (designApplies && target !== null) {
-        target = designQty * bdTotals[idx] / groupBd;
-        source = "Design";
-      }
+      const bd = input.bdMonthValues;
+      const dispatched = input.dispatchedInMonth;
+      let designTarget = bdTotals[idx] > 0 ? bdTotals[idx] : null;
+      if (designApplies && designTarget !== null) designTarget = designQty * bdTotals[idx] / groupBd;
+      let target = designTarget;
+      let source = designApplies && target !== null ? "Design" : "BD";
       if (target !== null && input.processed !== null && (input.processed > target || input.planningDone)) {
         target = input.processed;
         source = "Processed";
       }
-      let difference = target === null ? 0 : target - bdTotals[idx];
-      const openLabels = labels.filter((l) => monthKeyOf(l) >= currentMonth);
-      if (difference > 0 && openLabels.length > 0) {
-        values[openLabels[0]] += difference;
-      } else if (difference < 0) {
-        for (const l of openLabels) {
-          const cut = Math.min(values[l], -difference);
-          values[l] -= cut;
-          difference += cut;
-          if (difference >= 0) break;
+      const history = stageHistory[input.historyKey] ||= {};
+      const allocate = (projectM2, stage) => {
+        const v = { ...bd };
+        for (const l of ended) {
+          const key = monthKeyOf(l);
+          if (dispatched[key] !== void 0) v[l] = dispatched[key];
+          else if (history[key]) v[l] = history[key][stage];
         }
-      }
-      for (const l of labels) {
-        const key = monthKeyOf(l);
-        if (key < currentMonth && input.dispatchedInMonth[key] !== void 0) values[l] = input.dispatchedInMonth[key];
-      }
+        if (projectM2 === null || open.length === 0) return v;
+        let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
+        v[open[0]] = Math.max(0, current);
+        for (const l of open.slice(1)) {
+          if (current >= 0) break;
+          const cut = Math.min(v[l], -current);
+          v[l] -= cut;
+          current += cut;
+        }
+        return v;
+      };
+      const designValues = allocate(designTarget, "design");
+      const values = allocate(target, "processed");
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
@@ -2366,6 +2372,23 @@ function applyMonthlyForecast(rows, currentMonth) {
       row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(2)) : null;
       row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(2)) : null;
       row["_forecastSource"] = target === null ? null : source;
+      const stages = {};
+      const round = (n) => n === void 0 || n === null ? null : Number(n.toFixed(2));
+      for (const l of labels) {
+        const key = monthKeyOf(l);
+        if (key >= currentMonth) history[key] = { design: designValues[l], processed: values[l] };
+        const planned = history[key] ?? { design: designValues[l], processed: values[l] };
+        const entry = {
+          bd: round(bd[l]),
+          design: round(planned.design),
+          processed: round(planned.processed),
+          produced: round(input.producedInMonth[key]),
+          dispatched: round(dispatched[key])
+        };
+        if (Object.values(entry).some((n) => n !== null && n > 0)) stages[l] = entry;
+      }
+      row["_monthStages"] = stages;
+      row["_designOnly"] = input.designOnly;
       delete row["_forecastInput"];
     });
   }
@@ -2611,6 +2634,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   );
   const localDispatchByMonth = JSON.parse(
     JSON.stringify(previousRun?.sourceSnapshot?.localDispatchByMonth || {})
+  );
+  const productionByMonth = JSON.parse(
+    JSON.stringify(previousRun?.sourceSnapshot?.productionByMonth || {})
+  );
+  const monthStageHistory = JSON.parse(
+    JSON.stringify(previousRun?.sourceSnapshot?.monthStageHistory || {})
   );
   const approvalHistory = JSON.parse(
     JSON.stringify(previousRun?.sourceSnapshot?.shellplanApprovalHistory || {})
@@ -3130,6 +3159,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["produced qty"] = producedTotal;
     let latestFilledDate = null;
     const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: dispatchDayOf(h) })).filter((d) => Boolean(d.date));
+    const producedInFile = {};
+    for (const { date } of dayColumns) producedInFile[date.slice(0, 7)] ??= 0;
     for (const pRow of productionMatches) {
       for (const { c, date } of dayColumns) {
         const cellVal = pRow.rawCells?.[c];
@@ -3137,7 +3168,17 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
           latestFilledDate = date;
         }
+        if (isCellFilled(targetVal) && !pRow.mergedCopyHeaders?.includes(productionHeaders[c])) {
+          producedInFile[date.slice(0, 7)] += parseNumeric(targetVal);
+        }
       }
+    }
+    const rowHistoryKey = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]);
+    const producedInMonth = {};
+    if (!isBlueColor(bdFontColor) && productionMatches.length > 0) {
+      const history2 = productionByMonth[rowHistoryKey] ||= {};
+      Object.assign(history2, producedInFile);
+      Object.assign(producedInMonth, history2);
     }
     const previousProducedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(previousRow?.["Produced Date"] ?? "")) ? previousRow["Produced Date"] : null;
     outRow["Produced Date"] = latestFilledDate ?? (producedTotal !== null ? previousProducedDate : null);
@@ -3182,13 +3223,17 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       designDone: outRow["_designState"] === "completed",
       processed: processedTotal,
       planningDone: orderStatuses.length > 0 && orderStatuses.every((v) => /complete/i.test(String(v)) && !/not/i.test(String(v))),
-      dispatchedInMonth
+      dispatchedInMonth,
+      producedInMonth,
+      historyKey: rowHistoryKey,
+      // Blue-font BD rows (e.g. Re-Design Only) go no further than Planning
+      designOnly: isBlueColor(bdFontColor)
     };
     outRow["_fontColor"] = bdFontColor;
     outRow["_fillColor"] = bdFillColor;
     return outRow;
   });
-  applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7));
+  applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7), monthStageHistory);
   const designStatesByProject = /* @__PURE__ */ new Map();
   const projectKeyOf = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
   for (const r of derivedMr11Rows) {
@@ -3259,6 +3304,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         dispatchTracker: newDispatchTracker,
         dispatchByMonth,
         localDispatchByMonth,
+        productionByMonth,
+        monthStageHistory,
         shellplanApprovalHistory: approvalHistory
       },
       recordCount: derivedMr11Rows.length,
@@ -3274,6 +3321,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           dispatchTracker: newDispatchTracker,
           dispatchByMonth,
           localDispatchByMonth,
+          productionByMonth,
+          monthStageHistory,
           shellplanApprovalHistory: approvalHistory,
           engineHistory: exportEngineHistory()
         },
