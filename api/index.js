@@ -1190,10 +1190,16 @@ async function login(req, res) {
         }
       });
     }
-    if (!user || !verifyPassword(password, user.passwordHash)) {
+    if (!user) {
       return res.status(401).json({
         success: false,
-        error: { code: "AUTH_FAILED", message: "Invalid email or password" }
+        error: { code: "USER_NOT_FOUND", message: "No account found for this email. Check the email address." }
+      });
+    }
+    if (!verifyPassword(password, user.passwordHash)) {
+      return res.status(401).json({
+        success: false,
+        error: { code: "WRONG_PASSWORD", message: "Wrong password. Please try again." }
       });
     }
     let roleCodes = (user.roles || []).map((r) => r.role?.code || r.roleCode || r);

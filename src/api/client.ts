@@ -16,7 +16,10 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    // An expired or invalid session signs the user out. A failed sign-in is not a session,
+    // so the login page keeps its error message instead of reloading.
+    const isLoginRequest = String(error.config?.url || '').includes('/auth/login');
+    if (error.response?.status === 401 && !isLoginRequest) {
       useAuthStore.getState().logout();
     }
     return Promise.reject(error);

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useAuthStore } from '../store/auth.store';
 import { BrandLogo } from '../components/common/BrandLogo';
 import { Lock, Mail, ArrowRight, AlertTriangle } from 'lucide-react';
@@ -9,6 +9,7 @@ export const Login: React.FC = () => {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const passwordInput = useRef<HTMLInputElement>(null);
 
   const performLogin = async (targetEmail: string, targetPass: string) => {
     console.log('[SIGN-IN TRIGGERED]', { email: targetEmail, passLength: targetPass.length });
@@ -39,6 +40,11 @@ export const Login: React.FC = () => {
       }
 
       setError(message);
+      // Wrong password: keep the email, clear the password and let the user retype it
+      if (err.response?.data?.error?.code === 'WRONG_PASSWORD') {
+        setPassword('');
+        setTimeout(() => passwordInput.current?.focus(), 0);
+      }
     } finally {
       setLoading(false);
     }
@@ -78,7 +84,7 @@ export const Login: React.FC = () => {
 
           {/* Explicit Error Banner */}
           {error && (
-            <div className="flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800 px-3.5 py-2.5 rounded-xl mb-4 text-xs font-medium leading-relaxed">
+            <div role="alert" className="flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800 px-3.5 py-2.5 rounded-xl mb-4 text-xs font-medium leading-relaxed">
               <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
@@ -109,6 +115,7 @@ export const Login: React.FC = () => {
               </label>
               <div className="relative">
                 <input
+                  ref={passwordInput}
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
