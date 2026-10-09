@@ -130,7 +130,6 @@ export const ORDERED_HEADER_LIST = [
   'NCA',
   'NCA date',
   'Original NCA Qty',
-  'Revised NCA Qty',
   'NCA Remarks',
   // Payment terms group (two-row header, same layout as the BD workbook)
   'Payment terms - Percentage',
@@ -227,8 +226,7 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'NCA', sourceDept: RoleCode.BD, sourceColumn: 'NCA', type: 'string', exact: true }, // M
   { target: 'NCA date', sourceDept: RoleCode.BD, sourceColumn: 'NCA date', type: 'date', exact: true }, // N
   { target: 'Original NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Original NCA Qty', type: 'number', exact: true }, // O
-  { target: 'Revised NCA Qty', sourceDept: RoleCode.BD, sourceColumn: 'Revised NCA Qty', type: 'number', exact: true }, // P
-  // BD's second "Remarks" column (right after Revised NCA Qty) is the NCA remark
+  // BD's second "Remarks" column (right after Original NCA Qty) is the NCA remark
   { target: 'NCA Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks 2', type: 'string', exact: true }, // Q
   // Payment terms sub-columns under the two-row "Payment terms" header
   { target: 'Payment terms - Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Percentage', type: 'number', exact: true }, // R
