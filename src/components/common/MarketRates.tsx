@@ -14,7 +14,11 @@ export interface CurrencyRate {
   code: string;
   rate: number;
   inBd: boolean;
+  source: string; // Bank Negara Malaysia, or a fallback for a currency BNM doesn't publish
 }
+
+const BNM = 'Bank Negara Malaysia';
+const LME_SOURCE_URL = 'https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Al_cash';
 
 // Latest LME aluminium price, USD per tonne (returned by GET /mr11)
 export interface LmePrice {
@@ -68,15 +72,22 @@ export const ExchangeRateCard: React.FC<{ fxRate: FxRate | null; currencyRates?:
               {currencyRates
                 .filter((c) => c.code !== 'MYR')
                 .map((c) => (
-                  <span key={c.code} title={`${currencyName(c.code)}${c.inBd ? ' · used in BD Other Currencies' : ''}`}>
+                  <span
+                    key={c.code}
+                    title={`${currencyName(c.code)} · ${c.source}${c.inBd ? ' · used in BD Other Currencies' : ''}`}
+                  >
                     {c.rate.toFixed(4)} <span className={c.inBd ? 'font-bold text-emerald-700' : 'text-stone-500'}>{c.code}</span>
+                    {c.source && c.source !== BNM && <span className="text-amber-600">*</span>}
                   </span>
                 ))}
             </div>
           )}
           <div className="text-[10px] text-stone-400">
-            {fxRate.source}
+            Source: {fxRate.source === BNM ? 'Bank Negara Malaysia (api.bnm.gov.my), middle rate' : fxRate.source}
             {fxRate.asOf ? ` · ${fxRate.asOf}` : ''}
+            {currencyRates.some((c) => c.source && c.source !== BNM) && (
+              <span className="text-amber-600"> · * not published by BNM, from ExchangeRate-API</span>
+            )}
           </div>
         </>
       ) : (
@@ -122,6 +133,12 @@ export const LmePriceCard: React.FC<{ lmePrice: LmePrice | null; className?: str
             Cash settlement
             {lmePrice.threeMonth ? ` · 3-month ${lmePrice.threeMonth.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : ''}
             {` · ${lmePrice.asOf}`}
+          </div>
+          <div className="text-[10px] text-stone-400">
+            Source: LME official prices via{' '}
+            <a href={LME_SOURCE_URL} target="_blank" rel="noreferrer" className="underline hover:text-stone-700">
+              Westmetall
+            </a>
           </div>
         </>
       ) : (

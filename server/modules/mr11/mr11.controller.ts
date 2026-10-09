@@ -10,7 +10,7 @@ import {
   MR11_COLUMN_DEPARTMENTS,
   MR11_DEPARTMENT_COLORS,
 } from '../../config/mr11.config';
-import { getUsdToMyrRate, getUsdRates } from '../../utils/fx';
+import { getUsdToMyrRate, getUsdRates, getUsdRatesInfo } from '../../utils/fx';
 import { applyLivePricing, currencyCode } from './mr11.pricing';
 
 // Currencies shown with the exchange rate on the MR11 page, besides any BD prices in
@@ -34,7 +34,8 @@ export async function getLatestMr11(req: Request, res: Response) {
     const config = await prisma.mr11Config.findUnique({ where: { id: 'singleton' } });
 
     // Today's USD -> MYR rate and LME aluminium price, shown above the ledger
-    const [fx, lmePrice, usdRates] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice(), getUsdRates()]);
+    const [fx, lmePrice, ratesInfo] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice(), getUsdRatesInfo()]);
+    const usdRates = ratesInfo?.rates ?? null;
     // Selling Price (USD), LME Adjusted and Final Selling Price for today's LME price and rates
     const run =
       latestRun && Array.isArray(latestRun.records)
@@ -46,7 +47,7 @@ export async function getLatestMr11(req: Request, res: Response) {
       .filter((c): c is string => Boolean(c) && c !== 'USD');
     const currencyRates = [...new Set([...SHOWN_CURRENCIES, ...bdCurrencies])]
       .filter((code) => usdRates?.[code])
-      .map((code) => ({ code, rate: usdRates![code], inBd: bdCurrencies.includes(code) }));
+      .map((code) => ({ code, rate: usdRates![code], inBd: bdCurrencies.includes(code), source: ratesInfo?.sources[code] ?? '' }));
 
     return res.json({
       success: true,
