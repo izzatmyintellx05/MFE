@@ -25,10 +25,13 @@ export const MR11_HEADER_GROUPS: HeaderGroup[] = [
     label: 'Payment terms',
     columns: [
       { key: 'Payment terms - Percentage', label: 'Percentage' },
+      { key: 'Payment terms - Amount', label: 'Amount' },
       { key: 'Payment terms - Type', label: 'Type' },
       { key: 'Payment terms - Balance Percentage', label: 'Balance Percentage' },
+      { key: 'Payment terms - Amount 2', label: 'Amount' },
       { key: 'Payment terms - Type 2', label: 'Type' },
       { key: 'Payment terms - Balance Percentage 2', label: 'Balance Percentage' },
+      { key: 'Payment terms - Amount 3', label: 'Amount' },
       { key: 'Payment terms - Type 3', label: 'Type' },
     ],
   },
@@ -131,10 +134,13 @@ export const ORDERED_HEADER_LIST = [
   'NCA Remarks',
   // Payment terms group (two-row header, same layout as the BD workbook)
   'Payment terms - Percentage',
+  'Payment terms - Amount',
   'Payment terms - Type',
   'Payment terms - Balance Percentage',
+  'Payment terms - Amount 2',
   'Payment terms - Type 2',
   'Payment terms - Balance Percentage 2',
+  'Payment terms - Amount 3',
   'Payment terms - Type 3',
   'Selling Price (USD)',
   'LME',
@@ -226,10 +232,13 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'NCA Remarks', sourceDept: RoleCode.BD, sourceColumn: 'Remarks 2', type: 'string', exact: true }, // Q
   // Payment terms sub-columns under the two-row "Payment terms" header
   { target: 'Payment terms - Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Percentage', type: 'number', exact: true }, // R
+  { target: 'Payment terms - Amount', sourceDept: RoleCode.BD, sourceColumn: 'Amount', type: 'number', exact: true },
   { target: 'Payment terms - Type', sourceDept: RoleCode.BD, sourceColumn: 'Type', type: 'string', exact: true }, // S
   { target: 'Payment terms - Balance Percentage', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage', type: 'number', exact: true }, // T
+  { target: 'Payment terms - Amount 2', sourceDept: RoleCode.BD, sourceColumn: 'Amount 2', type: 'number', exact: true },
   { target: 'Payment terms - Type 2', sourceDept: RoleCode.BD, sourceColumn: 'Type 2', type: 'string', exact: true }, // U
   { target: 'Payment terms - Balance Percentage 2', sourceDept: RoleCode.BD, sourceColumn: 'Balance Percentage 2', type: 'number', exact: true }, // V
+  { target: 'Payment terms - Amount 3', sourceDept: RoleCode.BD, sourceColumn: 'Amount 3', type: 'number', exact: true },
   { target: 'Payment terms - Type 3', sourceDept: RoleCode.BD, sourceColumn: 'Type 3', type: 'string', exact: true }, // W
   { target: 'Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Selling Price (USD)', type: 'number', exact: true }, // X
   // Fixed / Freeze / Variable
@@ -238,7 +247,8 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'Incoterms', sourceDept: RoleCode.BD, sourceColumn: 'Incoterms', type: 'string', exact: true }, // AA
   { target: 'Props, WPB, Waler, Acc (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Props, WPB, Waler, Acc (USD)', type: 'number', exact: true }, // AB
   { target: 'Aluminium Weight Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Aluminium Weight Adjusted (USD)', type: 'number', exact: true }, // AC
-  // AD and AF are formulas in the BD file; MR11 recalculates them (resolveLmePricing)
+  // Selling Price (USD) combines BD's USD, MYR and other-currency prices, and LME Adjusted and Final
+  // Selling Price are recalculated for today's LME price and exchange rates (mr11.pricing.ts)
   { target: 'LME Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'LME Adjusted (USD)', type: 'number', exact: true }, // AD
   { target: 'Freight Adjusted (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Freight Adjusted (USD)', type: 'number', exact: true }, // AE
   { target: 'Final Selling Price (USD)', sourceDept: RoleCode.BD, sourceColumn: 'Final Selling Price (USD)', type: 'number', exact: true }, // AF

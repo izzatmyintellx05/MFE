@@ -1,4 +1,7 @@
 import { PrismaClient, RoleCode } from '@prisma/client';
+import { BdPriceInputs, priceBdRow } from './mr11.pricing';
+import { getLmeAluminiumPrice } from '../../utils/lme';
+import { getUsdRates } from '../../utils/fx';
 import { MR11_ORDERED_COLUMNS, ORDERED_HEADER_LIST } from '../../config/mr11.config';
 import { saveMr11RunToDb, fetchLatestMr11RunFromDb, restoreEngineHistory } from '../../db/supabase';
 import { exportEngineHistory } from '../../db/prisma';
@@ -669,68 +672,6 @@ function isUsableValue(val: any): boolean {
   return s !== '' && !s.startsWith('#');
 }
 
-/**
- * LME Adjusted and Final Selling Price for a BD row. BD's own (cached) values are used
- * when present; when a formula has no saved result or returns an Excel error, the value
- * is worked out with the same rules as the BD workbook formulas:
- *   LME Adjusted = Fixed -> adjustment for the LME rate (0 if blank), Freeze -> "Check",
- *                  Variable -> adjustment for the LME rate (or "Check" if blank)
- *   Final Selling Price = Selling Price + Props + Aluminium + Freight
- *                         + LME Adjusted when it is a number (a "Check" counts as 0)
- * The LME rate is either the adjustment itself (a small figure, e.g. 10) or the aluminium
- * market price in USD/t (e.g. 3107), which BD turns into (rate - 3060) / 1000 x 22.5.
- */
-const LME_BASE_PRICE = 3060; // USD/t the selling price already allows for
-const LME_USD_PER_1000 = 22.5; // USD per m2 for every USD 1,000/t above the base
-
-function lmeAdjustmentFor(rate: number): number {
-  return rate >= 1000 ? Math.round(((rate - LME_BASE_PRICE) / 1000) * LME_USD_PER_1000 * 1e6) / 1e6 : rate;
-}
-
-export function resolveLmePricing(bdData: Record<string, any>): {
-  lmeAdjusted: number | string | null;
-  finalSellingPrice: number | string | null;
-} {
-  const keyWhere = (test: (k: string) => boolean) =>
-    Object.keys(bdData).find((k) => test(k.toLowerCase().trim()));
-  const lmeType = String(bdData[keyWhere((k) => k === 'lme' || k.startsWith('lme ('))!] ?? '')
-    .trim()
-    .toLowerCase();
-  const lmeRate = bdData[keyWhere((k) => k.startsWith('lme rate'))!];
-
-  const rateIsNumber = isUsableValue(lmeRate) && !isNaN(Number(lmeRate));
-  let computedAdjusted: number | string | null = null;
-  if (lmeType === 'fixed') computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : 0;
-  else if (lmeType === 'freeze') computedAdjusted = 'Check';
-  else if (lmeType === 'variable') computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : 'Check';
-
-  // Strict lookups: a loose prefix match would take the "LME" column for "LME Adjusted"
-  const col = (prefix: string) => bdData[keyWhere((k) => k.startsWith(prefix))!];
-
-  const bdAdjusted = col('lme adjusted');
-  let lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
-
-  // A "Check" (Freeze, or Variable without a confirmed price) takes the adjustment for the
-  // LME rate when one is entered, and the final price is then recalculated to include it
-  const replacedCheck = String(lmeAdjusted ?? '').trim().toLowerCase() === 'check' && rateIsNumber;
-  if (replacedCheck) lmeAdjusted = lmeAdjustmentFor(Number(lmeRate));
-
-  const bdFinal = col('final selling price');
-  if (isUsableValue(bdFinal) && !replacedCheck) return { lmeAdjusted, finalSellingPrice: bdFinal };
-
-  const isNumber = (v: any) => isUsableValue(v) && !isNaN(Number(v));
-  const parts = [
-    col('selling price'),
-    col('props, wpb, waler'),
-    col('aluminium weight adjusted'),
-    lmeAdjusted,
-    col('freight adjusted'),
-  ];
-  if (!parts.some(isNumber)) return { lmeAdjusted, finalSellingPrice: null };
-  const total = parts.reduce((sum: number, p) => sum + (isNumber(p) ? Number(p) : 0), 0);
-  return { lmeAdjusted, finalSellingPrice: Math.round(total * 1e6) / 1e6 };
-}
-
 function findCellValue(row: Record<string, any>, candidateHeader: string): any {
   if (!row) return null;
   if (row[candidateHeader] !== undefined) return row[candidateHeader];
@@ -870,6 +811,13 @@ export async function executeMr11Pipeline(
   // from another instance or from before a restart, rather than from this instance's memory
   const latestDbRun = await fetchLatestMr11RunFromDb();
   restoreEngineHistory(latestDbRun);
+
+  // Today's LME aluminium price and exchange rates, for the BD prices
+  const [liveLme, liveUsdRates] = await Promise.all([
+    getLmeAluminiumPrice().catch(() => null),
+    getUsdRates().catch(() => null),
+  ]);
+  const liveLmeCash = liveLme?.cash ?? null;
 
   const activeDepartments = await prisma.department.findMany({
     include: { activeVersion: true },
@@ -1341,9 +1289,25 @@ export async function executeMr11Pipeline(
     }
     // MR11 shows the stream the row was matched on
     if (streamInProjectNo) outRow['Stream'] = bdStream;
-    const lmePricing = resolveLmePricing(bdData);
-    outRow['LME Adjusted (USD)'] = lmePricing.lmeAdjusted;
-    outRow['Final Selling Price (USD)'] = lmePricing.finalSellingPrice;
+    // Prices: BD's price columns, kept with the row so MR11 can recalculate them for each day's
+    // LME price and exchange rates (see mr11.pricing.ts)
+    const pricing: BdPriceInputs = {
+      usd: exactValue('Selling Price (USD)'),
+      myr: exactValue('Selling Price (MYR)'),
+      otherCurrency: exactValue('Other Currencies') ?? exactValue('Other Currency'),
+      otherPrice: exactValue('Selling Price'),
+      lmeType: outRow['LME'],
+      lmeRate: outRow['LME Rate (USD)'],
+      lmeAdjustedInFile: exactValue('LME Adjusted (USD)'),
+      props: exactValue('Props, WPB, Waler, Acc (USD)'),
+      aluminium: exactValue('Aluminium Weight Adjusted (USD)'),
+      freight: exactValue('Freight Adjusted (USD)'),
+    };
+    const priced = priceBdRow(pricing, liveLmeCash, liveUsdRates);
+    outRow['_pricing'] = pricing;
+    outRow['Selling Price (USD)'] = priced.sellingPriceUsd;
+    outRow['LME Adjusted (USD)'] = priced.lmeAdjusted;
+    outRow['Final Selling Price (USD)'] = priced.finalSellingPrice;
 
     // 2. FINANCE: the Finance row for this BD row - same project & stream, the closest font and
     // fill colour (Finance may use its own shades, e.g. #FF9900 for #FF9933), then the same product type

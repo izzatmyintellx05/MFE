@@ -70,3 +70,44 @@ export async function getUsdToMyrRate(): Promise<FxRate | null> {
   if (cached) return { ...cached.value, live: false };
   return fixedSettingRate();
 }
+
+/**
+ * Every currency's rate against USD ({ MYR: 4.2, AUD: 1.5, SGD: 1.3, ... }), for turning BD's
+ * MYR and other-currency selling prices into USD. Same sources and hourly cache as above;
+ * null when no rates could be found at all.
+ */
+let cachedAll: { value: Record<string, number>; fetchedAt: number } | null = null;
+
+export async function getUsdRates(): Promise<Record<string, number> | null> {
+  if (cachedAll && Date.now() - cachedAll.fetchedAt < CACHE_MS) return cachedAll.value;
+  const sources: { name: string; load: () => Promise<Record<string, number>> }[] = [
+    {
+      name: 'ExchangeRate-API',
+      load: async () => {
+        const j = await getJson('https://open.er-api.com/v6/latest/USD');
+        if (j?.result !== 'success' || !j?.rates?.MYR) throw new Error('no rates');
+        return j.rates;
+      },
+    },
+    {
+      name: 'Frankfurter (ECB)',
+      load: async () => {
+        const j = await getJson('https://api.frankfurter.dev/v1/latest?base=USD');
+        if (!j?.rates?.MYR) throw new Error('no rates');
+        return { ...j.rates, USD: 1 };
+      },
+    },
+  ];
+  for (const source of sources) {
+    try {
+      const value = await source.load();
+      cachedAll = { value, fetchedAt: Date.now() };
+      return value;
+    } catch (err: any) {
+      console.warn(`[FX] ${source.name} rates unavailable:`, err?.message || err);
+    }
+  }
+  if (cachedAll) return cachedAll.value;
+  const myr = fixedSettingRate();
+  return myr ? { USD: 1, MYR: myr.rate } : null;
+}

@@ -10,7 +10,8 @@ import {
   MR11_COLUMN_DEPARTMENTS,
   MR11_DEPARTMENT_COLORS,
 } from '../../config/mr11.config';
-import { getUsdToMyrRate } from '../../utils/fx';
+import { getUsdToMyrRate, getUsdRates } from '../../utils/fx';
+import { applyLivePricing } from './mr11.pricing';
 import { getLmeAluminiumPrice } from '../../utils/lme';
 
 const prisma = new PrismaClient();
@@ -30,8 +31,12 @@ export async function getLatestMr11(req: Request, res: Response) {
     const config = await prisma.mr11Config.findUnique({ where: { id: 'singleton' } });
 
     // Today's USD -> MYR rate and LME aluminium price, shown above the ledger
-    const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
-    const run = latestRun;
+    const [fx, lmePrice, usdRates] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice(), getUsdRates()]);
+    // Selling Price (USD), LME Adjusted and Final Selling Price for today's LME price and rates
+    const run =
+      latestRun && Array.isArray(latestRun.records)
+        ? { ...latestRun, records: applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates) }
+        : latestRun;
 
     return res.json({
       success: true,
@@ -160,7 +165,8 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: { message: 'No MR11 records to export' } });
     }
 
-    const records = latestRun.records as Record<string, any>[];
+    const [lmePrice, usdRates] = await Promise.all([getLmeAluminiumPrice(), getUsdRates()]);
+    const records = applyLivePricing(latestRun.records as Record<string, any>[], lmePrice?.cash ?? null, usdRates);
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('MR11 Master');
 
