@@ -216,9 +216,13 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
 
                     const isYellowAtd = cellBgColor === '#FFFF00';
 
+                    // A BD price in a currency MR11 can't convert: marked on Selling Price (USD)
+                    const priceNote = h === 'Selling Price (USD)' ? row?._priceNote : null;
+
                     return (
                       <td
                         key={cIdx}
+                        title={priceNote || undefined}
                         // A value on several lines (e.g. ETD/ATD) keeps its line breaks
                         className={`p-2 border-r border-stone-200 ${
                           String(row?.[h] ?? '').includes('\n') ? 'whitespace-pre align-top' : 'whitespace-nowrap'
@@ -237,6 +241,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
                         }}
                       >
                         {cellText(h, row?.[h])}
+                        {priceNote && <span className="ml-1 text-[10px] font-bold text-rose-600">⚠ currency</span>}
                       </td>
                     );
                   })}

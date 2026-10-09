@@ -1308,6 +1308,7 @@ export async function executeMr11Pipeline(
     outRow['Selling Price (USD)'] = priced.sellingPriceUsd;
     outRow['LME Adjusted (USD)'] = priced.lmeAdjusted;
     outRow['Final Selling Price (USD)'] = priced.finalSellingPrice;
+    outRow['_priceNote'] = priced.priceNote;
 
     // 2. FINANCE: the Finance row for this BD row - same project & stream, the closest font and
     // fill colour (Finance may use its own shades, e.g. #FF9900 for #FF9933), then the same product type
