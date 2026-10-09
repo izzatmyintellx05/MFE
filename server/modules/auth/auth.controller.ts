@@ -12,6 +12,19 @@ const getJwtSecret = () => process.env.JWT_SECRET || 'mfe-formwork-mr11-enterpri
 const DEFAULT_PASSWORD = 'admin123';
 const MIN_PASSWORD_LENGTH = 8;
 
+// User.status values used by the forgot-password flow
+export const STATUS_ACTIVE = 'ACTIVE';
+// The user asked for a reset; an administrator sees the request on the Admin page
+export const STATUS_RESET_REQUESTED = 'RESET_REQUESTED';
+// An administrator set a temporary password; the user must choose a new one at sign-in
+export const STATUS_MUST_CHANGE_PASSWORD = 'MUST_CHANGE_PASSWORD';
+
+/** Saves a user's account row (password, status) and their role links to the database. */
+async function saveUserRow(user: any): Promise<void> {
+  const roleIds = (await prisma.userRole.findMany({ where: { userId: user.id } })).map((ur: any) => ur.roleId);
+  await saveUserToDb(user, roleIds);
+}
+
 function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
@@ -105,6 +118,17 @@ export async function login(req: Request, res: Response) {
       });
     }
 
+    // Signing in with the right password closes an open reset request
+    if (user.status === STATUS_RESET_REQUESTED) {
+      try {
+        const reopened = await prisma.user.update({ where: { id: user.id }, data: { status: STATUS_ACTIVE } });
+        await saveUserRow(reopened);
+      } catch (err: any) {
+        console.warn('Could not close the password reset request:', err?.message || err);
+      }
+    }
+    const mustChangePassword = user.status === STATUS_MUST_CHANGE_PASSWORD;
+
     let roleCodes = (user.roles || []).map((r: any) => r.role?.code || r.roleCode || r);
     if (cleanEmail === 'admin@mfeformwork.com') {
       roleCodes = [RoleCode.ADMIN];
@@ -127,6 +151,7 @@ export async function login(req: Request, res: Response) {
       fullName: user.fullName,
       roles: roleCodes,
       usingDefaultPassword: password === DEFAULT_PASSWORD,
+      mustChangePassword,
     };
 
     return res.json({
@@ -362,7 +387,7 @@ export async function changePassword(req: Request, res: Response) {
 
     const updated = await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash: hashPassword(next) },
+      data: { passwordHash: hashPassword(next), status: STATUS_ACTIVE },
     });
     const roleIds = (await prisma.userRole.findMany({ where: { userId: user.id } })).map((ur: any) => ur.roleId);
     try {
@@ -380,6 +405,51 @@ export async function changePassword(req: Request, res: Response) {
     return res.status(500).json({
       success: false,
       error: { code: 'CHANGE_PASSWORD_ERROR', message: 'Your password could not be changed. Please try again.' },
+    });
+  }
+}
+
+/**
+ * Records a forgotten-password request for an administrator to act on. The answer is the
+ * same whether or not the email has an account, so the form cannot be used to look up users.
+ */
+export async function forgotPassword(req: Request, res: Response) {
+  const answer = () =>
+    res.json({
+      success: true,
+      message: 'If this email has an account, your administrator has been asked to reset its password.',
+    });
+  try {
+    const cleanEmail = String(req.body?.email || '').trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Enter the email address you sign in with.' },
+      });
+    }
+
+    await hydrateUsersFromDb();
+    const user = await prisma.user.findFirst({ where: { email: cleanEmail } });
+    // An administrator already set a temporary password: that request is still being handled
+    if (!user || user.status === STATUS_MUST_CHANGE_PASSWORD) return answer();
+
+    const updated = await prisma.user.update({ where: { id: user.id }, data: { status: STATUS_RESET_REQUESTED } });
+    try {
+      await saveUserRow(updated);
+    } catch (err: any) {
+      await hydrateUsersFromDb();
+      console.error('Password reset request could not be saved:', err?.message || err);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SAVE_FAILED', message: 'Your request could not be sent. Please try again.' },
+      });
+    }
+    return answer();
+  } catch (err: any) {
+    console.error('Forgot password error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'FORGOT_PASSWORD_ERROR', message: 'Your request could not be sent. Please try again.' },
     });
   }
 }

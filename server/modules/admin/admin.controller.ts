@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient, RoleCode } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { hydrateUsersFromDb, saveUserToDb, deleteUserFromDb } from '../../db/supabase';
 
 const prisma = new PrismaClient();
@@ -51,6 +52,7 @@ export async function getAllUsersWithPermissions(req: Request, res: Response): P
         id: true,
         email: true,
         fullName: true,
+        status: true,
         roles: {
           include: {
             role: true,
@@ -67,6 +69,7 @@ export async function getAllUsersWithPermissions(req: Request, res: Response): P
         id: u.id,
         email: u.email,
         fullName: u.fullName,
+        status: (u as any).status || 'ACTIVE',
         createdAt: u.createdAt,
         roles: extractRoleCodes(u),
       })),
@@ -322,5 +325,43 @@ export async function deleteUser(req: Request, res: Response): Promise<Response>
       success: false,
       error: { message: err.message || 'Failed to delete user account' },
     });
+  }
+}
+
+// Letters and digits that cannot be confused when read out or typed (no 0/O, 1/l/I)
+const TEMP_PASSWORD_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+
+function temporaryPassword(length = 10): string {
+  let out = '';
+  for (let i = 0; i < length; i++) out += TEMP_PASSWORD_CHARS[crypto.randomInt(TEMP_PASSWORD_CHARS.length)];
+  return out;
+}
+
+/**
+ * Replaces a user's password with a one-time temporary password, returned once for the
+ * administrator to pass on. The user must choose a new password when they sign in with it.
+ */
+export async function resetUserPassword(req: Request, res: Response): Promise<Response> {
+  try {
+    const { userId } = req.params;
+    await hydrateUsersFromDb();
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: { message: 'User not found' } });
+    }
+
+    const password = temporaryPassword();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: await bcrypt.hash(password, 10), status: 'MUST_CHANGE_PASSWORD' },
+    });
+    await persistUser(userId);
+
+    return res.json({
+      success: true,
+      data: { email: user.email, temporaryPassword: password },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message || 'Failed to reset the password' } });
   }
 }

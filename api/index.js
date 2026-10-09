@@ -1125,6 +1125,13 @@ var prisma2 = new PrismaClient();
 var getJwtSecret = () => process.env.JWT_SECRET || "mfe-formwork-mr11-enterprise-secret-key-2026";
 var DEFAULT_PASSWORD = "admin123";
 var MIN_PASSWORD_LENGTH = 8;
+var STATUS_ACTIVE = "ACTIVE";
+var STATUS_RESET_REQUESTED = "RESET_REQUESTED";
+var STATUS_MUST_CHANGE_PASSWORD = "MUST_CHANGE_PASSWORD";
+async function saveUserRow(user) {
+  const roleIds = (await prisma2.userRole.findMany({ where: { userId: user.id } })).map((ur) => ur.roleId);
+  await saveUserToDb(user, roleIds);
+}
 function hashPassword2(password) {
   const salt = crypto2.randomBytes(16).toString("hex");
   const hash = crypto2.pbkdf2Sync(password, salt, 1e3, 64, "sha512").toString("hex");
@@ -1202,6 +1209,15 @@ async function login(req, res) {
         error: { code: "WRONG_PASSWORD", message: "Wrong password. Please try again." }
       });
     }
+    if (user.status === STATUS_RESET_REQUESTED) {
+      try {
+        const reopened = await prisma2.user.update({ where: { id: user.id }, data: { status: STATUS_ACTIVE } });
+        await saveUserRow(reopened);
+      } catch (err) {
+        console.warn("Could not close the password reset request:", err?.message || err);
+      }
+    }
+    const mustChangePassword = user.status === STATUS_MUST_CHANGE_PASSWORD;
     let roleCodes = (user.roles || []).map((r) => r.role?.code || r.roleCode || r);
     if (cleanEmail === "admin@mfeformwork.com") {
       roleCodes = ["ADMIN" /* ADMIN */];
@@ -1221,7 +1237,8 @@ async function login(req, res) {
       email: user.email,
       fullName: user.fullName,
       roles: roleCodes,
-      usingDefaultPassword: password === DEFAULT_PASSWORD
+      usingDefaultPassword: password === DEFAULT_PASSWORD,
+      mustChangePassword
     };
     return res.json({
       success: true,
@@ -1313,7 +1330,7 @@ async function changePassword(req, res) {
     }
     const updated = await prisma2.user.update({
       where: { id: user.id },
-      data: { passwordHash: hashPassword2(next) }
+      data: { passwordHash: hashPassword2(next), status: STATUS_ACTIVE }
     });
     const roleIds = (await prisma2.userRole.findMany({ where: { userId: user.id } })).map((ur) => ur.roleId);
     try {
@@ -1329,6 +1346,42 @@ async function changePassword(req, res) {
     return res.status(500).json({
       success: false,
       error: { code: "CHANGE_PASSWORD_ERROR", message: "Your password could not be changed. Please try again." }
+    });
+  }
+}
+async function forgotPassword(req, res) {
+  const answer = () => res.json({
+    success: true,
+    message: "If this email has an account, your administrator has been asked to reset its password."
+  });
+  try {
+    const cleanEmail = String(req.body?.email || "").trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes("@")) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "VALIDATION_ERROR", message: "Enter the email address you sign in with." }
+      });
+    }
+    await hydrateUsersFromDb();
+    const user = await prisma2.user.findFirst({ where: { email: cleanEmail } });
+    if (!user || user.status === STATUS_MUST_CHANGE_PASSWORD) return answer();
+    const updated = await prisma2.user.update({ where: { id: user.id }, data: { status: STATUS_RESET_REQUESTED } });
+    try {
+      await saveUserRow(updated);
+    } catch (err) {
+      await hydrateUsersFromDb();
+      console.error("Password reset request could not be saved:", err?.message || err);
+      return res.status(500).json({
+        success: false,
+        error: { code: "SAVE_FAILED", message: "Your request could not be sent. Please try again." }
+      });
+    }
+    return answer();
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    return res.status(500).json({
+      success: false,
+      error: { code: "FORGOT_PASSWORD_ERROR", message: "Your request could not be sent. Please try again." }
     });
   }
 }
@@ -1354,6 +1407,7 @@ function requireAuth(req, res, next) {
 // server/modules/auth/auth.routes.ts
 var router = Router();
 router.post("/login", login);
+router.post("/forgot-password", forgotPassword);
 router.get("/me", getMe);
 router.post("/change-password", requireAuth, changePassword);
 var auth_routes_default = router;
@@ -1539,6 +1593,266 @@ async function parseAndNormalizeWorkbook(input) {
 // server/modules/mr11/mr11.engine.ts
 init_prisma();
 
+// server/modules/mr11/mr11.pricing.ts
+var LME_USD_PER_1000 = 21.5;
+var CURRENCY_SYMBOLS = {
+  $: "USD",
+  US$: "USD",
+  USD$: "USD",
+  RM: "MYR",
+  RINGGIT: "MYR",
+  S$: "SGD",
+  SG$: "SGD",
+  A$: "AUD",
+  AU$: "AUD",
+  NZ$: "NZD",
+  C$: "CAD",
+  CA$: "CAD",
+  HK$: "HKD",
+  B$: "BND",
+  NT$: "TWD",
+  "\u20AC": "EUR",
+  EURO: "EUR",
+  EUROS: "EUR",
+  "\xA3": "GBP",
+  POUND: "GBP",
+  POUNDS: "GBP",
+  STERLING: "GBP",
+  "\xA5": "JPY",
+  YEN: "JPY",
+  RMB: "CNY",
+  YUAN: "CNY",
+  RENMINBI: "CNY",
+  "\u20B9": "INR",
+  // Rupee and Dirham are several countries' currencies: BD's projects mean India's and the UAE's
+  RUPEE: "INR",
+  RUPEES: "INR",
+  DIRHAM: "AED",
+  DIRHAMS: "AED",
+  RS: "INR",
+  "RS.": "INR",
+  "\u20B1": "PHP",
+  "\u0E3F": "THB",
+  "\u20AB": "VND",
+  "\u20A9": "KRW",
+  RP: "IDR",
+  DHS: "AED",
+  AED: "AED"
+};
+var currencyNames = null;
+function currencyNameIndex() {
+  if (currencyNames) return currencyNames;
+  const index = {};
+  const firstWords = {};
+  const lastWords = {};
+  try {
+    const names = new Intl.DisplayNames("en", { type: "currency" });
+    for (const code of Intl.supportedValuesOf("currency")) {
+      const name = String(names.of(code) ?? "").toUpperCase();
+      if (!name || name === code) continue;
+      index[name] = code;
+      index[`${name}S`] = code;
+      const words = name.split(/\s+/);
+      (firstWords[words[0]] ||= []).push(code);
+      (lastWords[words[words.length - 1]] ||= []).push(code);
+    }
+  } catch {
+  }
+  for (const [word, codes] of Object.entries(firstWords)) if (codes.length === 1 && !index[word]) index[word] = codes[0];
+  for (const [word, codes] of Object.entries(lastWords)) {
+    if (codes.length === 1 && !index[word]) {
+      index[word] = codes[0];
+      index[`${word}S`] = codes[0];
+    }
+  }
+  currencyNames = index;
+  return index;
+}
+function currencyCode(value) {
+  const s = String(value ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+  if (!s) return null;
+  if (CURRENCY_SYMBOLS[s]) return CURRENCY_SYMBOLS[s];
+  if (/^[A-Z]{3}$/.test(s)) return s;
+  const names = currencyNameIndex();
+  if (names[s]) return names[s];
+  const code = s.match(/\b[A-Z]{3}\b/g)?.find((c) => Object.values(names).includes(c));
+  return code ?? null;
+}
+var usable = (v) => v !== null && v !== void 0 && typeof v !== "object" && String(v).trim() !== "" && !String(v).trim().startsWith("#");
+var num = (v) => usable(v) && !isNaN(Number(v)) ? Number(v) : null;
+var round6 = (n) => Math.round(n * 1e6) / 1e6;
+function priceBdRow(p, lmeCash, rates) {
+  let selling = null;
+  let priceNote = null;
+  const add = (amount, currency, typed) => {
+    if (amount === null) return;
+    const rate = currency === "USD" ? 1 : currency ? rates?.[currency] : void 0;
+    if (rate && rate > 0) selling = (selling ?? 0) + amount / rate;
+    else priceNote = `${amount} ${String(typed ?? "").trim() || "(no currency)"} not included: currency not recognised`;
+  };
+  add(num(p.usd), "USD", "USD");
+  add(num(p.myr), "MYR", "MYR");
+  add(num(p.otherPrice), currencyCode(p.otherCurrency), p.otherCurrency);
+  const type = String(p.lmeType ?? "").trim().toLowerCase();
+  let lmeAdjusted;
+  if (type === "freeze") lmeAdjusted = "Check";
+  else if (type === "fixed") lmeAdjusted = 0;
+  else if (type === "variable" || type.includes("lme")) {
+    const rate = num(p.lmeRate);
+    lmeAdjusted = rate === null ? 0 : lmeCash === null ? "Check" : round6((lmeCash - rate) / 1e3 * LME_USD_PER_1000);
+  } else {
+    lmeAdjusted = usable(p.lmeAdjustedInFile) ? p.lmeAdjustedInFile : null;
+  }
+  const parts = [selling, num(p.props), num(p.aluminium), num(lmeAdjusted), num(p.freight)];
+  const finalSellingPrice = selling === null ? null : round6(parts.reduce((t, x) => t + (x ?? 0), 0));
+  return { sellingPriceUsd: selling === null ? null : round6(selling), lmeAdjusted, finalSellingPrice, priceNote };
+}
+function applyLivePricing(records, lmeCash, rates) {
+  return records.map((row) => {
+    if (!row?._pricing) return row;
+    const priced = priceBdRow(row._pricing, lmeCash, rates);
+    return {
+      ...row,
+      "Selling Price (USD)": priced.sellingPriceUsd,
+      "LME Adjusted (USD)": priced.lmeAdjusted,
+      "Final Selling Price (USD)": priced.finalSellingPrice,
+      _priceNote: priced.priceNote
+    };
+  });
+}
+
+// server/utils/lme.ts
+var URL = "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Al_cash";
+var CACHE_MS = 60 * 60 * 1e3;
+var TIMEOUT_MS = 8e3;
+var cached = null;
+var toNumber = (s) => {
+  const n = Number(s.replace(/,/g, "").trim());
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+function parseWestmetallTable(html) {
+  const rows = [];
+  const rowRe = /<tr>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([^<]*)<\/td>\s*<td[^>]*>([^<]*)<\/td>/g;
+  let m;
+  while ((m = rowRe.exec(html)) && rows.length < 2) {
+    const date = /* @__PURE__ */ new Date(`${m[1].replace(".", "")} UTC`);
+    if (isNaN(date.getTime())) continue;
+    rows.push({ date: date.toISOString().slice(0, 10), cash: toNumber(m[2]), threeMonth: toNumber(m[3]) });
+  }
+  const latest = rows[0];
+  if (!latest?.cash) throw new Error("no LME aluminium price in the table");
+  return {
+    cash: latest.cash,
+    threeMonth: latest.threeMonth,
+    previousCash: rows[1]?.cash ?? null,
+    asOf: latest.date,
+    source: "LME official prices (via Westmetall)",
+    live: true
+  };
+}
+async function getLmeAluminiumPrice() {
+  if (cached && Date.now() - cached.fetchedAt < CACHE_MS) return cached.value;
+  try {
+    const res = await fetch(URL, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: { "User-Agent": "Mozilla/5.0 (MFE MR11)" }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const value = parseWestmetallTable(await res.text());
+    cached = { value, fetchedAt: Date.now() };
+    return value;
+  } catch (err) {
+    console.warn("[LME] price unavailable:", err?.message || err);
+    return cached ? { ...cached.value, live: false } : null;
+  }
+}
+
+// server/utils/fx.ts
+var BNM_SOURCE = "Bank Negara Malaysia";
+var CACHE_MS2 = 60 * 60 * 1e3;
+var TIMEOUT_MS2 = 5e3;
+var cached2 = null;
+async function getJson(url, headers = {}) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS2), headers });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+async function loadBnm() {
+  const j = await getJson("https://api.bnm.gov.my/public/exchange-rate", { Accept: "application/vnd.BNM.API.v1+json" });
+  const myrPer = {};
+  let asOf = "";
+  for (const d of j?.data || []) {
+    const middle = Number(d?.rate?.middle_rate);
+    const unit = Number(d?.unit) || 1;
+    if (d?.currency_code && middle > 0) myrPer[String(d.currency_code).toUpperCase()] = middle / unit;
+    if (d?.rate?.date && String(d.rate.date) > asOf) asOf = String(d.rate.date);
+  }
+  const myrPerUsd = myrPer.USD;
+  if (!(myrPerUsd > 0)) throw new Error("no USD rate");
+  const rates = { USD: 1, MYR: myrPerUsd };
+  for (const [code, perUnit] of Object.entries(myrPer)) if (code !== "USD" && code !== "SDR") rates[code] = myrPerUsd / perUnit;
+  return { rates, asOf };
+}
+var fallbacks = [
+  {
+    name: "ExchangeRate-API",
+    load: async () => {
+      const j = await getJson("https://open.er-api.com/v6/latest/USD");
+      if (j?.result !== "success" || !j?.rates?.MYR) throw new Error("no rates");
+      return { rates: j.rates, asOf: new Date(Number(j.time_last_update_unix) * 1e3).toISOString().slice(0, 10) };
+    }
+  },
+  {
+    name: "Frankfurter (ECB)",
+    load: async () => {
+      const j = await getJson("https://api.frankfurter.dev/v1/latest?base=USD");
+      if (!j?.rates?.MYR) throw new Error("no rates");
+      return { rates: { ...j.rates, USD: 1 }, asOf: String(j.date) };
+    }
+  }
+];
+async function getUsdRatesInfo() {
+  if (cached2 && Date.now() - cached2.fetchedAt < CACHE_MS2) return cached2.value;
+  const info = { rates: {}, sources: {}, asOf: {}, live: true };
+  const take = (loaded, source) => {
+    for (const [code, rate2] of Object.entries(loaded.rates)) {
+      if (info.rates[code] || !(Number(rate2) > 0)) continue;
+      info.rates[code] = Number(rate2);
+      info.sources[code] = source;
+      info.asOf[code] = loaded.asOf;
+    }
+  };
+  try {
+    take(await loadBnm(), BNM_SOURCE);
+  } catch (err) {
+    console.warn("[FX] Bank Negara Malaysia unavailable:", err?.message || err);
+  }
+  for (const fallback of fallbacks) {
+    try {
+      take(await fallback.load(), fallback.name);
+      break;
+    } catch (err) {
+      console.warn(`[FX] ${fallback.name} unavailable:`, err?.message || err);
+    }
+  }
+  if (info.rates.MYR) {
+    cached2 = { value: info, fetchedAt: Date.now() };
+    return info;
+  }
+  if (cached2) return { ...cached2.value, live: false };
+  const rate = Number(process.env.USD_TO_MYR_RATE);
+  return Number.isFinite(rate) && rate > 0 ? { rates: { USD: 1, MYR: rate }, sources: { MYR: "USD_TO_MYR_RATE setting" }, asOf: { MYR: "" }, live: false } : null;
+}
+async function getUsdRates() {
+  return (await getUsdRatesInfo())?.rates ?? null;
+}
+async function getUsdToMyrRate() {
+  const info = await getUsdRatesInfo();
+  if (!info?.rates.MYR) return null;
+  const isSetting = info.sources.MYR === "USD_TO_MYR_RATE setting";
+  return { rate: info.rates.MYR, source: info.sources.MYR, asOf: info.asOf.MYR || "", live: info.live && !isSetting };
+}
+
 // server/config/mr11.config.ts
 init_prisma();
 var MR11_HEADER_GROUPS = [
@@ -1546,18 +1860,25 @@ var MR11_HEADER_GROUPS = [
     label: "Payment terms",
     columns: [
       { key: "Payment terms - Percentage", label: "Percentage" },
+      { key: "Payment terms - Amount", label: "Amount" },
       { key: "Payment terms - Type", label: "Type" },
       { key: "Payment terms - Balance Percentage", label: "Balance Percentage" },
+      { key: "Payment terms - Amount 2", label: "Amount" },
       { key: "Payment terms - Type 2", label: "Type" },
       { key: "Payment terms - Balance Percentage 2", label: "Balance Percentage" },
+      { key: "Payment terms - Amount 3", label: "Amount" },
       { key: "Payment terms - Type 3", label: "Type" }
     ]
   }
 ];
+var MR11_USD_AMOUNT_COLUMNS = ["Payment terms - Amount", "Payment terms - Amount 2", "Payment terms - Amount 3"];
 var MR11_NUMBER_FORMATS = {
   "LME Rate (USD)": 3,
   "LME Adjusted (USD)": 3,
-  "Final Selling Price (USD)": 2
+  "Final Selling Price (USD)": 3,
+  "Payment terms - Amount": 2,
+  "Payment terms - Amount 2": 2,
+  "Payment terms - Amount 3": 2
 };
 var ORDERED_HEADER_LIST = [
   // --- BD & Commercial Columns (Col A to Col AI) ---
@@ -1565,7 +1886,9 @@ var ORDERED_HEADER_LIST = [
   "Project No",
   "Short Name",
   "Stream",
+  "Building Name",
   "Countries",
+  "Location",
   "PIC",
   "Status",
   "Products type",
@@ -1576,14 +1899,16 @@ var ORDERED_HEADER_LIST = [
   "NCA",
   "NCA date",
   "Original NCA Qty",
-  "Revised NCA Qty",
   "NCA Remarks",
   // Payment terms group (two-row header, same layout as the BD workbook)
   "Payment terms - Percentage",
+  "Payment terms - Amount",
   "Payment terms - Type",
   "Payment terms - Balance Percentage",
+  "Payment terms - Amount 2",
   "Payment terms - Type 2",
   "Payment terms - Balance Percentage 2",
+  "Payment terms - Amount 3",
   "Payment terms - Type 3",
   "Selling Price (USD)",
   "LME",
@@ -1655,8 +1980,12 @@ var MR11_ORDERED_COLUMNS = [
   // C
   { target: "Stream", sourceDept: "BD" /* BD */, sourceColumn: "Stream", type: "string", exact: true },
   // D
+  { target: "Building Name", sourceDept: "BD" /* BD */, sourceColumn: "Building Name", type: "string", exact: true },
+  // E
   { target: "Countries", sourceDept: "BD" /* BD */, sourceColumn: "Countries", type: "string", exact: true, aliases: ["Country"] },
   // E
+  // City or site of the project (e.g. Hyderabad, Chennai, Mumbai)
+  { target: "Location", sourceDept: "BD" /* BD */, sourceColumn: "Location", type: "string", exact: true, aliases: ["City", "Project Location", "Site"] },
   { target: "PIC", sourceDept: "BD" /* BD */, sourceColumn: "PIC", type: "string", exact: true },
   // F
   { target: "Status", sourceDept: "BD" /* BD */, sourceColumn: "Status", type: "string", exact: true },
@@ -1677,22 +2006,23 @@ var MR11_ORDERED_COLUMNS = [
   // N
   { target: "Original NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Original NCA Qty", type: "number", exact: true },
   // O
-  { target: "Revised NCA Qty", sourceDept: "BD" /* BD */, sourceColumn: "Revised NCA Qty", type: "number", exact: true },
-  // P
-  // BD's second "Remarks" column (right after Revised NCA Qty) is the NCA remark
+  // BD's second "Remarks" column (right after Original NCA Qty) is the NCA remark
   { target: "NCA Remarks", sourceDept: "BD" /* BD */, sourceColumn: "Remarks 2", type: "string", exact: true },
   // Q
   // Payment terms sub-columns under the two-row "Payment terms" header
   { target: "Payment terms - Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Percentage", type: "number", exact: true },
   // R
+  { target: "Payment terms - Amount", sourceDept: "BD" /* BD */, sourceColumn: "Amount", type: "number", exact: true },
   { target: "Payment terms - Type", sourceDept: "BD" /* BD */, sourceColumn: "Type", type: "string", exact: true },
   // S
   { target: "Payment terms - Balance Percentage", sourceDept: "BD" /* BD */, sourceColumn: "Balance Percentage", type: "number", exact: true },
   // T
+  { target: "Payment terms - Amount 2", sourceDept: "BD" /* BD */, sourceColumn: "Amount 2", type: "number", exact: true },
   { target: "Payment terms - Type 2", sourceDept: "BD" /* BD */, sourceColumn: "Type 2", type: "string", exact: true },
   // U
   { target: "Payment terms - Balance Percentage 2", sourceDept: "BD" /* BD */, sourceColumn: "Balance Percentage 2", type: "number", exact: true },
   // V
+  { target: "Payment terms - Amount 3", sourceDept: "BD" /* BD */, sourceColumn: "Amount 3", type: "number", exact: true },
   { target: "Payment terms - Type 3", sourceDept: "BD" /* BD */, sourceColumn: "Type 3", type: "string", exact: true },
   // W
   { target: "Selling Price (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Selling Price (USD)", type: "number", exact: true },
@@ -1708,7 +2038,8 @@ var MR11_ORDERED_COLUMNS = [
   // AB
   { target: "Aluminium Weight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Aluminium Weight Adjusted (USD)", type: "number", exact: true },
   // AC
-  // AD and AF are formulas in the BD file; MR11 recalculates them (resolveLmePricing)
+  // Selling Price (USD) combines BD's USD, MYR and other-currency prices, and LME Adjusted and Final
+  // Selling Price are recalculated for today's LME price and exchange rates (mr11.pricing.ts)
   { target: "LME Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "LME Adjusted (USD)", type: "number", exact: true },
   // AD
   { target: "Freight Adjusted (USD)", sourceDept: "BD" /* BD */, sourceColumn: "Freight Adjusted (USD)", type: "number", exact: true },
@@ -1775,8 +2106,8 @@ function parseNumeric(val) {
   if (typeof val === "number") return isNaN(val) ? 0 : val;
   if (!val) return 0;
   const cleaned = String(val).replace(/[^0-9.-]/g, "").trim();
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? 0 : num;
+  const num2 = parseFloat(cleaned);
+  return isNaN(num2) ? 0 : num2;
 }
 function cleanStr(val) {
   if (val === null || val === void 0) return "";
@@ -1784,8 +2115,8 @@ function cleanStr(val) {
 }
 function normalizeStream(val) {
   if (val === null || val === void 0 || val === "") return "1";
-  const num = parseFloat(String(val).replace(/[^0-9.]/g, ""));
-  return isNaN(num) ? String(val).trim().toUpperCase() : String(num);
+  const num2 = parseFloat(String(val).replace(/[^0-9.]/g, ""));
+  return isNaN(num2) ? String(val).trim().toUpperCase() : String(num2);
 }
 function normalizeColor(color) {
   if (!color) return "#000000";
@@ -1893,9 +2224,9 @@ function parseFlexibleDate(val) {
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
   const rawStr = String(val).trim();
   if (!rawStr || rawStr === "-" || rawStr === "0" || rawStr.toLowerCase() === "null" || rawStr.toLowerCase() === "tbc") return null;
-  const num = typeof val === "number" ? val : parseFloat(rawStr);
-  if (!isNaN(num) && num > 3e4 && !rawStr.includes("/") && !rawStr.includes("-")) {
-    const parsedExcelDate = new Date(Math.round((num - 25569) * 86400 * 1e3));
+  const num2 = typeof val === "number" ? val : parseFloat(rawStr);
+  if (!isNaN(num2) && num2 > 3e4 && !rawStr.includes("/") && !rawStr.includes("-")) {
+    const parsedExcelDate = new Date(Math.round((num2 - 25569) * 86400 * 1e3));
     return isNaN(parsedExcelDate.getTime()) ? null : parsedExcelDate;
   }
   const dmyMatch = rawStr.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);
@@ -1987,8 +2318,8 @@ function isCellFilled(val) {
   if (val === null || val === void 0) return false;
   const s = String(val).trim();
   if (s === "" || s === "-" || s === "0" || s === "0.0" || s === "0.00") return false;
-  const num = parseNumeric(val);
-  return !isNaN(num) ? num > 0 : s.length > 0;
+  const num2 = parseNumeric(val);
+  return !isNaN(num2) ? num2 > 0 : s.length > 0;
 }
 function refineHeaders(headers, rowTexts) {
   const headerCount = (name) => Object.values(headers).filter((h) => h === name).length;
@@ -2261,44 +2592,6 @@ function buildFinanceMonthColumns(headers) {
   flush(null);
   return result;
 }
-function isUsableValue(val) {
-  if (val === null || val === void 0 || typeof val === "object") return false;
-  const s = String(val).trim();
-  return s !== "" && !s.startsWith("#");
-}
-var LME_BASE_PRICE = 3060;
-var LME_USD_PER_1000 = 22.5;
-function lmeAdjustmentFor(rate) {
-  return rate >= 1e3 ? Math.round((rate - LME_BASE_PRICE) / 1e3 * LME_USD_PER_1000 * 1e6) / 1e6 : rate;
-}
-function resolveLmePricing(bdData) {
-  const keyWhere = (test) => Object.keys(bdData).find((k) => test(k.toLowerCase().trim()));
-  const lmeType = String(bdData[keyWhere((k) => k === "lme" || k.startsWith("lme ("))] ?? "").trim().toLowerCase();
-  const lmeRate = bdData[keyWhere((k) => k.startsWith("lme rate"))];
-  const rateIsNumber = isUsableValue(lmeRate) && !isNaN(Number(lmeRate));
-  let computedAdjusted = null;
-  if (lmeType === "fixed") computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : 0;
-  else if (lmeType === "freeze") computedAdjusted = "Check";
-  else if (lmeType === "variable") computedAdjusted = rateIsNumber ? lmeAdjustmentFor(Number(lmeRate)) : "Check";
-  const col = (prefix) => bdData[keyWhere((k) => k.startsWith(prefix))];
-  const bdAdjusted = col("lme adjusted");
-  let lmeAdjusted = isUsableValue(bdAdjusted) ? bdAdjusted : computedAdjusted;
-  const replacedCheck = String(lmeAdjusted ?? "").trim().toLowerCase() === "check" && rateIsNumber;
-  if (replacedCheck) lmeAdjusted = lmeAdjustmentFor(Number(lmeRate));
-  const bdFinal = col("final selling price");
-  if (isUsableValue(bdFinal) && !replacedCheck) return { lmeAdjusted, finalSellingPrice: bdFinal };
-  const isNumber = (v) => isUsableValue(v) && !isNaN(Number(v));
-  const parts = [
-    col("selling price"),
-    col("props, wpb, waler"),
-    col("aluminium weight adjusted"),
-    lmeAdjusted,
-    col("freight adjusted")
-  ];
-  if (!parts.some(isNumber)) return { lmeAdjusted, finalSellingPrice: null };
-  const total = parts.reduce((sum, p) => sum + (isNumber(p) ? Number(p) : 0), 0);
-  return { lmeAdjusted, finalSellingPrice: Math.round(total * 1e6) / 1e6 };
-}
 function findCellValue(row, candidateHeader) {
   if (!row) return null;
   if (row[candidateHeader] !== void 0) return row[candidateHeader];
@@ -2365,15 +2658,15 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(2)) : null;
+        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
         if (l.endsWith("-26")) total2026 += values[l];
         else total2027 += values[l];
       }
-      row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(2)) : null;
-      row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(2)) : null;
+      row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
+      row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
       row["_forecastSource"] = target === null ? null : source;
       const stages = {};
-      const round = (n) => n === void 0 || n === null ? null : Number(n.toFixed(2));
+      const round = (n) => n === void 0 || n === null ? null : Number(n.toFixed(3));
       for (const l of labels) {
         const key = monthKeyOf(l);
         if (key >= currentMonth) history[key] = { design: designValues[l], processed: values[l] };
@@ -2397,6 +2690,11 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const { persist = true } = options;
   const latestDbRun = await fetchLatestMr11RunFromDb();
   restoreEngineHistory(latestDbRun);
+  const [liveLme, liveUsdRates] = await Promise.all([
+    getLmeAluminiumPrice().catch(() => null),
+    getUsdRates().catch(() => null)
+  ]);
+  const liveLmeCash = liveLme?.cash ?? null;
   const activeDepartments = await prisma8.department.findMany({
     include: { activeVersion: true }
   });
@@ -2747,9 +3045,24 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
     }
     if (streamInProjectNo) outRow["Stream"] = bdStream;
-    const lmePricing = resolveLmePricing(bdData);
-    outRow["LME Adjusted (USD)"] = lmePricing.lmeAdjusted;
-    outRow["Final Selling Price (USD)"] = lmePricing.finalSellingPrice;
+    const pricing = {
+      usd: exactValue("Selling Price (USD)"),
+      myr: exactValue("Selling Price (MYR)"),
+      otherCurrency: exactValue("Other Currencies") ?? exactValue("Other Currency"),
+      otherPrice: exactValue("Selling Price"),
+      lmeType: outRow["LME"],
+      lmeRate: outRow["LME Rate (USD)"],
+      lmeAdjustedInFile: exactValue("LME Adjusted (USD)"),
+      props: exactValue("Props, WPB, Waler, Acc (USD)"),
+      aluminium: exactValue("Aluminium Weight Adjusted (USD)"),
+      freight: exactValue("Freight Adjusted (USD)")
+    };
+    const priced = priceBdRow(pricing, liveLmeCash, liveUsdRates);
+    outRow["_pricing"] = pricing;
+    outRow["Selling Price (USD)"] = priced.sellingPriceUsd;
+    outRow["LME Adjusted (USD)"] = priced.lmeAdjusted;
+    outRow["Final Selling Price (USD)"] = priced.finalSellingPrice;
+    outRow["_priceNote"] = priced.priceNote;
     const financeCandidates = (datasetMap["FINANCE" /* FINANCE */] || []).filter((f) => {
       const fShort = cleanStr(findCellValue(f.data, "Project Shortname") || findCellValue(f.data, "Short Name"));
       const fNo = cleanStr(findCellValue(f.data, "Project No") || findCellValue(f.data, "Project No."));
@@ -2856,7 +3169,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       if (byDate.size === 0) return null;
       return [...byDate.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([iso, m2]) => {
         const [y, m, d] = iso.split("-").map((p) => parseInt(p, 10));
-        return `${d}/${m}/${y}${m2 !== null ? ` (${Number(m2.toFixed(2))} m2)` : ""}`;
+        return `${d}/${m}/${y}${m2 !== null ? ` (${m2.toLocaleString("en-US", Number.isInteger(m2) ? {} : { minimumFractionDigits: 3, maximumFractionDigits: 3 })} m2)` : ""}`;
       }).join(", ");
     };
     const latestOf = (byDate) => [...byDate.keys()].sort().pop() ?? null;
@@ -3004,9 +3317,9 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     let hasQuantity = false;
     for (const d of streamMatchedDesign) {
       const rawQ = findCellValue(d.data, "Total Quantity Ordered m2") ?? findCellValue(d.data, "Total Quantity Ordered (m2)") ?? findCellValue(d.data, "Total Quantity Ordered") ?? findCellValue(d.data, "Total Quantity") ?? findCellValue(d.data, "Quantity Ordered");
-      const num = parseNumeric(rawQ);
-      if (!isNaN(num) && num > 0) {
-        totalQuantityOrdered += num;
+      const num2 = parseNumeric(rawQ);
+      if (!isNaN(num2) && num2 > 0) {
+        totalQuantityOrdered += num2;
         hasQuantity = true;
       }
     }
@@ -3687,116 +4000,25 @@ import { Router as Router3 } from "express";
 init_prisma();
 import ExcelJS2 from "exceljs";
 init_supabase();
-
-// server/utils/fx.ts
-var CACHE_MS = 60 * 60 * 1e3;
-var TIMEOUT_MS = 5e3;
-var cached = null;
-async function getJson(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-var providers = [
-  {
-    name: "ExchangeRate-API",
-    load: async () => {
-      const j = await getJson("https://open.er-api.com/v6/latest/USD");
-      const rate = Number(j?.rates?.MYR);
-      if (j?.result !== "success" || !(rate > 0)) throw new Error("no MYR rate");
-      const asOf = new Date(Number(j.time_last_update_unix) * 1e3).toISOString().slice(0, 10);
-      return { rate, source: "ExchangeRate-API", asOf, live: true };
-    }
-  },
-  {
-    name: "Frankfurter (ECB)",
-    load: async () => {
-      const j = await getJson("https://api.frankfurter.dev/v1/latest?base=USD&symbols=MYR");
-      const rate = Number(j?.rates?.MYR);
-      if (!(rate > 0)) throw new Error("no MYR rate");
-      return { rate, source: "Frankfurter (ECB)", asOf: String(j.date), live: true };
-    }
-  }
-];
-function fixedSettingRate() {
-  const rate = Number(process.env.USD_TO_MYR_RATE);
-  return Number.isFinite(rate) && rate > 0 ? { rate, source: "USD_TO_MYR_RATE setting", asOf: "", live: false } : null;
-}
-async function getUsdToMyrRate() {
-  if (cached && Date.now() - cached.fetchedAt < CACHE_MS) return cached.value;
-  for (const provider of providers) {
-    try {
-      const value = await provider.load();
-      cached = { value, fetchedAt: Date.now() };
-      return value;
-    } catch (err) {
-      console.warn(`[FX] ${provider.name} unavailable:`, err?.message || err);
-    }
-  }
-  if (cached) return { ...cached.value, live: false };
-  return fixedSettingRate();
-}
-
-// server/utils/lme.ts
-var URL = "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Al_cash";
-var CACHE_MS2 = 60 * 60 * 1e3;
-var TIMEOUT_MS2 = 8e3;
-var cached2 = null;
-var toNumber = (s) => {
-  const n = Number(s.replace(/,/g, "").trim());
-  return Number.isFinite(n) && n > 0 ? n : null;
-};
-function parseWestmetallTable(html) {
-  const rows = [];
-  const rowRe = /<tr>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([^<]*)<\/td>\s*<td[^>]*>([^<]*)<\/td>/g;
-  let m;
-  while ((m = rowRe.exec(html)) && rows.length < 2) {
-    const date = /* @__PURE__ */ new Date(`${m[1].replace(".", "")} UTC`);
-    if (isNaN(date.getTime())) continue;
-    rows.push({ date: date.toISOString().slice(0, 10), cash: toNumber(m[2]), threeMonth: toNumber(m[3]) });
-  }
-  const latest = rows[0];
-  if (!latest?.cash) throw new Error("no LME aluminium price in the table");
-  return {
-    cash: latest.cash,
-    threeMonth: latest.threeMonth,
-    previousCash: rows[1]?.cash ?? null,
-    asOf: latest.date,
-    source: "LME official prices (via Westmetall)",
-    live: true
-  };
-}
-async function getLmeAluminiumPrice() {
-  if (cached2 && Date.now() - cached2.fetchedAt < CACHE_MS2) return cached2.value;
-  try {
-    const res = await fetch(URL, {
-      signal: AbortSignal.timeout(TIMEOUT_MS2),
-      headers: { "User-Agent": "Mozilla/5.0 (MFE MR11)" }
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const value = parseWestmetallTable(await res.text());
-    cached2 = { value, fetchedAt: Date.now() };
-    return value;
-  } catch (err) {
-    console.warn("[LME] price unavailable:", err?.message || err);
-    return cached2 ? { ...cached2.value, live: false } : null;
-  }
-}
-
-// server/modules/mr11/mr11.controller.ts
+var SHOWN_CURRENCIES = ["MYR", "SGD", "AUD", "INR", "CNY", "EUR", "GBP", "AED"];
 var prisma5 = new PrismaClient();
+var ID_COLUMN = /project\s*no|^po$|^nca$|nca\s*no|stream|series|revision|^rev\b|code|year|phone|^tel|^no\.?$|^#$/i;
 var ORDERED_HEADER_LIST3 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
 async function getLatestMr11(req, res) {
   try {
     const latestRun = await getLatestMr11Run(prisma5);
     const config = await prisma5.mr11Config.findUnique({ where: { id: "singleton" } });
-    const [fx, lmePrice] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice()]);
-    const run = latestRun;
+    const [fx, lmePrice, ratesInfo] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice(), getUsdRatesInfo()]);
+    const usdRates = ratesInfo?.rates ?? null;
+    const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates) } : latestRun;
+    const bdCurrencies = (run?.records || []).map((r) => currencyCode(r?._pricing?.otherCurrency)).filter((c) => Boolean(c) && c !== "USD");
+    const currencyRates = [.../* @__PURE__ */ new Set([...SHOWN_CURRENCIES, ...bdCurrencies])].filter((code) => usdRates?.[code]).map((code) => ({ code, rate: usdRates[code], inBd: bdCurrencies.includes(code), source: ratesInfo?.sources[code] ?? "" }));
     return res.json({
       success: true,
       data: {
         run,
         fxRate: fx,
+        currencyRates,
         lmePrice,
         visibleColumns: config?.visibleColumns || [],
         orderedHeaders: ORDERED_HEADER_LIST3,
@@ -3900,7 +4122,8 @@ async function exportMr11ToExcel(req, res) {
     if (!latestRun || !Array.isArray(latestRun.records) || latestRun.records.length === 0) {
       return res.status(400).json({ success: false, error: { message: "No MR11 records to export" } });
     }
-    const records = latestRun.records;
+    const [lmePrice, usdRates] = await Promise.all([getLmeAluminiumPrice(), getUsdRates()]);
+    const records = applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates);
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
     const headers = ORDERED_HEADER_LIST3;
@@ -3947,6 +4170,11 @@ ${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
       });
       const addedRow = worksheet.addRow(orderedRowData);
       headers.forEach((h, i) => {
+        const v = orderedRowData[h];
+        if (typeof v !== "number" || MR11_NUMBER_FORMATS[h] !== void 0 || ID_COLUMN.test(h)) return;
+        addedRow.getCell(i + 1).numFmt = Number.isInteger(v) ? "#,##0" : "#,##0.000";
+      });
+      headers.forEach((h, i) => {
         if (String(row[h] ?? "").includes("\n")) addedRow.getCell(i + 1).alignment = { wrapText: true, vertical: "top" };
       });
       if (row["_fontColor"]) {
@@ -3983,6 +4211,12 @@ ${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
         };
       });
     }
+    headers.forEach((h, i) => {
+      const places = MR11_NUMBER_FORMATS[h];
+      if (places === void 0) return;
+      const format = `#,##0.${"0".repeat(places)}`;
+      worksheet.getColumn(i + 1).numFmt = MR11_USD_AMOUNT_COLUMNS.includes(h) ? `"$"${format}` : format;
+    });
     const STREAM_MERGE_COLS = [
       "Shell Plan Status - Pending Consultant Drawings",
       // Col AJ
@@ -4047,6 +4281,7 @@ import jwt3 from "jsonwebtoken";
 init_prisma();
 init_supabase();
 import bcrypt2 from "bcryptjs";
+import crypto3 from "crypto";
 var prisma6 = new PrismaClient();
 async function persistUser(userId) {
   const user = await prisma6.user.findUnique({ where: { id: userId } });
@@ -4083,6 +4318,7 @@ async function getAllUsersWithPermissions(req, res) {
         id: true,
         email: true,
         fullName: true,
+        status: true,
         roles: {
           include: {
             role: true
@@ -4098,6 +4334,7 @@ async function getAllUsersWithPermissions(req, res) {
         id: u.id,
         email: u.email,
         fullName: u.fullName,
+        status: u.status || "ACTIVE",
         createdAt: u.createdAt,
         roles: extractRoleCodes(u)
       }))
@@ -4295,6 +4532,34 @@ async function deleteUser(req, res) {
     });
   }
 }
+var TEMP_PASSWORD_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+function temporaryPassword(length = 10) {
+  let out = "";
+  for (let i = 0; i < length; i++) out += TEMP_PASSWORD_CHARS[crypto3.randomInt(TEMP_PASSWORD_CHARS.length)];
+  return out;
+}
+async function resetUserPassword(req, res) {
+  try {
+    const { userId } = req.params;
+    await hydrateUsersFromDb();
+    const user = await prisma6.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: { message: "User not found" } });
+    }
+    const password = temporaryPassword();
+    await prisma6.user.update({
+      where: { id: userId },
+      data: { passwordHash: await bcrypt2.hash(password, 10), status: "MUST_CHANGE_PASSWORD" }
+    });
+    await persistUser(userId);
+    return res.json({
+      success: true,
+      data: { email: user.email, temporaryPassword: password }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message || "Failed to reset the password" } });
+  }
+}
 
 // server/modules/admin/admin.routes.ts
 var router4 = Router4();
@@ -4332,6 +4597,7 @@ router4.get("/users", getAllUsersWithPermissions);
 router4.post("/users", createUser);
 router4.patch("/users/:userId/permissions", updateUserPermissions);
 router4.delete("/users/:userId", deleteUser);
+router4.post("/users/:userId/reset-password", resetUserPassword);
 var admin_routes_default = router4;
 
 // server/modules/visualization/visualization.routes.ts

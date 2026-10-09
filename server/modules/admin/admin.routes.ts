@@ -4,7 +4,8 @@ import {
   getAllUsersWithPermissions, 
   updateUserPermissions, 
   createUser, 
-  deleteUser 
+  deleteUser,
+  resetUserPassword,
 } from './admin.controller';
 
 const router = Router();
@@ -58,6 +59,7 @@ router.get('/users', getAllUsersWithPermissions);
 router.post('/users', createUser);
 router.patch('/users/:userId/permissions', updateUserPermissions);
 router.delete('/users/:userId', deleteUser); // <-- Added delete route
+router.post('/users/:userId/reset-password', resetUserPassword);
 
 export default router;
 export { router as adminRouter };

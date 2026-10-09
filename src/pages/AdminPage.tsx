@@ -10,7 +10,9 @@ import {
   Lock, 
   Crown, 
   UserPlus,
-  Trash2
+  Trash2,
+  KeyRound,
+  Copy
 } from 'lucide-react';
 
 const DEPARTMENT_PRESETS = [
@@ -53,6 +55,12 @@ export const AdminPage: React.FC = () => {
   // Delete User Confirmation State
   const [userToDelete, setUserToDelete] = useState<any | null>(null);
   const [deletingUser, setDeletingUser] = useState(false);
+
+  // Password reset: confirm, then show the temporary password once
+  const [userToReset, setUserToReset] = useState<any | null>(null);
+  const [resettingUser, setResettingUser] = useState(false);
+  const [resetResult, setResetResult] = useState<{ email: string; temporaryPassword: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -119,6 +127,41 @@ export const AdminPage: React.FC = () => {
       setDeletingUser(false);
     }
   };
+
+  const handleResetPasswordConfirm = async () => {
+    if (!userToReset) return;
+    setResettingUser(true);
+    setError(null);
+    try {
+      const res = await api.post(`/admin/users/${userToReset.id}/reset-password`);
+      setResetResult(res.data?.data || null);
+      setCopied(false);
+      setUsers((prev) => prev.map((u) => (u.id === userToReset.id ? { ...u, status: 'MUST_CHANGE_PASSWORD' } : u)));
+    } catch (err: any) {
+      setUserToReset(null);
+      setError(err.response?.data?.error?.message || err.message || 'Failed to reset the password');
+    } finally {
+      setResettingUser(false);
+    }
+  };
+
+  const closeResetDialog = () => {
+    setUserToReset(null);
+    setResetResult(null);
+    setCopied(false);
+  };
+
+  const copyTemporaryPassword = async () => {
+    if (!resetResult) return;
+    try {
+      await navigator.clipboard.writeText(resetResult.temporaryPassword);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  const resetRequests = users.filter((u) => u.status === 'RESET_REQUESTED');
 
   const handleApplyPreset = async (userId: string, presetCode: string) => {
     if (presetCode === 'CUSTOM') return;
@@ -234,6 +277,17 @@ export const AdminPage: React.FC = () => {
         </div>
       )}
 
+      {resetRequests.length > 0 && (
+        <div role="status" className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-2.5 rounded-xl mb-3 text-xs font-medium shadow-sm">
+          <KeyRound className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <span>
+            {resetRequests.length === 1 ? '1 password reset request' : `${resetRequests.length} password reset requests`}:{' '}
+            <strong>{resetRequests.map((u) => u.email).join(', ')}</strong>. Use the key button on the highlighted
+            account to set a temporary password.
+          </span>
+        </div>
+      )}
+
       {/* User Table Matrix */}
       <div className="flex-1 bg-white border border-slate-200/90 rounded-2xl shadow-sm overflow-hidden flex flex-col">
         <div className="p-4 border-b border-slate-100 flex items-center justify-between">
@@ -261,7 +315,7 @@ export const AdminPage: React.FC = () => {
                   </th>
                 ))}
                 <th className="py-3 px-4 text-center w-20">State</th>
-                <th className="py-3 px-3 text-center w-16">Action</th>
+                <th className="py-3 px-3 text-center w-24">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -272,7 +326,12 @@ export const AdminPage: React.FC = () => {
                 const activePreset = detectActivePreset(u.roles);
 
                 return (
-                  <tr key={u.id} className="hover:bg-slate-50/70 transition-colors">
+                  <tr
+                    key={u.id}
+                    className={`transition-colors ${
+                      u.status === 'RESET_REQUESTED' ? 'bg-amber-50/60 hover:bg-amber-50' : 'hover:bg-slate-50/70'
+                    }`}
+                  >
                     <td className="py-3 px-4 border-r border-slate-200/60">
                       <div className="flex items-center gap-2">
                         {hasAdminRole && <Crown className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />}
@@ -352,6 +411,14 @@ export const AdminPage: React.FC = () => {
                     <td className="py-3 px-4 text-center font-mono text-[10px] border-r border-slate-200/60">
                       {isSaving ? (
                         <span className="text-blue-600 font-semibold animate-pulse">Saving...</span>
+                      ) : u.status === 'RESET_REQUESTED' ? (
+                        <span className="whitespace-nowrap text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
+                          RESET REQUESTED
+                        </span>
+                      ) : u.status === 'MUST_CHANGE_PASSWORD' ? (
+                        <span className="whitespace-nowrap text-slate-700 font-bold bg-slate-100 px-2 py-0.5 rounded border border-slate-200" title="Signed in next with the temporary password, then sets a new one">
+                          TEMP PASSWORD
+                        </span>
                       ) : hasAdminRole ? (
                         <span className="text-amber-800 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
                           ADMIN
@@ -361,22 +428,37 @@ export const AdminPage: React.FC = () => {
                       )}
                     </td>
 
-                    {/* Delete User Action */}
+                    {/* Reset Password & Delete User Actions */}
                     <td className="py-3 px-3 text-center">
-                      {isRootAdmin ? (
-                        <span className="text-slate-300" title="Protected System Account">
-                          —
-                        </span>
-                      ) : (
+                      <div className="flex items-center justify-center gap-0.5">
                         <button
                           type="button"
-                          onClick={() => setUserToDelete(u)}
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                          title="Delete User Account"
+                          onClick={() => setUserToReset(u)}
+                          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                            u.status === 'RESET_REQUESTED'
+                              ? 'text-amber-700 bg-amber-100 hover:bg-amber-200'
+                              : 'text-slate-400 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                          title="Reset password"
+                          aria-label={`Reset password for ${u.email}`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <KeyRound className="w-3.5 h-3.5" />
                         </button>
-                      )}
+                        {isRootAdmin ? (
+                          <span className="w-[26px] text-slate-300" title="Protected System Account">
+                            —
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setUserToDelete(u)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                            title="Delete User Account"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -385,6 +467,82 @@ export const AdminPage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Reset Password Modal: confirm, then show the temporary password once */}
+      {userToReset && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="reset-title" className="bg-white rounded-2xl border border-slate-200 shadow-xl w-full max-w-sm p-6 overflow-hidden">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center flex-shrink-0">
+                <KeyRound className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 id="reset-title" className="text-sm font-bold text-slate-900">
+                  {resetResult ? 'Temporary password created' : 'Reset password'}
+                </h3>
+                <p className="text-xs text-slate-500">{userToReset.email}</p>
+              </div>
+            </div>
+
+            {resetResult ? (
+              <>
+                <p className="text-xs text-slate-600 mb-3 leading-relaxed">
+                  Give this password to the user privately. It is shown only once. When they sign in with it, they must
+                  choose their own password.
+                </p>
+                <div className="flex items-center gap-2 mb-5">
+                  <code className="flex-1 select-all rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-base font-semibold tracking-wider text-slate-900">
+                    {resetResult.temporaryPassword}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={copyTemporaryPassword}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-200 bg-white hover:bg-slate-50 rounded-lg transition cursor-pointer"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={closeResetDialog}
+                    className="px-4 py-1.5 bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-slate-600 mb-5 leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  A temporary password will replace <strong className="text-slate-900">{userToReset.email}</strong>'s
+                  current password, which stops working immediately. You will see the temporary password once, to pass
+                  on to the user.
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={closeResetDialog}
+                    disabled={resettingUser}
+                    className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetPasswordConfirm}
+                    disabled={resettingUser}
+                    className="px-4 py-1.5 bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg shadow-sm transition disabled:opacity-50 cursor-pointer"
+                  >
+                    {resettingUser ? 'Resetting...' : 'Reset password'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Delete User Confirmation Modal */}
       {userToDelete && (

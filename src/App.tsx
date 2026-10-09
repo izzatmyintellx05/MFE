@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuthStore } from './store/auth.store';
 import { Sidebar } from './components/layout/Sidebar';
@@ -10,11 +10,18 @@ import { PlanningPage } from './pages/PlanningPage';
 import { ProductionPage } from './pages/ProductionPage';
 import { AdminPage } from './pages/AdminPage';
 import { isAdmin, canSeeCeoDashboard, canSeeDepartment } from './utils/access';
+import { ChangePasswordDialog } from './components/common/ChangePasswordDialog';
 
 // Protected layout with synchronous localStorage fallback
 const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { token } = useAuthStore();
+  const { token, mustChangePassword } = useAuthStore();
   const storedToken = token || localStorage.getItem('mfe_token');
+  // A temporary password must be replaced before the app can be used; the dialog stays
+  // open after the change so the user sees the confirmation
+  const [forcedChangeOpen, setForcedChangeOpen] = useState(mustChangePassword);
+  useEffect(() => {
+    if (mustChangePassword) setForcedChangeOpen(true);
+  }, [mustChangePassword]);
 
   if (!storedToken) {
     return <Navigate to="/login" replace />;
@@ -26,6 +33,7 @@ const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
       <main className="flex-1 h-full overflow-hidden flex flex-col min-w-0">
         {children}
       </main>
+      <ChangePasswordDialog open={forcedChangeOpen} forced={mustChangePassword} onClose={() => setForcedChangeOpen(false)} />
     </div>
   );
 };

@@ -6,6 +6,8 @@ interface AuthState {
   token: string | null;
   // True while the signed-in account still uses the default password
   usingDefaultPassword: boolean;
+  // True after signing in with a temporary password from an administrator
+  mustChangePassword: boolean;
   login: (email: string, pass: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => void;
@@ -27,19 +29,26 @@ const getStoredUser = (): any | null => {
 };
 
 const DEFAULT_PASSWORD_KEY = 'mfe_default_password';
+const MUST_CHANGE_KEY = 'mfe_must_change_password';
 
-const getStoredDefaultFlag = (): boolean => {
+const getStoredFlag = (key: string): boolean => {
   try {
-    return localStorage.getItem(DEFAULT_PASSWORD_KEY) === '1';
+    return localStorage.getItem(key) === '1';
   } catch {
     return false;
   }
 };
 
+const storeFlag = (key: string, on: boolean) => {
+  if (on) localStorage.setItem(key, '1');
+  else localStorage.removeItem(key);
+};
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: getStoredUser(),
   token: getStoredToken(),
-  usingDefaultPassword: getStoredDefaultFlag(),
+  usingDefaultPassword: getStoredFlag(DEFAULT_PASSWORD_KEY),
+  mustChangePassword: getStoredFlag(MUST_CHANGE_KEY),
 
   login: async (email: string, pass: string) => {
     const res = await api.post('/auth/login', { email, password: pass });
@@ -65,26 +74,29 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.setItem('mfe_token', token);
     localStorage.setItem('mfe_user', JSON.stringify(user || { email }));
     const usingDefaultPassword = !!user?.usingDefaultPassword;
-    if (usingDefaultPassword) localStorage.setItem(DEFAULT_PASSWORD_KEY, '1');
-    else localStorage.removeItem(DEFAULT_PASSWORD_KEY);
+    const mustChangePassword = !!user?.mustChangePassword;
+    storeFlag(DEFAULT_PASSWORD_KEY, usingDefaultPassword);
+    storeFlag(MUST_CHANGE_KEY, mustChangePassword);
 
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
 
-    set({ token, user: user || { email }, usingDefaultPassword });
+    set({ token, user: user || { email }, usingDefaultPassword, mustChangePassword });
   },
 
   changePassword: async (currentPassword: string, newPassword: string) => {
     await api.post('/auth/change-password', { currentPassword, newPassword });
-    localStorage.removeItem(DEFAULT_PASSWORD_KEY);
-    set({ usingDefaultPassword: false });
+    storeFlag(DEFAULT_PASSWORD_KEY, false);
+    storeFlag(MUST_CHANGE_KEY, false);
+    set({ usingDefaultPassword: false, mustChangePassword: false });
   },
 
   logout: () => {
     localStorage.removeItem('mfe_token');
     localStorage.removeItem('mfe_user');
     localStorage.removeItem(DEFAULT_PASSWORD_KEY);
+    localStorage.removeItem(MUST_CHANGE_KEY);
     delete api.defaults.headers.common['Authorization'];
-    set({ token: null, user: null, usingDefaultPassword: false });
+    set({ token: null, user: null, usingDefaultPassword: false, mustChangePassword: false });
     window.location.href = '/login';
   },
 

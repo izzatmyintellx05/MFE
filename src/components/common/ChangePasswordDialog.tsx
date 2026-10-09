@@ -7,14 +7,16 @@ const MIN_LENGTH = 8;
 interface ChangePasswordDialogProps {
   open: boolean;
   onClose: () => void;
+  // Signed in with a temporary password: the dialog cannot be dismissed until a new password is set
+  forced?: boolean;
 }
 
 const FIELD =
   'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 pr-10 text-sm text-slate-900 transition-colors focus:border-[#004B87] focus:outline-none focus:ring-2 focus:ring-[#004B87]/20';
 
 // Lets the signed-in user replace their password (the default admin123 included)
-export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open, onClose }) => {
-  const { changePassword } = useAuthStore();
+export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open, onClose, forced = false }) => {
+  const { changePassword, logout } = useAuthStore();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -24,6 +26,7 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
   const [done, setDone] = useState(false);
   const firstField = useRef<HTMLInputElement>(null);
 
+  // Fresh fields each time the dialog opens
   useEffect(() => {
     if (!open) return;
     setCurrent('');
@@ -33,10 +36,14 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
     setError(null);
     setDone(false);
     setTimeout(() => firstField.current?.focus(), 0);
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !forced && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, forced]);
 
   if (!open) return null;
 
@@ -63,7 +70,7 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px]"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      onMouseDown={(e) => e.target === e.currentTarget && !forced && onClose()}
     >
       <div
         role="dialog"
@@ -78,11 +85,16 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
             </span>
             <div>
               <h2 id="change-password-title" className="text-sm font-semibold text-slate-900">
-                Change password
+                {forced ? 'Set a new password' : 'Change password'}
               </h2>
-              <p className="text-xs text-slate-500">Your new password replaces the current one.</p>
+              <p className="text-xs text-slate-500">
+                {forced
+                  ? 'You signed in with a temporary password. Choose your own password to continue.'
+                  : 'Your new password replaces the current one.'}
+              </p>
             </div>
           </div>
+          {!forced && (
           <button
             type="button"
             onClick={onClose}
@@ -91,6 +103,7 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
           >
             <X className="h-4 w-4" />
           </button>
+          )}
         </div>
 
         {done ? (
@@ -111,7 +124,7 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
           <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
             <div>
               <label htmlFor="cp-current" className="mb-1.5 block text-xs font-medium text-slate-700">
-                Current password
+                {forced ? 'Temporary password' : 'Current password'}
               </label>
               <input
                 ref={firstField}
@@ -175,13 +188,15 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
             )}
 
             <div className="flex gap-2 pt-1">
-              <button
-                type="button"
-                onClick={onClose}
-                className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 cursor-pointer"
-              >
-                Cancel
-              </button>
+              {!forced && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={saving}
@@ -190,6 +205,15 @@ export const ChangePasswordDialog: React.FC<ChangePasswordDialogProps> = ({ open
                 {saving ? 'Saving…' : 'Change password'}
               </button>
             </div>
+            {forced && (
+              <button
+                type="button"
+                onClick={logout}
+                className="w-full text-center text-xs font-medium text-slate-500 underline-offset-4 hover:text-slate-900 hover:underline cursor-pointer"
+              >
+                Sign out instead
+              </button>
+            )}
           </form>
         )}
       </div>
