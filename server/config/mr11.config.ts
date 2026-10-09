@@ -37,11 +37,17 @@ export const MR11_HEADER_GROUPS: HeaderGroup[] = [
   },
 ];
 
+/** Payment terms amounts are US dollar values (BD formats them as $): shown with a $ and 2 decimals */
+export const MR11_USD_AMOUNT_COLUMNS = ['Payment terms - Amount', 'Payment terms - Amount 2', 'Payment terms - Amount 3'];
+
 /** Decimal places shown for numeric MR11 columns (MR11 page and Excel export). */
 export const MR11_NUMBER_FORMATS: Record<string, number> = {
   'LME Rate (USD)': 3,
   'LME Adjusted (USD)': 3,
   'Final Selling Price (USD)': 3,
+  'Payment terms - Amount': 2,
+  'Payment terms - Amount 2': 2,
+  'Payment terms - Amount 3': 2,
 };
 
 export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {
@@ -121,6 +127,7 @@ export const ORDERED_HEADER_LIST = [
   'Stream',
   'Building Name',
   'Countries',
+  'Location',
   'PIC',
   'Status',
   'Products type',
@@ -218,6 +225,8 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'Stream', sourceDept: RoleCode.BD, sourceColumn: 'Stream', type: 'string', exact: true }, // D
   { target: 'Building Name', sourceDept: RoleCode.BD, sourceColumn: 'Building Name', type: 'string', exact: true }, // E
   { target: 'Countries', sourceDept: RoleCode.BD, sourceColumn: 'Countries', type: 'string', exact: true, aliases: ['Country'] }, // E
+  // City or site of the project (e.g. Hyderabad, Chennai, Mumbai)
+  { target: 'Location', sourceDept: RoleCode.BD, sourceColumn: 'Location', type: 'string', exact: true, aliases: ['City', 'Project Location', 'Site'] },
   { target: 'PIC', sourceDept: RoleCode.BD, sourceColumn: 'PIC', type: 'string', exact: true }, // F
   { target: 'Status', sourceDept: RoleCode.BD, sourceColumn: 'Status', type: 'string', exact: true }, // G
   { target: 'Products type', sourceDept: RoleCode.BD, sourceColumn: 'Product Type', type: 'string', exact: true, aliases: ['Products type'] }, // H

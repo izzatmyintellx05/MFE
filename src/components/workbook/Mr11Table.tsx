@@ -76,7 +76,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
   // decimals); identifier columns such as Project No keep their digits
   const cellText = (h: string, v: any): string => {
     if (v === null || v === undefined || v === '') return '—';
-    return formatCellNumber(v, h, numberFormats[h]);
+    const text = formatCellNumber(v, h, numberFormats[h]);
+    // Payment terms amounts are dollar values, not percentages
+    return /^payment terms - amount/i.test(h) && /^-?[\d,.]+$/.test(text) ? `$${text}` : text;
   };
   const today = todayInMalaysia();
   const groupOf = (h: string) => headerGroups.find((g) => g.columns.some((c) => c.key === h));

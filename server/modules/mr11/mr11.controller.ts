@@ -9,6 +9,7 @@ import {
   MR11_NUMBER_FORMATS,
   MR11_COLUMN_DEPARTMENTS,
   MR11_DEPARTMENT_COLORS,
+  MR11_USD_AMOUNT_COLUMNS,
 } from '../../config/mr11.config';
 import { getUsdToMyrRate, getUsdRates, getUsdRatesInfo } from '../../utils/fx';
 import { applyLivePricing, currencyCode } from './mr11.pricing';
@@ -286,10 +287,12 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     }
 
     // Merged ONLY for ShellPlan and Design across the [Project, Stream] span
-    // Fixed-decimal columns keep their decimals, with separators
+    // Fixed-decimal columns keep their decimals, with separators; payment amounts are in dollars
     headers.forEach((h, i) => {
       const places = MR11_NUMBER_FORMATS[h];
-      if (places !== undefined) worksheet.getColumn(i + 1).numFmt = `#,##0.${'0'.repeat(places)}`;
+      if (places === undefined) return;
+      const format = `#,##0.${'0'.repeat(places)}`;
+      worksheet.getColumn(i + 1).numFmt = MR11_USD_AMOUNT_COLUMNS.includes(h) ? `"$"${format}` : format;
     });
 
     const STREAM_MERGE_COLS = [

@@ -26,6 +26,7 @@ function dispatchStage(row: Record<string, any>): string {
 export const FILTER_FIELDS: FilterField[] = [
   { key: 'Short Name', label: 'Project' },
   { key: 'Countries', label: 'Country' },
+  { key: 'Location', label: 'Location' },
   { key: 'PIC', label: 'PIC' },
   { key: 'Status', label: 'Status' },
   { key: 'Products type', label: 'Product type' },
