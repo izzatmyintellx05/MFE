@@ -173,6 +173,77 @@ export function monthlySeries(rows: any[], months: MonthColumn[], today: Date): 
   });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Production pipeline for one month (MR11 keeps each row's month in row._monthStages)
+// ---------------------------------------------------------------------------------------------
+
+export type MonthStage = 'bd' | 'design' | 'processed' | 'produced' | 'dispatched';
+export const MONTH_STAGES: MonthStage[] = ['bd', 'design', 'processed', 'produced', 'dispatched'];
+export const MONTH_STAGE_LABELS: Record<MonthStage, string> = {
+  bd: 'BD Forecast',
+  design: 'Design',
+  processed: 'Processed',
+  produced: 'Produced',
+  dispatched: 'Dispatched',
+};
+
+export interface MonthPipeline {
+  ended: boolean;
+  /** m2 of the physical product types, and of the design-only ones (e.g. Re-Design Only) shown apart */
+  main: Record<MonthStage, number>;
+  designOnly: Record<MonthStage, number>;
+  designOnlyLabel: string;
+  /** Ended month: m2 planned for it but not dispatched, moved to the next month */
+  notDispatched: number;
+  nextMonthKey: string | null;
+}
+
+/**
+ * One month's pipeline. While the month runs: BD's forecast, the forecast after Design and after
+ * Processed, and the m2 produced and dispatched so far. Design's quantity covers every product
+ * type of a block, so it is one combined figure; design-only types (blue-font BD rows, which stop
+ * at Planning) are shown apart under BD and Processed. Once the month has ended, the dispatched
+ * m2 is the actual and Design, Processed and Produced show it too (design-only types still apart
+ * under Design and Processed); what was planned but not dispatched moves to the next month.
+ */
+export function monthPipeline(rows: any[], col: MonthColumn, today: Date): MonthPipeline {
+  const zero = (): Record<MonthStage, number> => ({ bd: 0, design: 0, processed: 0, produced: 0, dispatched: 0 });
+  const main = zero();
+  const designOnly = zero();
+  const designOnlyTypes = new Set<string>();
+  let notDispatched = 0;
+  for (const r of rows) {
+    const m = r?._monthStages?.[col.key];
+    if (!m) continue;
+    const target = r._designOnly ? designOnly : main;
+    for (const s of MONTH_STAGES) target[s] += toNumber(m[s]);
+    if (!r._designOnly) notDispatched += Math.max(0, toNumber(m.processed) - toNumber(m.dispatched));
+    if (r._designOnly && (toNumber(m.bd) > 0 || toNumber(m.processed) > 0)) {
+      designOnlyTypes.add(String(r['Products type'] || 'Design only').replace(/\s*\(.*\)\s*$/, ''));
+    }
+  }
+
+  const ended = isMonthCompleted(col, today);
+  const next = col.month === 11 ? { year: col.year + 1, month: 0 } : { year: col.year, month: col.month + 1 };
+  const result: MonthPipeline = {
+    ended,
+    main,
+    designOnly,
+    designOnlyLabel: [...designOnlyTypes].join(', ') || 'Design only',
+    notDispatched: 0,
+    nextMonthKey: `${MONTH_ABBR[next.month]}-${String(next.year).slice(-2)}`,
+  };
+  if (ended) {
+    result.notDispatched = notDispatched;
+    main.design = main.processed = main.produced = main.dispatched;
+  } else {
+    // Design is one figure for every product type of a block
+    main.design += designOnly.design;
+    designOnly.design = 0;
+  }
+  return result;
+}
+
 // m2 dispatched (left the warehouse) in each month, by the date Total Dispatch last changed
 export function dispatchedByMonth(rows: any[], months: MonthColumn[]): number[] {
   return months.map((col) => stageTotals(rows, col.key).dispatched);

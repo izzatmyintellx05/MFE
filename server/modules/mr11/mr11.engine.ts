@@ -744,21 +744,31 @@ function findCellValue(row: Record<string, any>, candidateHeader: string): any {
   return null;
 }
 
+/** Per MR11 row and month ("2026-10"): the Design and Processed forecast as it last stood */
+type MonthStageHistory = Record<string, Record<string, { design: number; processed: number }>>;
+
 /**
- * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2).
+ * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2), and each
+ * row's month-by-month pipeline for the CEO dashboard (row._monthStages).
  *
- * A row's m2 starts as BD's forecast. Design's Total Quantity Ordered (one value for every BD row
- * of the same project, stream and fill colour, shared by their BD forecasts) replaces it when
- * higher, or when lower once every level is completed. Total Processed then replaces that when
- * higher, or when lower once every Planning row's Order Status is Completed. The difference goes
- * to the current month first; a cut also takes from the months after it. A month that has ended
- * shows the m2 dispatched in it instead (actual). A row without a BD forecast gets none from
- * Design or Processed; only its ended months fill in with what was dispatched.
+ * A row's project m2 starts as BD's forecast. Design's Total Quantity Ordered (one value for every
+ * BD row of the same project, stream and fill colour, shared by their BD forecasts) replaces it
+ * when higher, or when lower once every level is completed. Total Processed then replaces that
+ * when higher, or when lower once every Planning row's Order Status is Completed.
+ *
+ * A month that has ended shows the m2 dispatched in it (actual). The months after the current
+ * one keep BD's forecast, and the current month takes the rest: the project m2 less what was
+ * dispatched and less those later months. So m2 forecast for a month but not dispatched moves
+ * to the next month, and a change from Design or Processed lands in the current month first (a
+ * cut also takes from the months after it). A row without a BD forecast gets none from Design or
+ * Processed; only its ended months fill in with what was dispatched.
  */
-function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string): void {
+function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string, stageHistory: MonthStageHistory): void {
   const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
   const monthKeyOf = (label: string) => `20${label.slice(-2)}-${String(MONTH_LABELS.indexOf(label.slice(0, 3)) + 1).padStart(2, '0')}`;
   const sum = (v: Record<string, number>) => labels.reduce((t, l) => t + (v[l] || 0), 0);
+  const ended = labels.filter((l) => monthKeyOf(l) < currentMonth);
+  const open = labels.filter((l) => monthKeyOf(l) >= currentMonth);
 
   const groups = new Map<string, Record<string, any>[]>();
   for (const row of rows) {
@@ -778,35 +788,42 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string)
 
     group.forEach((row, idx) => {
       const input = row['_forecastInput'];
-      const values: Record<string, number> = { ...input.bdMonthValues };
-      let target: number | null = bdTotals[idx] > 0 ? bdTotals[idx] : null;
-      let source = 'BD';
-      if (designApplies && target !== null) {
-        target = (designQty * bdTotals[idx]) / groupBd;
-        source = 'Design';
-      }
+      const bd: Record<string, number> = input.bdMonthValues;
+      const dispatched: Record<string, number> = input.dispatchedInMonth;
+
+      let designTarget: number | null = bdTotals[idx] > 0 ? bdTotals[idx] : null;
+      if (designApplies && designTarget !== null) designTarget = (designQty * bdTotals[idx]) / groupBd;
+      let target = designTarget;
+      let source = designApplies && target !== null ? 'Design' : 'BD';
       if (target !== null && input.processed !== null && (input.processed > target || input.planningDone)) {
         target = input.processed;
         source = 'Processed';
       }
 
-      let difference = target === null ? 0 : target - bdTotals[idx];
-      const openLabels = labels.filter((l) => monthKeyOf(l) >= currentMonth);
-      if (difference > 0 && openLabels.length > 0) {
-        values[openLabels[0]] += difference;
-      } else if (difference < 0) {
-        for (const l of openLabels) {
-          const cut = Math.min(values[l], -difference);
-          values[l] -= cut;
-          difference += cut;
-          if (difference >= 0) break;
+      // Months for a project m2: ended months are what was dispatched (without a dispatch record,
+      // e.g. design-only types, what was last planned for them, else BD's value), later months
+      // BD's, the current month the rest
+      const history = (stageHistory[input.historyKey] ||= {});
+      const allocate = (projectM2: number | null, stage: 'design' | 'processed'): Record<string, number> => {
+        const v: Record<string, number> = { ...bd };
+        for (const l of ended) {
+          const key = monthKeyOf(l);
+          if (dispatched[key] !== undefined) v[l] = dispatched[key];
+          else if (history[key]) v[l] = history[key][stage];
         }
-      }
-
-      for (const l of labels) {
-        const key = monthKeyOf(l);
-        if (key < currentMonth && input.dispatchedInMonth[key] !== undefined) values[l] = input.dispatchedInMonth[key];
-      }
+        if (projectM2 === null || open.length === 0) return v;
+        let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
+        v[open[0]] = Math.max(0, current);
+        for (const l of open.slice(1)) {
+          if (current >= 0) break;
+          const cut = Math.min(v[l], -current);
+          v[l] -= cut;
+          current += cut;
+        }
+        return v;
+      };
+      const designValues = allocate(designTarget, 'design');
+      const values = allocate(target, 'processed');
 
       let total2026 = 0;
       let total2027 = 0;
@@ -818,6 +835,26 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string)
       row['Total 2026 m2'] = total2026 > 0 ? Number(total2026.toFixed(2)) : null;
       row['Total 2027 m2'] = total2027 > 0 ? Number(total2027.toFixed(2)) : null;
       row['_forecastSource'] = target === null ? null : source;
+
+      // Pipeline per month. A month still open records its Design and Processed forecast; once
+      // it has ended, the last record stands (what was planned for it, against what was dispatched)
+      const stages: Record<string, any> = {};
+      const round = (n: number | undefined | null) => (n === undefined || n === null ? null : Number(n.toFixed(2)));
+      for (const l of labels) {
+        const key = monthKeyOf(l);
+        if (key >= currentMonth) history[key] = { design: designValues[l], processed: values[l] };
+        const planned = history[key] ?? { design: designValues[l], processed: values[l] };
+        const entry = {
+          bd: round(bd[l]),
+          design: round(planned.design),
+          processed: round(planned.processed),
+          produced: round(input.producedInMonth[key]),
+          dispatched: round(dispatched[key]),
+        };
+        if (Object.values(entry).some((n) => n !== null && n > 0)) stages[l] = entry;
+      }
+      row['_monthStages'] = stages;
+      row['_designOnly'] = input.designOnly;
       delete row['_forecastInput'];
     });
   }
@@ -1158,6 +1195,14 @@ export async function executeMr11Pipeline(
   // that are no longer in the file are kept from here
   const localDispatchByMonth: Record<string, Record<string, number>> = JSON.parse(
     JSON.stringify((previousRun?.sourceSnapshot as any)?.localDispatchByMonth || {})
+  );
+  // The same for Production (its file is monthly too): m2 produced per month from its daily columns
+  const productionByMonth: Record<string, Record<string, number>> = JSON.parse(
+    JSON.stringify((previousRun?.sourceSnapshot as any)?.productionByMonth || {})
+  );
+  // Each MR11 row's Design and Processed forecast per month as it last stood (CEO dashboard)
+  const monthStageHistory: MonthStageHistory = JSON.parse(
+    JSON.stringify((previousRun?.sourceSnapshot as any)?.monthStageHistory || {})
   );
   // Shell Plan approval history kept with each MR11, continued from the previous one
   const approvalHistory: Record<string, ApprovalHistoryGroup> = JSON.parse(
@@ -1935,6 +1980,10 @@ export async function executeMr11Pipeline(
     const dayColumns = Object.entries(productionHeaders)
       .map(([c, h]) => ({ c: Number(c), date: dispatchDayOf(h) }))
       .filter((d): d is { c: number; date: string } => Boolean(d.date));
+    // m2 produced per month, from the same daily columns; months no longer in the (monthly)
+    // file are kept from earlier uploads
+    const producedInFile: Record<string, number> = {};
+    for (const { date } of dayColumns) producedInFile[date.slice(0, 7)] ??= 0;
     for (const pRow of productionMatches) {
       for (const { c, date } of dayColumns) {
         const cellVal = pRow.rawCells?.[c];
@@ -1942,7 +1991,17 @@ export async function executeMr11Pipeline(
         if (isCellFilled(targetVal) && (!latestFilledDate || date > latestFilledDate)) {
           latestFilledDate = date;
         }
+        if (isCellFilled(targetVal) && !pRow.mergedCopyHeaders?.includes(productionHeaders[c])) {
+          producedInFile[date.slice(0, 7)] += parseNumeric(targetVal);
+        }
       }
+    }
+    const rowHistoryKey = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']);
+    const producedInMonth: Record<string, number> = {};
+    if (!isBlueColor(bdFontColor) && productionMatches.length > 0) {
+      const history = (productionByMonth[rowHistoryKey] ||= {});
+      Object.assign(history, producedInFile);
+      Object.assign(producedInMonth, history);
     }
 
     // The Production file is monthly (a new month's file starts with empty days): until a day
@@ -2006,6 +2065,10 @@ export async function executeMr11Pipeline(
       processed: processedTotal,
       planningDone: orderStatuses.length > 0 && orderStatuses.every((v) => /complete/i.test(String(v)) && !/not/i.test(String(v))),
       dispatchedInMonth,
+      producedInMonth,
+      historyKey: rowHistoryKey,
+      // Blue-font BD rows (e.g. Re-Design Only) go no further than Planning
+      designOnly: isBlueColor(bdFontColor),
     };
 
     outRow['_fontColor'] = bdFontColor;
@@ -2014,7 +2077,7 @@ export async function executeMr11Pipeline(
     return outRow;
   });
 
-  applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7));
+  applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7), monthStageHistory);
 
   // --------------------------------------------------------------------------
   // Formwork Design Status for a project (per fill colour block): Fully Complete when every
@@ -2136,6 +2199,8 @@ export async function executeMr11Pipeline(
         dispatchTracker: newDispatchTracker,
         dispatchByMonth,
         localDispatchByMonth,
+        productionByMonth,
+        monthStageHistory,
         shellplanApprovalHistory: approvalHistory,
       },
       recordCount: derivedMr11Rows.length,
@@ -2153,6 +2218,8 @@ export async function executeMr11Pipeline(
           dispatchTracker: newDispatchTracker,
           dispatchByMonth,
           localDispatchByMonth,
+          productionByMonth,
+          monthStageHistory,
           shellplanApprovalHistory: approvalHistory,
           engineHistory: exportEngineHistory(),
         },
