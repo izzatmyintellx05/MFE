@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuthStore } from './store/auth.store';
 import { Sidebar } from './components/layout/Sidebar';
 import { CeoDashboard } from './pages/CeoDashboard';
@@ -9,6 +9,7 @@ import { DepartmentPage } from './pages/DepartmentPage';
 import { PlanningPage } from './pages/PlanningPage';
 import { ProductionPage } from './pages/ProductionPage';
 import { AdminPage } from './pages/AdminPage';
+import { isAdmin, canSeeCeoDashboard, canSeeDepartment } from './utils/access';
 
 // Protected layout with synchronous localStorage fallback
 const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -26,6 +27,23 @@ const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
         {children}
       </main>
     </div>
+  );
+};
+
+// Opens a page only for users allowed to see it; everyone else lands on MR11
+const RequireAccess: React.FC<{ allow: (user: any) => boolean; children: React.ReactNode }> = ({ allow, children }) => {
+  const { user } = useAuthStore();
+  // The account is still loading after a refresh; the protected layout handles signed-out users
+  if (!user) return null;
+  return allow(user) ? <>{children}</> : <Navigate to="/mr11" replace />;
+};
+
+const DepartmentRoute: React.FC = () => {
+  const { code = '' } = useParams();
+  return (
+    <RequireAccess allow={(user) => canSeeDepartment(user, code)}>
+      <DepartmentPage />
+    </RequireAccess>
   );
 };
 
@@ -57,25 +75,31 @@ export const App: React.FC = () => {
           path="/admin"
           element={
             <ProtectedLayout>
-              <AdminPage />
+              <RequireAccess allow={isAdmin}>
+                <AdminPage />
+              </RequireAccess>
             </ProtectedLayout>
           }
         />
 
-          <Route
+        <Route
           path="/ceo"
           element={
             <ProtectedLayout>
-              <CeoDashboard />
+              <RequireAccess allow={canSeeCeoDashboard}>
+                <CeoDashboard />
+              </RequireAccess>
             </ProtectedLayout>
-            }
-/>
+          }
+        />
 
         <Route
           path="/departments/PLANNING"
           element={
             <ProtectedLayout>
-              <PlanningPage />
+              <RequireAccess allow={(user) => canSeeDepartment(user, 'PLANNING')}>
+                <PlanningPage />
+              </RequireAccess>
             </ProtectedLayout>
           }
         />
@@ -84,7 +108,9 @@ export const App: React.FC = () => {
           path="/departments/PRODUCTION"
           element={
             <ProtectedLayout>
-              <ProductionPage />
+              <RequireAccess allow={(user) => canSeeDepartment(user, 'PRODUCTION')}>
+                <ProductionPage />
+              </RequireAccess>
             </ProtectedLayout>
           }
         />
@@ -93,7 +119,7 @@ export const App: React.FC = () => {
           path="/departments/:code"
           element={
             <ProtectedLayout>
-              <DepartmentPage />
+              <DepartmentRoute />
             </ProtectedLayout>
           }
         />

@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
 import { useAuthStore } from '../store/auth.store';
 import { BrandLogo } from '../components/common/BrandLogo';
-import { ShieldCheck, Lock, Mail, ArrowRight, AlertTriangle, Zap } from 'lucide-react';
+import { Lock, Mail, ArrowRight, AlertTriangle } from 'lucide-react';
 
 export const Login: React.FC = () => {
   const { login } = useAuthStore();
-  // Pre-fill default credentials for seamless development login
-  const [email, setEmail] = useState('admin@mfeformwork.com');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,44 +129,7 @@ export const Login: React.FC = () => {
               <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
-
-            {/* Quick-Fill Root Admin Button */}
-            <button
-              type="button"
-              onClick={() => performLogin('admin@mfeformwork.com', 'admin123')}
-              disabled={loading}
-              className="w-full py-2 px-3 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/90 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Zap className="w-3.5 h-3.5 text-amber-600" />
-              <span>Quick Login as System Admin</span>
-            </button>
-
-            {/* Quick Demo Switchers */}
-            <div className="pt-1 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => performLogin('ceo@mfeformwork.com', 'admin123')}
-                disabled={loading}
-                className="py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-semibold transition text-center cursor-pointer"
-              >
-                Login as CEO
-              </button>
-              <button
-                type="button"
-                onClick={() => performLogin('planning@mfeformwork.com', 'admin123')}
-                disabled={loading}
-                className="py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-semibold transition text-center cursor-pointer"
-              >
-                Login as Planning
-              </button>
-            </div>
           </form>
-
-          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
-            <span className="flex items-center gap-1 font-mono text-[10px]">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Default Pass: <code className="text-slate-600 font-bold">admin123</code>
-            </span>
-          </div>
         </div>
       </div>
     </div>

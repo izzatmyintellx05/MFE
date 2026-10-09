@@ -4,7 +4,10 @@ import { api } from '../api/client';
 interface AuthState {
   user: any | null;
   token: string | null;
+  // True while the signed-in account still uses the default password
+  usingDefaultPassword: boolean;
   login: (email: string, pass: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => void;
   initAuth: () => Promise<void>;
 }
@@ -23,9 +26,20 @@ const getStoredUser = (): any | null => {
   }
 };
 
+const DEFAULT_PASSWORD_KEY = 'mfe_default_password';
+
+const getStoredDefaultFlag = (): boolean => {
+  try {
+    return localStorage.getItem(DEFAULT_PASSWORD_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: getStoredUser(),
   token: getStoredToken(),
+  usingDefaultPassword: getStoredDefaultFlag(),
 
   login: async (email: string, pass: string) => {
     const res = await api.post('/auth/login', { email, password: pass });
@@ -50,17 +64,27 @@ export const useAuthStore = create<AuthState>((set) => ({
     console.log('[AUTH STORE] Token saved successfully');
     localStorage.setItem('mfe_token', token);
     localStorage.setItem('mfe_user', JSON.stringify(user || { email }));
+    const usingDefaultPassword = !!user?.usingDefaultPassword;
+    if (usingDefaultPassword) localStorage.setItem(DEFAULT_PASSWORD_KEY, '1');
+    else localStorage.removeItem(DEFAULT_PASSWORD_KEY);
 
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
 
-    set({ token, user: user || { email } });
+    set({ token, user: user || { email }, usingDefaultPassword });
+  },
+
+  changePassword: async (currentPassword: string, newPassword: string) => {
+    await api.post('/auth/change-password', { currentPassword, newPassword });
+    localStorage.removeItem(DEFAULT_PASSWORD_KEY);
+    set({ usingDefaultPassword: false });
   },
 
   logout: () => {
     localStorage.removeItem('mfe_token');
     localStorage.removeItem('mfe_user');
+    localStorage.removeItem(DEFAULT_PASSWORD_KEY);
     delete api.defaults.headers.common['Authorization'];
-    set({ token: null, user: null });
+    set({ token: null, user: null, usingDefaultPassword: false });
     window.location.href = '/login';
   },
 

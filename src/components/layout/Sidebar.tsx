@@ -1,8 +1,10 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuthStore } from '../../store/auth.store';
 import { BrandLogo } from '../common/BrandLogo';
 import { usePersistentState } from '../../utils/usePersistentState';
+import { isAdmin as userIsAdmin, canSeeCeoDashboard, canSeeDepartment } from '../../utils/access';
+import { ChangePasswordDialog } from '../common/ChangePasswordDialog';
 import {
   FileSpreadsheet,
   LayoutDashboard,
@@ -12,6 +14,7 @@ import {
   PanelLeftOpen,
   SlidersHorizontal,
   LineChart,
+  KeyRound,
 } from 'lucide-react';
 
 // Shell Plan and Design share one workbook and one page; either role opens it
@@ -72,7 +75,8 @@ const SectionLabel: React.FC<{ open: boolean; children: React.ReactNode }> = ({ 
   );
 
 export const Sidebar: React.FC = () => {
-  const { user, token, logout, initAuth } = useAuthStore();
+  const { user, token, logout, initAuth, usingDefaultPassword } = useAuthStore();
+  const [passwordOpen, setPasswordOpen] = useState(false);
   // Collapsed or expanded is remembered in this browser
   const [isOpen, setIsOpen] = usePersistentState<boolean>('sidebar.open', true);
 
@@ -82,12 +86,10 @@ export const Sidebar: React.FC = () => {
     }
   }, [token, user, initAuth]);
 
-  const isAdmin = !user || user.roles?.includes('ADMIN') || user.email === 'admin@mfeformwork.com';
+  const isAdmin = userIsAdmin(user);
+  const showCeo = canSeeCeoDashboard(user);
 
-  const visibleDepartments = DEPARTMENT_LINKS.filter((dept) => {
-    if (isAdmin) return true;
-    return dept.roles.some((r) => user?.roles?.includes(r) || (user as any)?.departmentRole === r);
-  });
+  const visibleDepartments = DEPARTMENT_LINKS.filter((dept) => canSeeDepartment(user, dept.code));
 
   const userName = user?.fullName || user?.name || 'Authorized User';
   const userEmail = user?.email || 'user@mfeformwork.com';
@@ -127,13 +129,15 @@ export const Sidebar: React.FC = () => {
               open={isOpen}
               tone="dark"
             />
-            <SideLink
-              to="/ceo"
-              label="CEO Executive Hub"
-              icon={<LineChart className="w-4 h-4 text-amber-500" />}
-              open={isOpen}
-              tone="dark"
-            />
+            {showCeo && (
+              <SideLink
+                to="/ceo"
+                label="CEO Executive Hub"
+                icon={<LineChart className="w-4 h-4 text-amber-500" />}
+                open={isOpen}
+                tone="dark"
+              />
+            )}
             {isAdmin && (
               <SideLink
                 to="/admin"
@@ -168,8 +172,17 @@ export const Sidebar: React.FC = () => {
         </div>
       </nav>
 
-      {/* Signed-in user and sign out */}
+      {/* Signed-in user, change password and sign out */}
       <div className={`border-t border-slate-100 bg-slate-50/40 flex-shrink-0 ${isOpen ? 'p-2.5' : 'py-2.5 px-1'}`}>
+        {isOpen && usingDefaultPassword && (
+          <button
+            type="button"
+            onClick={() => setPasswordOpen(true)}
+            className="mb-2.5 w-full rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-left text-[11px] leading-snug text-amber-900 transition-colors hover:bg-amber-100 cursor-pointer"
+          >
+            <span className="font-semibold">You are using the default password.</span> Change it now.
+          </button>
+        )}
         {isOpen ? (
           <div className="flex items-center gap-2.5 px-1">
             <div className="w-7 h-7 rounded-lg bg-slate-200/70 flex items-center justify-center text-slate-700 flex-shrink-0">
@@ -179,6 +192,15 @@ export const Sidebar: React.FC = () => {
               <p className="text-xs font-bold text-slate-900 truncate leading-tight">{userName}</p>
               <p className="text-[10px] text-slate-400 font-mono truncate mt-0.5">{userEmail}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => setPasswordOpen(true)}
+              className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition cursor-pointer flex-shrink-0"
+              title="Change password"
+              aria-label="Change password"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+            </button>
             <button
               type="button"
               onClick={logout}
@@ -198,6 +220,17 @@ export const Sidebar: React.FC = () => {
             </div>
             <button
               type="button"
+              onClick={() => setPasswordOpen(true)}
+              className={`p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer ${
+                usingDefaultPassword ? 'text-amber-600' : 'text-slate-500 hover:text-slate-900'
+              }`}
+              title={usingDefaultPassword ? 'Change password (default password in use)' : 'Change password'}
+              aria-label="Change password"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
               onClick={logout}
               className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
               title="Sign out"
@@ -207,6 +240,7 @@ export const Sidebar: React.FC = () => {
           </div>
         )}
       </div>
+      <ChangePasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
     </aside>
   );
 };

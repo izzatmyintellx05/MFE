@@ -3,10 +3,14 @@ import { PrismaClient, RoleCode } from '@prisma/client';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { hydrateUsersFromDb } from '../../db/supabase';
+import { hydrateUsersFromDb, saveUserToDb } from '../../db/supabase';
 
 const prisma = new PrismaClient();
 const getJwtSecret = () => process.env.JWT_SECRET || 'mfe-formwork-mr11-enterprise-secret-key-2026';
+
+// Every seeded account starts with this password until its user changes it
+const DEFAULT_PASSWORD = 'admin123';
+const MIN_PASSWORD_LENGTH = 8;
 
 function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -16,11 +20,6 @@ function hashPassword(password: string): string {
 
 function verifyPassword(password: string, storedHash: string): boolean {
   if (!storedHash) return false;
-
-  // Support both default credentials for admin & demo users
-  if (password === 'admin123' || password === 'Admin@123456') {
-    return true;
-  }
 
   if (storedHash.startsWith('pbkdf2$')) {
     const parts = storedHash.split('$');
@@ -101,7 +100,7 @@ export async function login(req: Request, res: Response) {
     }
 
     let roleCodes = (user.roles || []).map((r: any) => r.role?.code || r.roleCode || r);
-    if (roleCodes.length === 0 || cleanEmail === 'admin@mfeformwork.com') {
+    if (cleanEmail === 'admin@mfeformwork.com') {
       roleCodes = [RoleCode.ADMIN];
     }
 
@@ -121,6 +120,7 @@ export async function login(req: Request, res: Response) {
       email: user.email,
       fullName: user.fullName,
       roles: roleCodes,
+      usingDefaultPassword: password === DEFAULT_PASSWORD,
     };
 
     return res.json({
@@ -320,5 +320,60 @@ export async function getMe(req: Request, res: Response): Promise<Response> {
     });
   } catch (err: any) {
     return res.status(401).json({ success: false, error: { message: 'Invalid or expired token' } });
+  }
+}
+
+/** Lets a signed-in user replace their password. The new hash is saved to the database. */
+export async function changePassword(req: Request, res: Response) {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    const reject = (code: string, message: string, status = 400) =>
+      res.status(status).json({ success: false, error: { code, message } });
+
+    if (!currentPassword || !newPassword) {
+      return reject('VALIDATION_ERROR', 'Enter your current password and a new password.');
+    }
+    const next = String(newPassword);
+    if (next.length < MIN_PASSWORD_LENGTH) {
+      return reject('WEAK_PASSWORD', `The new password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+    }
+    if (next === String(currentPassword)) {
+      return reject('SAME_PASSWORD', 'The new password must be different from your current password.');
+    }
+    if (next === DEFAULT_PASSWORD) {
+      return reject('DEFAULT_PASSWORD', 'Choose a password other than the default one.');
+    }
+
+    // The account may have been changed on another instance
+    await hydrateUsersFromDb();
+    const user = await prisma.user.findUnique({ where: { id: (req as any).user?.id } });
+    if (!user) {
+      return reject('USER_NOT_FOUND', 'Your account was not found. Sign in again.', 404);
+    }
+    if (!verifyPassword(String(currentPassword), user.passwordHash)) {
+      return reject('WRONG_PASSWORD', 'Your current password is incorrect.');
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: hashPassword(next) },
+    });
+    const roleIds = (await prisma.userRole.findMany({ where: { userId: user.id } })).map((ur: any) => ur.roleId);
+    try {
+      await saveUserToDb(updated, roleIds);
+    } catch (err: any) {
+      // Keep memory in step with the database, so the old password stays in force
+      await hydrateUsersFromDb();
+      console.error('Password change could not be saved:', err?.message || err);
+      return reject('SAVE_FAILED', 'Your new password could not be saved. Please try again.', 500);
+    }
+
+    return res.json({ success: true, message: 'Password changed.' });
+  } catch (err: any) {
+    console.error('Change password error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'CHANGE_PASSWORD_ERROR', message: 'Your password could not be changed. Please try again.' },
+    });
   }
 }

@@ -8,8 +8,12 @@ import {
   getShellplanApprovalHistory,
   getDispatchMonthly,
 } from './mr11.controller';
+import { requireAuth } from '../../middleware/auth.middleware';
 
 const router = Router();
+
+// MR11 is visible to every signed-in user, and only to signed-in users
+router.use(requireAuth);
 
 router.get('/', getLatestMr11);
 router.post('/regenerate', triggerMr11Regenerate);

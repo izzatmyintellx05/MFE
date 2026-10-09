@@ -125,7 +125,7 @@ const adminUser = {
   id: adminId,
   email: adminEmail,
   fullName: 'System Administrator',
-  passwordHash: hashPassword('Admin@123456'),
+  passwordHash: hashPassword('admin123'),
   status: 'ACTIVE',
   isActive: true,
   createdAt: new Date(),
@@ -144,7 +144,7 @@ for (const r of INITIAL_ROLES) {
   });
 }
 
-// Seed role demo accounts (password: admin123 or Admin@123456)
+// Seed role demo accounts (password: admin123)
 const DEMO_USERS = [
   { id: 'user-ceo-1', email: 'ceo@mfeformwork.com', fullName: 'Executive Director', roleCode: RoleCode.CEO },
   { id: 'user-bd-1', email: 'bd@mfeformwork.com', fullName: 'BD Lead Officer', roleCode: RoleCode.BD },

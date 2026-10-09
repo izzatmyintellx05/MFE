@@ -105,8 +105,28 @@ export const Mr11Dashboard: React.FC = () => {
     }
   };
 
-  const handleExport = () => {
-    window.open(`${api.defaults.baseURL}/mr11/export`, '_blank');
+  // The export needs the signed-in user's token, so it is fetched and then saved as a file
+  const handleExport = async () => {
+    try {
+      const res = await api.get('/mr11/export', { responseType: 'blob' });
+      const name =
+        /filename="?([^";]+)"?/.exec(res.headers['content-disposition'] || '')?.[1] || `MR11_Master_Order_${Date.now()}.xlsx`;
+      const url = URL.createObjectURL(res.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      let message = err.message || 'Export failed';
+      // Error responses also arrive as a blob
+      try {
+        message = JSON.parse(await err.response?.data?.text())?.error?.message || message;
+      } catch {}
+      setError(message);
+    }
   };
 
   const groups = useMemo(() => columnGroups(departmentColors), [departmentColors]);

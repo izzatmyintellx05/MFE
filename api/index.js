@@ -150,17 +150,17 @@ function importEngineHistory(history) {
 var RoleCode, Mr11Status, FileVersionStatus, store, INITIAL_ROLES, INITIAL_DEPTS, adminId, adminEmail, adminUser, DEMO_USERS, WHERE_OPERATORS, MockPrismaClient, PrismaClient, prisma, prisma_default, g;
 var init_prisma = __esm({
   "server/db/prisma.ts"() {
-    RoleCode = /* @__PURE__ */ ((RoleCode4) => {
-      RoleCode4["ADMIN"] = "ADMIN";
-      RoleCode4["CEO"] = "CEO";
-      RoleCode4["BD"] = "BD";
-      RoleCode4["FINANCE"] = "FINANCE";
-      RoleCode4["SHELLPLAN"] = "SHELLPLAN";
-      RoleCode4["DESIGN"] = "DESIGN";
-      RoleCode4["PLANNING"] = "PLANNING";
-      RoleCode4["PRODUCTION"] = "PRODUCTION";
-      RoleCode4["DISPATCH"] = "DISPATCH";
-      return RoleCode4;
+    RoleCode = /* @__PURE__ */ ((RoleCode3) => {
+      RoleCode3["ADMIN"] = "ADMIN";
+      RoleCode3["CEO"] = "CEO";
+      RoleCode3["BD"] = "BD";
+      RoleCode3["FINANCE"] = "FINANCE";
+      RoleCode3["SHELLPLAN"] = "SHELLPLAN";
+      RoleCode3["DESIGN"] = "DESIGN";
+      RoleCode3["PLANNING"] = "PLANNING";
+      RoleCode3["PRODUCTION"] = "PRODUCTION";
+      RoleCode3["DISPATCH"] = "DISPATCH";
+      return RoleCode3;
     })(RoleCode || {});
     Mr11Status = /* @__PURE__ */ ((Mr11Status2) => {
       Mr11Status2["EMPTY"] = "EMPTY";
@@ -226,7 +226,7 @@ var init_prisma = __esm({
       id: adminId,
       email: adminEmail,
       fullName: "System Administrator",
-      passwordHash: hashPassword("Admin@123456"),
+      passwordHash: hashPassword("admin123"),
       status: "ACTIVE",
       isActive: true,
       createdAt: /* @__PURE__ */ new Date(),
@@ -1123,6 +1123,8 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 var prisma2 = new PrismaClient();
 var getJwtSecret = () => process.env.JWT_SECRET || "mfe-formwork-mr11-enterprise-secret-key-2026";
+var DEFAULT_PASSWORD = "admin123";
+var MIN_PASSWORD_LENGTH = 8;
 function hashPassword2(password) {
   const salt = crypto2.randomBytes(16).toString("hex");
   const hash = crypto2.pbkdf2Sync(password, salt, 1e3, 64, "sha512").toString("hex");
@@ -1130,9 +1132,6 @@ function hashPassword2(password) {
 }
 function verifyPassword(password, storedHash) {
   if (!storedHash) return false;
-  if (password === "admin123" || password === "Admin@123456") {
-    return true;
-  }
   if (storedHash.startsWith("pbkdf2$")) {
     const parts = storedHash.split("$");
     if (parts.length >= 3) {
@@ -1198,7 +1197,7 @@ async function login(req, res) {
       });
     }
     let roleCodes = (user.roles || []).map((r) => r.role?.code || r.roleCode || r);
-    if (roleCodes.length === 0 || cleanEmail === "admin@mfeformwork.com") {
+    if (cleanEmail === "admin@mfeformwork.com") {
       roleCodes = ["ADMIN" /* ADMIN */];
     }
     const token = jwt.sign(
@@ -1215,7 +1214,8 @@ async function login(req, res) {
       id: user.id,
       email: user.email,
       fullName: user.fullName,
-      roles: roleCodes
+      roles: roleCodes,
+      usingDefaultPassword: password === DEFAULT_PASSWORD
     };
     return res.json({
       success: true,
@@ -1280,11 +1280,76 @@ async function getMe(req, res) {
     return res.status(401).json({ success: false, error: { message: "Invalid or expired token" } });
   }
 }
+async function changePassword(req, res) {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    const reject = (code, message, status = 400) => res.status(status).json({ success: false, error: { code, message } });
+    if (!currentPassword || !newPassword) {
+      return reject("VALIDATION_ERROR", "Enter your current password and a new password.");
+    }
+    const next = String(newPassword);
+    if (next.length < MIN_PASSWORD_LENGTH) {
+      return reject("WEAK_PASSWORD", `The new password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+    }
+    if (next === String(currentPassword)) {
+      return reject("SAME_PASSWORD", "The new password must be different from your current password.");
+    }
+    if (next === DEFAULT_PASSWORD) {
+      return reject("DEFAULT_PASSWORD", "Choose a password other than the default one.");
+    }
+    await hydrateUsersFromDb();
+    const user = await prisma2.user.findUnique({ where: { id: req.user?.id } });
+    if (!user) {
+      return reject("USER_NOT_FOUND", "Your account was not found. Sign in again.", 404);
+    }
+    if (!verifyPassword(String(currentPassword), user.passwordHash)) {
+      return reject("WRONG_PASSWORD", "Your current password is incorrect.");
+    }
+    const updated = await prisma2.user.update({
+      where: { id: user.id },
+      data: { passwordHash: hashPassword2(next) }
+    });
+    const roleIds = (await prisma2.userRole.findMany({ where: { userId: user.id } })).map((ur) => ur.roleId);
+    try {
+      await saveUserToDb(updated, roleIds);
+    } catch (err) {
+      await hydrateUsersFromDb();
+      console.error("Password change could not be saved:", err?.message || err);
+      return reject("SAVE_FAILED", "Your new password could not be saved. Please try again.", 500);
+    }
+    return res.json({ success: true, message: "Password changed." });
+  } catch (err) {
+    console.error("Change password error:", err);
+    return res.status(500).json({
+      success: false,
+      error: { code: "CHANGE_PASSWORD_ERROR", message: "Your password could not be changed. Please try again." }
+    });
+  }
+}
+
+// server/middleware/auth.middleware.ts
+import jwt2 from "jsonwebtoken";
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).json({ success: false, error: { code: "AUTH_REQUIRED", message: "JWT Bearer token required" } });
+  }
+  const token = authHeader.split(" ")[1];
+  try {
+    const secret = process.env.JWT_SECRET || "mfe-formwork-mr11-enterprise-secret-key-2026";
+    const payload = jwt2.verify(token, secret);
+    req.user = payload;
+    next();
+  } catch {
+    return res.status(401).json({ success: false, error: { code: "INVALID_TOKEN", message: "Token is expired or invalid" } });
+  }
+}
 
 // server/modules/auth/auth.routes.ts
 var router = Router();
 router.post("/login", login);
 router.get("/me", getMe);
+router.post("/change-password", requireAuth, changePassword);
 var auth_routes_default = router;
 
 // server/modules/departments/department.routes.ts
@@ -1541,9 +1606,9 @@ var ORDERED_HEADER_LIST = [
   "Produced Date",
   // --- Dispatch Columns ---
   "Total Dispatch",
-  "ETD/ATD",
+  "Dispatch Date",
   "Formwork Quantity Sailed (m2)",
-  "Formwork Sailed Date",
+  "ETD/ATD",
   // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
   "Jan-26",
   "Feb-26",
@@ -1665,11 +1730,11 @@ var MR11_ORDERED_COLUMNS = [
   // Dispatch & ATD
   // Sum of "Cumulative Dispatched (Project)" over the BD row's Dispatch blocks
   { target: "Total Dispatch", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Cumulative Dispatched (Project)", type: "number" },
-  // Each Dispatch row's latest ETD (ETA POL, Rev ETD .. Rev 7 ETD) and its ATD, with m2, one line each
-  { target: "ETD/ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "string" },
+  // Local file: the latest day with a dispatch; Overseas file: the upload date on which Total Dispatch last changed
+  { target: "Dispatch Date", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "daily date columns", type: "date" },
   { target: "Formwork Quantity Sailed (m2)", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "number" },
-  // The upload date on which Formwork Quantity Sailed (m2) last changed (not read from the file)
-  { target: "Formwork Sailed Date", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "Formwork Quantity Sailed (m2)", type: "date" }
+  // Each Dispatch row's latest ETD (ETA POL, Rev ETD .. Rev 7 ETD) and its ATD, with m2, one line each
+  { target: "ETD/ATD", sourceDept: "DISPATCH" /* DISPATCH */, sourceColumn: "ATD", type: "string" }
 ];
 var MR11_DEPARTMENT_COLORS = {
   BD: "#2563EB",
@@ -1699,6 +1764,7 @@ var MR11_COLUMN_DEPARTMENTS = (() => {
 // server/modules/mr11/mr11.engine.ts
 init_supabase();
 init_prisma();
+var DISPATCH_PARTS = ["LOCAL", "OVERSEAS"];
 function parseNumeric(val) {
   if (typeof val === "number") return isNaN(val) ? 0 : val;
   if (!val) return 0;
@@ -1899,6 +1965,17 @@ function resolveConsolidatedShellplanStatus(statuses) {
   }
   const first = statuses[0].trim();
   return first.charAt(0).toUpperCase() + first.slice(1);
+}
+function dispatchDayOf(header) {
+  const h = String(header ?? "").trim();
+  if (/^\d{5}(\.0+)?$/.test(h)) {
+    const serial = Number(h);
+    return serial > 4e4 && serial < 6e4 ? formatDateString(serial) : null;
+  }
+  if (/^\d{4}-\d{2}-\d{2}(T|$)/.test(h) || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(h)) {
+    return parseFlexibleDate(h) ? formatDateString(h) : null;
+  }
+  return null;
 }
 function isCellFilled(val) {
   if (val === null || val === void 0) return false;
@@ -2228,6 +2305,65 @@ function findCellValue(row, candidateHeader) {
   }
   return null;
 }
+function applyMonthlyForecast(rows, currentMonth) {
+  const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
+  const monthKeyOf = (label) => `20${label.slice(-2)}-${String(MONTH_LABELS.indexOf(label.slice(0, 3)) + 1).padStart(2, "0")}`;
+  const sum = (v) => labels.reduce((t, l) => t + (v[l] || 0), 0);
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const input = row["_forecastInput"];
+    if (!input) continue;
+    if (!groups.has(input.designGroup)) groups.set(input.designGroup, []);
+    groups.get(input.designGroup).push(row);
+  }
+  for (const group of groups.values()) {
+    const { designQty, designDone } = group[0]["_forecastInput"];
+    const bdTotals = group.map((row) => sum(row["_forecastInput"].bdMonthValues));
+    const groupBd = bdTotals.reduce((t, v) => t + v, 0);
+    const designApplies = designQty !== null && groupBd > 0 && (designQty > groupBd || designDone);
+    group.forEach((row, idx) => {
+      const input = row["_forecastInput"];
+      const values = { ...input.bdMonthValues };
+      let target = bdTotals[idx] > 0 ? bdTotals[idx] : null;
+      let source = "BD";
+      if (designApplies && target !== null) {
+        target = designQty * bdTotals[idx] / groupBd;
+        source = "Design";
+      }
+      if (target !== null && input.processed !== null && (input.processed > target || input.planningDone)) {
+        target = input.processed;
+        source = "Processed";
+      }
+      let difference = target === null ? 0 : target - bdTotals[idx];
+      const openLabels = labels.filter((l) => monthKeyOf(l) >= currentMonth);
+      if (difference > 0 && openLabels.length > 0) {
+        values[openLabels[0]] += difference;
+      } else if (difference < 0) {
+        for (const l of openLabels) {
+          const cut = Math.min(values[l], -difference);
+          values[l] -= cut;
+          difference += cut;
+          if (difference >= 0) break;
+        }
+      }
+      for (const l of labels) {
+        const key = monthKeyOf(l);
+        if (key < currentMonth && input.dispatchedInMonth[key] !== void 0) values[l] = input.dispatchedInMonth[key];
+      }
+      let total2026 = 0;
+      let total2027 = 0;
+      for (const l of labels) {
+        row[l] = values[l] > 0 ? Number(values[l].toFixed(2)) : null;
+        if (l.endsWith("-26")) total2026 += values[l];
+        else total2027 += values[l];
+      }
+      row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(2)) : null;
+      row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(2)) : null;
+      row["_forecastSource"] = target === null ? null : source;
+      delete row["_forecastInput"];
+    });
+  }
+}
 async function executeMr11Pipeline(prisma8, options = {}) {
   const { persist = true } = options;
   const latestDbRun = await fetchLatestMr11RunFromDb();
@@ -2238,7 +2374,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const sourceSnapshot = {};
   const datasetMap = {};
   let productionHeaders = {};
-  let dispatchHeaders = {};
+  const dispatchHeadersByPart = {};
   let bdMonthColumns = [];
   let detectedProdSeries = 0;
   for (const dept of activeDepartments) {
@@ -2246,6 +2382,19 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       sourceSnapshot[dept.code] = dept.activeVersion.id;
       const rawWb = dept.activeVersion.parsedWorkbook;
       const sheets = Array.isArray(rawWb) ? rawWb : rawWb?.sheets || [];
+      if (dept.code === "DISPATCH" /* DISPATCH */) {
+        const files = rawWb?.dispatchFiles;
+        const dispatchRowsAll = [];
+        for (const part of DISPATCH_PARTS) {
+          const partSheets = files ? files[part]?.sheets : part === "OVERSEAS" ? sheets : void 0;
+          if (!partSheets || partSheets.length === 0) continue;
+          const { rows, headers } = sheetToRecordsWithStyles(partSheets[0]);
+          dispatchHeadersByPart[part] = headers;
+          dispatchRowsAll.push(...rows.map((row) => ({ ...row, dispatchPart: part })));
+        }
+        datasetMap["DISPATCH" /* DISPATCH */] = dispatchRowsAll;
+        continue;
+      }
       if (sheets.length > 0) {
         const { rows, detectedSeries, headers } = sheetToRecordsWithStyles(sheets[0]);
         datasetMap[dept.code] = rows;
@@ -2254,9 +2403,6 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           if (detectedSeries > 0) {
             detectedProdSeries = detectedSeries;
           }
-        }
-        if (dept.code === "DISPATCH" /* DISPATCH */) {
-          dispatchHeaders = headers;
         }
         if (dept.code === "BD" /* BD */) {
           bdMonthColumns = buildFinanceMonthColumns(headers);
@@ -2454,6 +2600,12 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   });
   const uploadDateStr = malaysiaDate();
   const previousRecordsByRow = {};
+  const dispatchByMonth = JSON.parse(
+    JSON.stringify(previousRun?.sourceSnapshot?.dispatchByMonth || {})
+  );
+  const localDispatchByMonth = JSON.parse(
+    JSON.stringify(previousRun?.sourceSnapshot?.localDispatchByMonth || {})
+  );
   const approvalHistory = JSON.parse(
     JSON.stringify(previousRun?.sourceSnapshot?.shellplanApprovalHistory || {})
   );
@@ -2586,7 +2738,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         outRow[mapping.target] = financeRow ? findCellValue(financeRow.data, mapping.sourceColumn) : null;
       }
     }
-    const dispatchCandidates = dispatchRows.filter((dRow) => {
+    const isThisProjectDispatch = (dRow) => {
       const dShort = cleanStr(findCellValue(dRow.data, "Short Name") || findCellValue(dRow.data, "Project Shortname") || findCellValue(dRow.data, "Project Shortname (from bd column C)"));
       const dNo = cleanStr(findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No."));
       const idMatches = shortName && dShort ? dShort === shortName : Boolean(projectNo && dNo === projectNo);
@@ -2600,7 +2752,18 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         }
       }
       return dStream === bdStream;
-    });
+    };
+    const projectDispatchRows = dispatchRows.filter(isThisProjectDispatch);
+    const inLocal = projectDispatchRows.some((d) => d.dispatchPart === "LOCAL");
+    const inOverseas = projectDispatchRows.some((d) => d.dispatchPart === "OVERSEAS");
+    const country = String(outRow["Countries"] ?? "").trim() || String(findCellValue(bdData, "Customer & Project Name") ?? "").split(" - ")[0];
+    const eastMalaysia = /sabah|sarawak|labuan/i.test(`${country} ${findCellValue(bdData, "Customer & Project Name") ?? ""}`);
+    const homePart = /^malaysia\b/i.test(country.trim()) && !eastMalaysia ? "LOCAL" : "OVERSEAS";
+    const otherPart = homePart === "LOCAL" ? "OVERSEAS" : "LOCAL";
+    const dispatchPart = inLocal !== inOverseas ? inLocal ? "LOCAL" : "OVERSEAS" : dispatchHeadersByPart[homePart] || !dispatchHeadersByPart[otherPart] ? homePart : otherPart;
+    const dispatchHeaders = dispatchHeadersByPart[dispatchPart] || {};
+    outRow["_dispatchFile"] = dispatchPart === "LOCAL" ? "Local" : "Overseas";
+    const dispatchCandidates = projectDispatchRows.filter((dRow) => dRow.dispatchPart === dispatchPart);
     const dispatchMatches = closestColourGroup(dispatchCandidates, bdFontColor, bdFillColor);
     const sumDispatchColumn = (header) => {
       let total = null;
@@ -2631,8 +2794,10 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
       return latest;
     };
+    const localDayColumns = Object.entries(dispatchHeaders).map(([c, h]) => ({ c: Number(c), h, date: dispatchDayOf(h) })).filter((d) => d.date !== null);
     const etdByDate = /* @__PURE__ */ new Map();
     const atdByDate = /* @__PURE__ */ new Map();
+    const dispatchedByDate = /* @__PURE__ */ new Map();
     const addDate = (byDate, date, m2) => {
       const current = byDate.has(date) ? byDate.get(date) : null;
       byDate.set(date, m2 === null ? current : (current ?? 0) + m2);
@@ -2640,6 +2805,13 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     for (const dRow of dispatchMatches) {
       const areaKey = Object.keys(dRow.data).find((k) => /^total area/i.test(k.trim()));
       const m2 = areaKey && !dRow.mergedCopyHeaders?.includes(areaKey) && isCellFilled(dRow.data[areaKey]) ? parseNumeric(dRow.data[areaKey]) : null;
+      if (dispatchPart === "LOCAL") {
+        for (const { c, h, date } of localDayColumns) {
+          const v = dRow.rawCells?.[c] ?? dRow.data[h];
+          if (!dRow.mergedCopyHeaders?.includes(h) && isCellFilled(v)) addDate(dispatchedByDate, date, parseNumeric(v));
+        }
+        continue;
+      }
       const atd = latestDateIn(dRow, atdColumns);
       const etd = latestDateIn(dRow, etdColumns);
       if (atd) addDate(atdByDate, atd, m2);
@@ -2655,7 +2827,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     const latestOf = (byDate) => [...byDate.keys()].sort().pop() ?? null;
     const etdText = formatDispatchDates(etdByDate);
     const atdText = formatDispatchDates(atdByDate);
-    const etdAtd = [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`].filter(Boolean).join("\n") || null;
+    const dispatchedText = formatDispatchDates(dispatchedByDate);
+    const etdAtd = [etdText && `ETD: ${etdText}`, atdText && `ATD: ${atdText}`, dispatchedText && `Delivered: ${dispatchedText}`].filter(Boolean).join("\n") || null;
     outRow["ETD/ATD"] = etdAtd;
     const previousRow = takePreviousRecord(previousRecordsByRow, mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]));
     const dateOfChange = (current, valueKey, dateKey) => {
@@ -2664,8 +2837,14 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       const previousDate = String(previousRow?.[dateKey] ?? "");
       return previousValue === current && /^\d{4}-\d{2}-\d{2}$/.test(previousDate) ? previousDate : uploadDateStr;
     };
-    outRow["Formwork Sailed Date"] = dateOfChange(totalSailed, "Formwork Quantity Sailed (m2)", "Formwork Sailed Date");
+    if (dispatchPart === "LOCAL") {
+      for (const key of ["Formwork Quantity Sailed (m2)", "Formwork Quantity Sailed m2", "Formwork Quantity Sailed"]) {
+        outRow[key] = "-";
+      }
+    }
     outRow["_dispatchedDate"] = dateOfChange(totalDispatched, "Total Dispatch", "_dispatchedDate");
+    const previousDispatchDate = /^\d{4}-\d{2}-\d{2}$/.test(String(previousRow?.["Dispatch Date"] ?? "")) ? previousRow["Dispatch Date"] : null;
+    outRow["Dispatch Date"] = dispatchPart === "LOCAL" ? latestOf(dispatchedByDate) ?? (totalDispatched !== null ? previousDispatchDate : null) : totalDispatched === null ? null : outRow["_dispatchedDate"];
     outRow["_atdDate"] = latestOf(atdByDate);
     outRow["_atdColor"] = null;
     outRow["_cellColors"] = cellColors;
@@ -2944,7 +3123,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["Total Produced Quantity"] = producedTotal;
     outRow["produced qty"] = producedTotal;
     let latestFilledDate = null;
-    const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: /^\d{4}-\d{2}-\d{2}/.test(String(h).trim()) ? formatDateString(h) : null })).filter((d) => Boolean(d.date));
+    const dayColumns = Object.entries(productionHeaders).map(([c, h]) => ({ c: Number(c), date: dispatchDayOf(h) })).filter((d) => Boolean(d.date));
     for (const pRow of productionMatches) {
       for (const { c, date } of dayColumns) {
         const cellVal = pRow.rawCells?.[c];
@@ -2954,7 +3133,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         }
       }
     }
-    outRow["Produced Date"] = latestFilledDate;
+    const previousProducedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(previousRow?.["Produced Date"] ?? "")) ? previousRow["Produced Date"] : null;
+    outRow["Produced Date"] = latestFilledDate ?? (producedTotal !== null ? previousProducedDate : null);
     if (isBlueColor(bdFontColor)) {
       for (const key of Object.keys(outRow)) {
         if (PRODUCTION_DISPATCH_COLUMN.test(key.trim())) outRow[key] = "-";
@@ -2964,10 +3144,45 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
       outRow["_atdColor"] = null;
     }
+    const bdMonthValues = {};
+    for (const label of [...MONTH_COLUMNS_26, ...MONTH_COLUMNS_27]) bdMonthValues[label] = monthValues[label] || 0;
+    const orderStatuses = planningMatches.map((p) => findCellValue(p.data, "Order Status")).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
+    const currentMonth = uploadDateStr.slice(0, 7);
+    const dispatchedInMonth = {};
+    if (!isBlueColor(bdFontColor)) {
+      if (dispatchPart === "LOCAL") {
+        const historyKey2 = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]);
+        const history2 = localDispatchByMonth[historyKey2] ||= {};
+        const inFile = {};
+        for (const { date } of localDayColumns) inFile[date.slice(0, 7)] ??= 0;
+        for (const [date, m2] of dispatchedByDate) inFile[date.slice(0, 7)] = (inFile[date.slice(0, 7)] || 0) + (m2 || 0);
+        Object.assign(history2, inFile);
+        Object.assign(dispatchedInMonth, history2);
+      } else {
+        const historyKey2 = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]);
+        const history2 = dispatchByMonth[historyKey2] ||= {};
+        if (totalDispatched !== null) history2[currentMonth] = totalDispatched;
+        const months = Object.keys(history2).sort();
+        for (let k = 1; k < months.length; k++) {
+          dispatchedInMonth[months[k]] = Math.max(0, history2[months[k]] - history2[months[k - 1]]);
+        }
+      }
+    }
+    outRow["_dispatchedByMonth"] = dispatchedInMonth;
+    outRow["_forecastInput"] = {
+      designGroup: `${cleanStr(shortName)}|${bdStream}|${bdFillColor}`,
+      bdMonthValues,
+      designQty: isCellFilled(outRow["Total Quantity Ordered m2"]) ? parseNumeric(outRow["Total Quantity Ordered m2"]) : null,
+      designDone: outRow["_designState"] === "completed",
+      processed: processedTotal,
+      planningDone: orderStatuses.length > 0 && orderStatuses.every((v) => /complete/i.test(String(v)) && !/not/i.test(String(v))),
+      dispatchedInMonth
+    };
     outRow["_fontColor"] = bdFontColor;
     outRow["_fillColor"] = bdFillColor;
     return outRow;
   });
+  applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7));
   const designStatesByProject = /* @__PURE__ */ new Map();
   const projectKeyOf = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
   for (const r of derivedMr11Rows) {
@@ -3036,6 +3251,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       sourceSnapshot: {
         ...sourceSnapshot,
         dispatchTracker: newDispatchTracker,
+        dispatchByMonth,
+        localDispatchByMonth,
         shellplanApprovalHistory: approvalHistory
       },
       recordCount: derivedMr11Rows.length,
@@ -3049,6 +3266,8 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         sourceSnapshot: {
           ...sourceSnapshot,
           dispatchTracker: newDispatchTracker,
+          dispatchByMonth,
+          localDispatchByMonth,
           shellplanApprovalHistory: approvalHistory,
           engineHistory: exportEngineHistory()
         },
@@ -3064,9 +3283,45 @@ async function executeMr11Pipeline(prisma8, options = {}) {
 // server/modules/departments/department.service.ts
 init_supabase();
 var prisma3 = new PrismaClient();
+var DISPATCH_PART_LABELS = { LOCAL: "Local", OVERSEAS: "Overseas" };
+function parseDispatchPart(value) {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (v.startsWith("local")) return "LOCAL";
+  if (v.startsWith("oversea")) return "OVERSEAS";
+  return null;
+}
+function detectDispatchPart(filename, sheets) {
+  const byName = /oversea|export/i.test(filename) ? "OVERSEAS" : /local/i.test(filename) ? "LOCAL" : null;
+  if (byName) return byName;
+  const headerTexts = (sheets?.[0]?.celldata || []).filter((cell) => cell.r === 0).map((cell) => String(cell.v?.v ?? cell.v?.m ?? "").trim());
+  return headerTexts.some((h) => /^(atd|eta pol)$|\betd\b/i.test(h)) ? "OVERSEAS" : "LOCAL";
+}
+async function combineDispatchFiles(prisma8, deptId, part, sheets, originalFilename) {
+  let previous = await fetchActiveVersionForDepartment("DISPATCH" /* DISPATCH */);
+  if (!previous) {
+    const dept = await prisma8.department.findUnique({ where: { id: deptId }, include: { activeVersion: true } });
+    previous = dept?.activeVersion ?? null;
+  }
+  const prevWb = previous?.parsedWorkbook;
+  const prevSheets = Array.isArray(prevWb) ? prevWb : Array.isArray(prevWb?.sheets) ? prevWb.sheets : [];
+  const files = prevWb?.dispatchFiles ? { ...prevWb.dispatchFiles } : prevSheets.length > 0 ? { OVERSEAS: { originalFilename: previous.originalFilename, uploadedAt: previous.uploadedAt ?? null, sheets: prevSheets } } : {};
+  files[part] = { originalFilename, uploadedAt: (/* @__PURE__ */ new Date()).toISOString(), sheets };
+  const present = DISPATCH_PARTS.filter((p) => files[p]?.sheets?.length);
+  return {
+    parsedWorkbook: {
+      // Every sheet, named by its file, for anything that reads a plain list of sheets
+      sheets: present.flatMap(
+        (p) => files[p].sheets.map((sheet) => ({ ...sheet, name: `${DISPATCH_PART_LABELS[p]} - ${sheet.name}` }))
+      ),
+      dispatchFiles: files
+    },
+    originalFilename: present.map((p) => `${DISPATCH_PART_LABELS[p]}: ${files[p].originalFilename}`).join(" | ")
+  };
+}
 async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, originalFilename, mimeType, fileSize, userId, options = {}) {
   const { persist = true, regenerate = true } = options;
-  const parsedWorkbook = await parseAndNormalizeWorkbook(filePathOrBuffer);
+  let parsedWorkbook = await parseAndNormalizeWorkbook(filePathOrBuffer);
+  const uploadedFilename = originalFilename;
   let dept = await prisma8.department.findUnique({
     where: { code: deptCode }
   });
@@ -3087,7 +3342,11 @@ async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, 
     const adminUser2 = await prisma8.user.findFirst({ where: { email: "admin@mfeformwork.com" } });
     validUserId = adminUser2 ? adminUser2.id : null;
   }
-  const storageKey = Buffer.isBuffer(filePathOrBuffer) ? `buffer://${originalFilename}` : filePathOrBuffer;
+  if (deptCode === "DISPATCH" /* DISPATCH */) {
+    const part = options.dispatchPart ?? detectDispatchPart(originalFilename, parsedWorkbook);
+    ({ parsedWorkbook, originalFilename } = await combineDispatchFiles(prisma8, dept.id, part, parsedWorkbook, originalFilename));
+  }
+  const storageKey = Buffer.isBuffer(filePathOrBuffer) ? `buffer://${uploadedFilename}` : filePathOrBuffer;
   const newVersion = await prisma8.fileVersion.create({
     data: {
       departmentId: dept.id,
@@ -3253,6 +3512,7 @@ async function uploadDepartmentWorkbook(req, res) {
   }
   try {
     const inputContent = file.buffer || file.path;
+    const dispatchPart = parseDispatchPart(req.query.part ?? req.body?.part);
     await processAtomicWorkbookUpload(
       prisma4,
       deptCode,
@@ -3260,7 +3520,8 @@ async function uploadDepartmentWorkbook(req, res) {
       file.originalname,
       file.mimetype,
       file.size,
-      user?.id
+      user?.id,
+      { dispatchPart }
     );
     if (file.path && fs.existsSync(file.path)) {
       try {
@@ -3329,6 +3590,21 @@ async function listDepartments(req, res) {
 
 // server/modules/departments/department.routes.ts
 var router2 = Router2();
+var DEPARTMENT_ROLES = {
+  DESIGN: ["SHELLPLAN", "DESIGN"],
+  SHELLPLAN: ["SHELLPLAN", "DESIGN"]
+};
+function requireDepartmentAccess(req, res, next) {
+  const code = String(req.params.code || "").toUpperCase();
+  const roles = (req.user?.roles || []).map((r) => String(r).toUpperCase());
+  const allowed = DEPARTMENT_ROLES[code] || [code];
+  if (roles.includes("ADMIN") || allowed.some((r) => roles.includes(r))) return next();
+  return res.status(403).json({
+    success: false,
+    error: { code: "ACCESS_DENIED", message: "You do not have access to this department." }
+  });
+}
+router2.use(requireAuth);
 var upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -3337,12 +3613,12 @@ var upload = multer({
   }
 });
 router2.get("/", listDepartments);
-router2.get("/:code", getActiveDepartmentWorkbook);
-router2.get("/:code/workbook", getActiveDepartmentWorkbook);
-router2.get("/:code/active", getActiveDepartmentWorkbook);
-router2.post("/:code/upload", upload.single("file"), uploadDepartmentWorkbook);
-router2.post("/:code", upload.single("file"), uploadDepartmentWorkbook);
-router2.get("/:code/download", downloadOriginalFile);
+router2.get("/:code", requireDepartmentAccess, getActiveDepartmentWorkbook);
+router2.get("/:code/workbook", requireDepartmentAccess, getActiveDepartmentWorkbook);
+router2.get("/:code/active", requireDepartmentAccess, getActiveDepartmentWorkbook);
+router2.post("/:code/upload", requireDepartmentAccess, upload.single("file"), uploadDepartmentWorkbook);
+router2.post("/:code", requireDepartmentAccess, upload.single("file"), uploadDepartmentWorkbook);
+router2.get("/:code/download", requireDepartmentAccess, downloadOriginalFile);
 var department_routes_default = router2;
 
 // server/modules/mr11/mr11.routes.ts
@@ -3515,6 +3791,26 @@ async function getShellplanApprovalHistory(req, res) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
 }
+async function getDispatchMonthly(req, res) {
+  try {
+    const latestRun = await getLatestMr11Run(prisma5);
+    const records = Array.isArray(latestRun?.records) ? latestRun.records : [];
+    const rows = records.filter((r) => Object.values(r._dispatchedByMonth || {}).some((v) => Number(v) > 0)).map((r) => ({
+      shortName: r["Short Name"] ?? null,
+      projectNo: r["Project No."] ?? r["Project No"] ?? null,
+      stream: String(r["Stream"] ?? ""),
+      productType: r["Products type"] ?? null,
+      file: r._dispatchFile ?? null,
+      fontColor: r._fontColor ?? null,
+      fillColor: r._fillColor ?? null,
+      totalDispatch: r["Total Dispatch"] ?? null,
+      months: r._dispatchedByMonth
+    }));
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
 async function getPlanningSeriesHistory(req, res) {
   try {
     const data = await prisma5.planningSeriesHistory.findMany({
@@ -3560,7 +3856,16 @@ async function exportMr11ToExcel(req, res) {
     }));
     const groupOf = (h) => MR11_HEADER_GROUPS.find((g2) => g2.columns.some((c) => c.key === h));
     const subLabel = (h) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
-    worksheet.addRow(headers.map((h) => groupOf(h)?.label ?? h));
+    const currentMonth = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(/* @__PURE__ */ new Date()).slice(0, 7);
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const headerText = (h) => {
+      const m = /^([A-Z][a-z]{2})-(\d{2})$/.exec(h);
+      if (!m || !MONTHS.includes(m[1])) return h;
+      const key = `20${m[2]}-${String(MONTHS.indexOf(m[1]) + 1).padStart(2, "0")}`;
+      return `${h}
+${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
+    };
+    worksheet.addRow(headers.map((h) => groupOf(h)?.label ?? headerText(h)));
     worksheet.addRow(headers.map((h) => groupOf(h) ? subLabel(h) : h));
     for (let c = 1; c <= headers.length; ) {
       const group = groupOf(headers[c - 1]);
@@ -3664,12 +3969,14 @@ async function exportMr11ToExcel(req, res) {
 
 // server/modules/mr11/mr11.routes.ts
 var router3 = Router3();
+router3.use(requireAuth);
 router3.get("/", getLatestMr11);
 router3.post("/regenerate", triggerMr11Regenerate);
 router3.get("/export", exportMr11ToExcel);
 router3.get("/planning-series", getPlanningSeriesHistory);
 router3.get("/production-series", getProductionSeriesHistory);
 router3.get("/shellplan-history", getShellplanApprovalHistory);
+router3.get("/dispatch-monthly", getDispatchMonthly);
 var mr11_routes_default = router3;
 
 // server/modules/admin/admin.routes.ts
@@ -3679,7 +3986,7 @@ __export(admin_routes_exports, {
   default: () => admin_routes_default
 });
 import { Router as Router4 } from "express";
-import jwt2 from "jsonwebtoken";
+import jwt3 from "jsonwebtoken";
 
 // server/modules/admin/admin.controller.ts
 init_prisma();
@@ -3945,7 +4252,7 @@ var authenticateAdmin = (req, res, next) => {
   }
   const secret = process.env.JWT_SECRET || "mfe-formwork-mr11-enterprise-secret-key-2026";
   try {
-    const decoded = jwt2.verify(token, secret);
+    const decoded = jwt3.verify(token, secret);
     req.user = decoded;
     const userRoles = decoded.roles || (decoded.role ? [decoded.role] : []);
     const email = decoded.email || "";
@@ -3978,24 +4285,6 @@ __export(visualization_routes_exports, {
   default: () => visualization_routes_default
 });
 import { Router as Router5 } from "express";
-
-// server/middleware/auth.middleware.ts
-import jwt3 from "jsonwebtoken";
-function requireAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith("Bearer ")) {
-    return res.status(401).json({ success: false, error: { code: "AUTH_REQUIRED", message: "JWT Bearer token required" } });
-  }
-  const token = authHeader.split(" ")[1];
-  try {
-    const secret = process.env.JWT_SECRET || "mfe-formwork-mr11-enterprise-secret-key-2026";
-    const payload = jwt3.verify(token, secret);
-    req.user = payload;
-    next();
-  } catch {
-    return res.status(401).json({ success: false, error: { code: "INVALID_TOKEN", message: "Token is expired or invalid" } });
-  }
-}
 
 // server/middleware/rbac.middleware.ts
 init_prisma();
@@ -4147,6 +4436,31 @@ async function bootstrapSystem() {
           console.log(`[MFE Formwork MR11] Loaded active workbook for ${code} from ${targetFilename}`);
         } catch (e) {
           console.warn(`[MFE Formwork MR11] Note: Could not auto-load workbook for ${code}:`, e.message);
+        }
+      }
+    }
+    if (!dbCodes?.has("DISPATCH" /* DISPATCH */)) {
+      for (const [part, pattern] of [["LOCAL", /dispatch.*local.*\.xlsx$/i], ["OVERSEAS", /dispatch.*oversea.*\.xlsx$/i]]) {
+        for (const dir of searchDirs) {
+          const name = fs2.readdirSync(dir).filter((f) => pattern.test(f)).sort((a, b) => b.localeCompare(a))[0];
+          if (!name) continue;
+          const filePath = path.join(dir, name);
+          try {
+            await processAtomicWorkbookUpload(
+              prisma,
+              "DISPATCH" /* DISPATCH */,
+              filePath,
+              name,
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              fs2.statSync(filePath).size,
+              adminId2,
+              { persist: false, regenerate: false, dispatchPart: part }
+            );
+            console.log(`[MFE Formwork MR11] Loaded Dispatch ${part.toLowerCase()} workbook from ${name}`);
+          } catch (e) {
+            console.warn(`[MFE Formwork MR11] Note: Could not load Dispatch ${part.toLowerCase()} workbook:`, e.message);
+          }
+          break;
         }
       }
     }
