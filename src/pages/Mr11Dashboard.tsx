@@ -232,7 +232,7 @@ export const Mr11Dashboard: React.FC = () => {
           }`}
         >
           <div className="overflow-hidden">
-            <div className="flex flex-wrap items-stretch gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] items-stretch gap-3">
               <ExchangeRateCard fxRate={fxRate} currencyRates={currencyRates} />
               <LmePriceCard lmePrice={lmePrice} />
             </div>

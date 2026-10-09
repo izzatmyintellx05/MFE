@@ -49,101 +49,154 @@ const currencyName = (code: string) => {
   }
 };
 
+// Shared frame of the market cards: icon and title with the live badge, the figures, and the source
+const MarketCard: React.FC<{
+  icon: React.ReactNode;
+  accent: string;
+  title: string;
+  badge?: React.ReactNode;
+  footer?: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+}> = ({ icon, accent, title, badge, footer, className = '', children }) => (
+  <section
+    className={`flex flex-col min-w-[260px] bg-white border border-stone-200/80 rounded-xl shadow-sm overflow-hidden ${className}`}
+  >
+    <div className="flex items-center gap-2 px-4 pt-3">
+      <span className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${accent}`}>{icon}</span>
+      <h3 className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">{title}</h3>
+      <span className="ml-auto">{badge}</span>
+    </div>
+    <div className="flex-1 px-4 pt-2 pb-3">{children}</div>
+    {footer && <div className="px-4 py-2 border-t border-stone-100 bg-stone-50/70 text-[10px] text-stone-500">{footer}</div>}
+  </section>
+);
+
+const Unavailable = () => <div className="text-xs font-semibold text-rose-600 py-2">Unavailable right now</div>;
+
 export const ExchangeRateCard: React.FC<{ fxRate: FxRate | null; currencyRates?: CurrencyRate[]; className?: string }> = ({
   fxRate,
   currencyRates = [],
   className = '',
-}) => (
-  <div className={`flex items-center gap-3 bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm ${className}`}>
-    <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600 flex-shrink-0">
-      <ArrowRightLeft className="w-4 h-4" />
-    </div>
-    <div>
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">Exchange Rate</span>
-        {fxRate && <LiveBadge live={fxRate.live} />}
-      </div>
+}) => {
+  const others = currencyRates.filter((c) => c.code !== 'MYR');
+  const hasFallback = others.some((c) => c.source && c.source !== BNM);
+  return (
+    <MarketCard
+      className={className}
+      icon={<ArrowRightLeft className="w-3.5 h-3.5" />}
+      accent="bg-emerald-50 text-emerald-600"
+      title="Exchange rates"
+      badge={fxRate && <LiveBadge live={fxRate.live} />}
+      footer={
+        fxRate && (
+          <>
+            Source:{' '}
+            {fxRate.source === BNM ? (
+              <a href="https://apikijangportal.bnm.gov.my/" target="_blank" rel="noreferrer" className="font-semibold underline hover:text-stone-800">
+                Bank Negara Malaysia
+              </a>
+            ) : (
+              <span className="font-semibold">{fxRate.source}</span>
+            )}
+            {fxRate.source === BNM && ' · middle rate'}
+            {fxRate.asOf && ` · ${fxRate.asOf}`}
+            {hasFallback && <span className="text-amber-700"> · * from ExchangeRate-API (not published by BNM)</span>}
+          </>
+        )
+      }
+    >
       {fxRate ? (
         <>
-          <div className="text-sm font-extrabold text-stone-900 font-mono">1 USD = {fxRate.rate.toFixed(4)} MYR</div>
-          {/* Other currencies against 1 USD (MYR is the line above); BD's own currencies marked */}
-          {currencyRates.filter((c) => c.code !== 'MYR').length > 0 && (
-            <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px] text-stone-700">
-              {currencyRates
-                .filter((c) => c.code !== 'MYR')
-                .map((c) => (
-                  <span
-                    key={c.code}
-                    title={`${currencyName(c.code)} · ${c.source}${c.inBd ? ' · used in BD Other Currencies' : ''}`}
-                  >
-                    {c.rate.toFixed(4)} <span className={c.inBd ? 'font-bold text-emerald-700' : 'text-stone-500'}>{c.code}</span>
-                    {c.source && c.source !== BNM && <span className="text-amber-600">*</span>}
-                  </span>
-                ))}
-            </div>
-          )}
-          <div className="text-[10px] text-stone-400">
-            Source: {fxRate.source === BNM ? 'Bank Negara Malaysia (api.bnm.gov.my), middle rate' : fxRate.source}
-            {fxRate.asOf ? ` · ${fxRate.asOf}` : ''}
-            {currencyRates.some((c) => c.source && c.source !== BNM) && (
-              <span className="text-amber-600"> · * not published by BNM, from ExchangeRate-API</span>
-            )}
+          <div className="flex items-baseline gap-2">
+            <span className="text-[11px] font-semibold text-stone-500">1 USD =</span>
+            <span className="text-xl font-extrabold text-stone-900 font-mono tabular-nums tracking-tight">{fxRate.rate.toFixed(4)}</span>
+            <span className="text-xs font-bold text-stone-600">MYR</span>
           </div>
+          {others.length > 0 && (
+            <ul className="mt-2.5 grid grid-cols-[repeat(auto-fill,minmax(84px,1fr))] gap-1.5">
+              {others.map((c) => (
+                <li
+                  key={c.code}
+                  title={`1 USD = ${c.rate.toFixed(4)} ${currencyName(c.code)} · ${c.source}${c.inBd ? ' · used in BD Other Currencies' : ''}`}
+                  className={`rounded-lg border px-2 py-1 ${
+                    c.inBd ? 'border-emerald-300 bg-emerald-50/70' : 'border-stone-200 bg-stone-50/60'
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    <span className={`text-[10px] font-bold ${c.inBd ? 'text-emerald-800' : 'text-stone-600'}`}>{c.code}</span>
+                    {c.source && c.source !== BNM && <span className="text-[10px] font-bold text-amber-600">*</span>}
+                    {c.inBd && <span className="ml-auto text-[8px] font-bold uppercase text-emerald-700">BD</span>}
+                  </div>
+                  <div className="font-mono text-xs font-semibold text-stone-900 tabular-nums">{c.rate.toFixed(4)}</div>
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       ) : (
-        <div className="text-xs font-semibold text-rose-600">Unavailable</div>
+        <Unavailable />
       )}
-    </div>
-  </div>
-);
+    </MarketCard>
+  );
+};
 
-export const LmePriceCard: React.FC<{ lmePrice: LmePrice | null; className?: string }> = ({ lmePrice, className = '' }) => (
-  <div className={`flex items-center gap-3 bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm ${className}`}>
-    <div className="w-8 h-8 rounded-lg bg-sky-50 flex items-center justify-center text-sky-600 flex-shrink-0">
-      {lmePrice?.previousCash && lmePrice.cash < lmePrice.previousCash ? (
-        <TrendingDown className="w-4 h-4" />
-      ) : (
-        <TrendingUp className="w-4 h-4" />
-      )}
-    </div>
-    <div>
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">LME Aluminium</span>
-        {lmePrice && <LiveBadge live={lmePrice.live} />}
-      </div>
+export const LmePriceCard: React.FC<{ lmePrice: LmePrice | null; className?: string }> = ({ lmePrice, className = '' }) => {
+  const change = lmePrice?.previousCash ? lmePrice.cash - lmePrice.previousCash : null;
+  const up = change !== null && change >= 0;
+  const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (
+    <MarketCard
+      className={className}
+      icon={change !== null && !up ? <TrendingDown className="w-3.5 h-3.5" /> : <TrendingUp className="w-3.5 h-3.5" />}
+      accent="bg-sky-50 text-sky-600"
+      title="LME aluminium"
+      badge={lmePrice && <LiveBadge live={lmePrice.live} />}
+      footer={
+        lmePrice && (
+          <>
+            Source: LME official prices via{' '}
+            <a href={LME_SOURCE_URL} target="_blank" rel="noreferrer" className="font-semibold underline hover:text-stone-800">
+              Westmetall
+            </a>
+            {` · ${lmePrice.asOf}`}
+          </>
+        )
+      }
+    >
       {lmePrice ? (
         <>
-          <div className="flex items-baseline gap-2">
-            <span className="text-sm font-extrabold text-stone-900 font-mono">
-              USD {lmePrice.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / t
-            </span>
-            {lmePrice.previousCash && (
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="text-[11px] font-semibold text-stone-500">USD</span>
+            <span className="text-xl font-extrabold text-stone-900 font-mono tabular-nums tracking-tight">{money(lmePrice.cash)}</span>
+            <span className="text-xs font-bold text-stone-600">/ t</span>
+            {change !== null && (
               <span
-                className={`text-[10px] font-bold font-mono ${
-                  lmePrice.cash >= lmePrice.previousCash ? 'text-emerald-600' : 'text-rose-600'
+                className={`ml-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold font-mono ${
+                  up ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
                 }`}
               >
-                {lmePrice.cash >= lmePrice.previousCash ? '+' : ''}
-                {(lmePrice.cash - lmePrice.previousCash).toFixed(2)} (
-                {(((lmePrice.cash - lmePrice.previousCash) / lmePrice.previousCash) * 100).toFixed(2)}%)
+                {up ? '▲ +' : '▼ '}
+                {change.toFixed(2)} ({((change / lmePrice.previousCash!) * 100).toFixed(2)}%)
               </span>
             )}
           </div>
-          <div className="text-[10px] text-stone-400" title={lmePrice.source}>
-            Cash settlement
-            {lmePrice.threeMonth ? ` · 3-month ${lmePrice.threeMonth.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : ''}
-            {` · ${lmePrice.asOf}`}
-          </div>
-          <div className="text-[10px] text-stone-400">
-            Source: LME official prices via{' '}
-            <a href={LME_SOURCE_URL} target="_blank" rel="noreferrer" className="underline hover:text-stone-700">
-              Westmetall
-            </a>
-          </div>
+          <dl className="mt-2.5 grid grid-cols-2 gap-1.5">
+            <div className="rounded-lg border border-stone-200 bg-stone-50/60 px-2 py-1">
+              <dt className="text-[10px] font-bold text-stone-500">Cash settlement</dt>
+              <dd className="font-mono text-xs font-semibold text-stone-900 tabular-nums">{money(lmePrice.cash)}</dd>
+            </div>
+            <div className="rounded-lg border border-stone-200 bg-stone-50/60 px-2 py-1">
+              <dt className="text-[10px] font-bold text-stone-500">3-month</dt>
+              <dd className="font-mono text-xs font-semibold text-stone-900 tabular-nums">
+                {lmePrice.threeMonth ? money(lmePrice.threeMonth) : '—'}
+              </dd>
+            </div>
+          </dl>
         </>
       ) : (
-        <div className="text-xs font-semibold text-rose-600">Unavailable</div>
+        <Unavailable />
       )}
-    </div>
-  </div>
-);
+    </MarketCard>
+  );
+};
