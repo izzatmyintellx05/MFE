@@ -705,7 +705,7 @@ export const CeoDashboard: React.FC = () => {
                           </div>
                           {pipeline.designOnly[s] > 0 && (
                             <div className="mt-0.5 font-mono text-xs text-slate-500 tabular-nums">
-                              +{formatNum(pipeline.designOnly[s])} ({pipeline.designOnlyLabel})
+                              +{formatNum(pipeline.designOnly[s])} (Re-Design Only)
                             </div>
                           )}
                           <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
