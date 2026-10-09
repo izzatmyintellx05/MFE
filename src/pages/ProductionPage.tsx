@@ -68,7 +68,7 @@ export const ProductionPage: React.FC = () => {
               {seriesList.length} Series Phases
             </span>
             <span className="px-2 py-0.5 rounded text-[9px] font-mono font-bold tracking-wider bg-amber-50 text-amber-900 border border-amber-200">
-              Cumulative Yield: {cumulativeTotal.toLocaleString()} m²
+              Cumulative Yield: {cumulativeTotal.toLocaleString('en-US')} m²
             </span>
           </div>
           <p className="text-[11px] text-slate-400 font-normal mt-0.5">
@@ -188,7 +188,7 @@ export const ProductionPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono font-bold text-slate-950">
-                          {item.totalProduced?.toLocaleString()}
+                          {item.totalProduced?.toLocaleString('en-US')}
                         </td>
                         <td className="py-2 px-3 border-r border-slate-200/60 text-slate-400 font-mono text-[11px]">
                           {new Date(item.updatedAt).toLocaleDateString()}

@@ -37,7 +37,7 @@ export const VisualizationDashboard: React.FC = () => {
           </div>
           <div>
             <p className="text-xs font-bold text-slate-400 uppercase">Total Selling Value</p>
-            <p className="text-2xl font-black text-slate-900">${kpi.totalSellingUSD.toLocaleString()}</p>
+            <p className="text-2xl font-black text-slate-900">${kpi.totalSellingUSD.toLocaleString('en-US')}</p>
           </div>
         </div>
 
@@ -47,7 +47,7 @@ export const VisualizationDashboard: React.FC = () => {
           </div>
           <div>
             <p className="text-xs font-bold text-slate-400 uppercase">Ordered Area (M²)</p>
-            <p className="text-2xl font-black text-slate-900">{kpi.totalOrderedM2.toLocaleString()}</p>
+            <p className="text-2xl font-black text-slate-900">{kpi.totalOrderedM2.toLocaleString('en-US')}</p>
           </div>
         </div>
 
@@ -57,7 +57,7 @@ export const VisualizationDashboard: React.FC = () => {
           </div>
           <div>
             <p className="text-xs font-bold text-slate-400 uppercase">Produced Area (M²)</p>
-            <p className="text-2xl font-black text-slate-900">{kpi.totalProduced.toLocaleString()}</p>
+            <p className="text-2xl font-black text-slate-900">{kpi.totalProduced.toLocaleString('en-US')}</p>
           </div>
         </div>
       </div>

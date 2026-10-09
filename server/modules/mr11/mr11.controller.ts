@@ -15,6 +15,9 @@ import { getLmeAluminiumPrice } from '../../utils/lme';
 
 const prisma = new PrismaClient();
 
+// Identifier columns (not amounts): no thousands separators
+const ID_COLUMN = /project\s*no|^po$|^nca$|nca\s*no|stream|series|revision|^rev\b|code|year|phone|^tel|^no\.?$|^#$/i;
+
 const ORDERED_HEADER_LIST: string[] =
   (mr11ConfigModule as any).ORDERED_HEADER_LIST ||
   ((mr11ConfigModule as any).MR11_ORDERED_COLUMNS || []).map((col: any) => col.target || col.header || String(col));
@@ -213,6 +216,12 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
         orderedRowData[h] = places !== undefined && row[h] !== null && row[h] !== '' && !isNaN(n) ? n : row[h] ?? '';
       });
       const addedRow = worksheet.addRow(orderedRowData);
+      // Amounts show comma separators in Excel too; identifier columns (Project No ...) keep their digits
+      headers.forEach((h, i) => {
+        const v = orderedRowData[h];
+        if (typeof v !== 'number' || MR11_NUMBER_FORMATS[h] !== undefined || ID_COLUMN.test(h)) return;
+        addedRow.getCell(i + 1).numFmt = Number.isInteger(v) ? '#,##0' : '#,##0.00';
+      });
       // Values on several lines (e.g. ETD/ATD) are shown wrapped, one line each
       headers.forEach((h, i) => {
         if (String(row[h] ?? '').includes('\n')) addedRow.getCell(i + 1).alignment = { wrapText: true, vertical: 'top' };
@@ -259,6 +268,12 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     }
 
     // Merged ONLY for ShellPlan and Design across the [Project, Stream] span
+    // Fixed-decimal columns keep their decimals, with separators
+    headers.forEach((h, i) => {
+      const places = MR11_NUMBER_FORMATS[h];
+      if (places !== undefined) worksheet.getColumn(i + 1).numFmt = `#,##0.${'0'.repeat(places)}`;
+    });
+
     const STREAM_MERGE_COLS = [
       'Shell Plan Status - Pending Consultant Drawings', // Col AJ
       'Shell Plan Approved Date',                         // Col AK

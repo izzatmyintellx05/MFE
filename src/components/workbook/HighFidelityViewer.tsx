@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { formatCellNumber } from '../../utils/formatNumber';
 
 // Excel column letters for a 0-based index: A..Z, then AA..AZ, BA..BZ, ...
 export function columnLetter(index: number): string {
@@ -118,7 +119,12 @@ export const HighFidelityViewer: React.FC<HighFidelityViewerProps> = ({ data }) 
                         isBold ? 'font-bold' : ''
                       } ${mergeInfo ? 'bg-slate-50/60 font-semibold' : ''}`}
                     >
-                      {value !== undefined && value !== null ? String(value) : ''}
+                      {value === undefined || value === null
+                        ? ''
+                        : // Amounts get comma separators; the header row and identifier columns stay as typed
+                          rowIdx > 0 && typeof cell?.v === 'number'
+                          ? formatCellNumber(cell.v, String(gridMap[`0_${colIdx}`]?.m ?? gridMap[`0_${colIdx}`]?.v ?? ''))
+                          : String(value)}
                     </td>
                   );
                 })}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
+import { formatCellNumber } from '../../utils/formatNumber';
 
 const DESIGN_DATE_COLUMN = 'Actual Formwork Order Completion Date';
 
@@ -71,12 +72,11 @@ const columnGlow = (color: string, last: boolean): React.CSSProperties => ({
 
 // MR11 master ledger grid, shared by the MR11 page and the CEO dashboard's raw data view
 export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGroups = [], numberFormats = {}, highlightColumns = {}, zoom }) => {
-  // A value as shown in a cell: numbers in a formatted column get their fixed decimals
+  // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
+  // decimals); identifier columns such as Project No keep their digits
   const cellText = (h: string, v: any): string => {
     if (v === null || v === undefined || v === '') return '—';
-    const places = numberFormats[h];
-    const n = Number(v);
-    return places !== undefined && String(v).trim() !== '' && !isNaN(n) ? n.toFixed(places) : String(v);
+    return formatCellNumber(v, h, numberFormats[h]);
   };
   const today = todayInMalaysia();
   const groupOf = (h: string) => headerGroups.find((g) => g.columns.some((c) => c.key === h));

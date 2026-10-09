@@ -189,10 +189,10 @@ export const PlanningPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono font-bold text-slate-950">
-                          {item.totalProcessed?.toLocaleString()}
+                          {item.totalProcessed?.toLocaleString('en-US')}
                         </td>
                         <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono text-slate-400">
-                          {item.totalQuantity ? item.totalQuantity.toLocaleString() : '—'}
+                          {item.totalQuantity ? item.totalQuantity.toLocaleString('en-US') : '—'}
                         </td>
                         <td className="py-2 px-3 border-r border-slate-200/60 text-slate-600 font-medium">
                           {item.closingDate || '—'}

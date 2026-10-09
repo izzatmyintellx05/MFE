@@ -18,7 +18,7 @@ export interface DispatchMonthlyRow {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 // "2026-10" -> "Oct-26"
 const monthLabel = (key: string) => `${MONTHS[Number(key.slice(5, 7)) - 1]}-${key.slice(2, 4)}`;
-const m2 = (v: number) => Number(v.toFixed(2)).toLocaleString();
+const m2 = (v: number) => Number(v.toFixed(2)).toLocaleString('en-US');
 
 // m2 dispatched per month for each MR11 row (Dispatch page). The current month is month to date.
 export const DispatchMonthlyTable: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) => {

@@ -1498,7 +1498,7 @@ export async function executeMr11Pipeline(
         .sort(([a], [b]) => b.localeCompare(a))
         .map(([iso, m2]) => {
           const [y, m, d] = iso.split('-').map((p) => parseInt(p, 10));
-          return `${d}/${m}/${y}${m2 !== null ? ` (${Number(m2.toFixed(2))} m2)` : ''}`;
+          return `${d}/${m}/${y}${m2 !== null ? ` (${m2.toLocaleString('en-US', { maximumFractionDigits: 2 })} m2)` : ''}`;
         })
         .join(', ');
     };
