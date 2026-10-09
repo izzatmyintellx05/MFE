@@ -18,7 +18,7 @@ import {
   SlidersHorizontal,
   ArrowRightLeft,
 } from 'lucide-react';
-import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice } from '../components/common/MarketRates';
+import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice, CurrencyRate } from '../components/common/MarketRates';
 
 // A symbol on the right-hand icon bar; dark when what it opens is showing
 const RailButton: React.FC<{
@@ -50,6 +50,7 @@ export const Mr11Dashboard: React.FC = () => {
   const [numberFormats, setNumberFormats] = useState<Record<string, number>>({});
   // Live USD -> MYR exchange rate, shown in its own box
   const [fxRate, setFxRate] = useState<FxRate | null>(null);
+  const [currencyRates, setCurrencyRates] = useState<CurrencyRate[]>([]);
   // Latest LME aluminium price (USD per tonne), shown for reference
   const [lmePrice, setLmePrice] = useState<LmePrice | null>(null);
   const [columnDepartments, setColumnDepartments] = useState<Record<string, string>>({});
@@ -79,6 +80,7 @@ export const Mr11Dashboard: React.FC = () => {
       setHeaderGroups(data?.headerGroups || []);
       setNumberFormats(data?.numberFormats || {});
       setFxRate(data?.fxRate || null);
+      setCurrencyRates(data?.currencyRates || []);
       setLmePrice(data?.lmePrice || null);
       setColumnDepartments(data?.columnDepartments || {});
       setDepartmentColors(data?.departmentColors || {});
@@ -231,7 +233,7 @@ export const Mr11Dashboard: React.FC = () => {
         >
           <div className="overflow-hidden">
             <div className="flex flex-wrap items-stretch gap-3">
-              <ExchangeRateCard fxRate={fxRate} />
+              <ExchangeRateCard fxRate={fxRate} currencyRates={currencyRates} />
               <LmePriceCard lmePrice={lmePrice} />
             </div>
           </div>

@@ -11,7 +11,10 @@ import {
   MR11_DEPARTMENT_COLORS,
 } from '../../config/mr11.config';
 import { getUsdToMyrRate, getUsdRates } from '../../utils/fx';
-import { applyLivePricing } from './mr11.pricing';
+import { applyLivePricing, currencyCode } from './mr11.pricing';
+
+// Currencies shown with the exchange rate on the MR11 page, besides any BD prices in
+const SHOWN_CURRENCIES = ['MYR', 'SGD', 'AUD', 'INR', 'CNY', 'EUR', 'GBP', 'AED'];
 import { getLmeAluminiumPrice } from '../../utils/lme';
 
 const prisma = new PrismaClient();
@@ -37,12 +40,20 @@ export async function getLatestMr11(req: Request, res: Response) {
       latestRun && Array.isArray(latestRun.records)
         ? { ...latestRun, records: applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates) }
         : latestRun;
+    // 1 USD in each shown currency, and in every currency BD's Other Currencies column uses
+    const bdCurrencies = ((run?.records as any[]) || [])
+      .map((r) => currencyCode(r?._pricing?.otherCurrency))
+      .filter((c): c is string => Boolean(c) && c !== 'USD');
+    const currencyRates = [...new Set([...SHOWN_CURRENCIES, ...bdCurrencies])]
+      .filter((code) => usdRates?.[code])
+      .map((code) => ({ code, rate: usdRates![code], inBd: bdCurrencies.includes(code) }));
 
     return res.json({
       success: true,
       data: {
         run,
         fxRate: fx,
+        currencyRates,
         lmePrice,
         visibleColumns: (config?.visibleColumns as string[]) || [],
         orderedHeaders: ORDERED_HEADER_LIST,

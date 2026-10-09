@@ -9,6 +9,13 @@ export interface FxRate {
   live: boolean;
 }
 
+// 1 USD in other currencies (returned by GET /mr11); inBd = used in BD's Other Currencies
+export interface CurrencyRate {
+  code: string;
+  rate: number;
+  inBd: boolean;
+}
+
 // Latest LME aluminium price, USD per tonne (returned by GET /mr11)
 export interface LmePrice {
   cash: number;
@@ -30,7 +37,19 @@ export const LiveBadge: React.FC<{ live: boolean }> = ({ live }) => (
   </span>
 );
 
-export const ExchangeRateCard: React.FC<{ fxRate: FxRate | null; className?: string }> = ({ fxRate, className = '' }) => (
+const currencyName = (code: string) => {
+  try {
+    return new Intl.DisplayNames('en', { type: 'currency' }).of(code) || code;
+  } catch {
+    return code;
+  }
+};
+
+export const ExchangeRateCard: React.FC<{ fxRate: FxRate | null; currencyRates?: CurrencyRate[]; className?: string }> = ({
+  fxRate,
+  currencyRates = [],
+  className = '',
+}) => (
   <div className={`flex items-center gap-3 bg-white border border-stone-200/80 rounded-xl px-4 py-2.5 shadow-sm ${className}`}>
     <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600 flex-shrink-0">
       <ArrowRightLeft className="w-4 h-4" />
@@ -43,6 +62,18 @@ export const ExchangeRateCard: React.FC<{ fxRate: FxRate | null; className?: str
       {fxRate ? (
         <>
           <div className="text-sm font-extrabold text-stone-900 font-mono">1 USD = {fxRate.rate.toFixed(4)} MYR</div>
+          {/* Other currencies against 1 USD (MYR is the line above); BD's own currencies marked */}
+          {currencyRates.filter((c) => c.code !== 'MYR').length > 0 && (
+            <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px] text-stone-700">
+              {currencyRates
+                .filter((c) => c.code !== 'MYR')
+                .map((c) => (
+                  <span key={c.code} title={`${currencyName(c.code)}${c.inBd ? ' · used in BD Other Currencies' : ''}`}>
+                    {c.rate.toFixed(4)} <span className={c.inBd ? 'font-bold text-emerald-700' : 'text-stone-500'}>{c.code}</span>
+                  </span>
+                ))}
+            </div>
+          )}
           <div className="text-[10px] text-stone-400">
             {fxRate.source}
             {fxRate.asOf ? ` · ${fxRate.asOf}` : ''}
