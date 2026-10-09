@@ -1,15 +1,16 @@
-// Numbers across the app use comma thousands separators (1,600 / 12,714.29). Columns that hold
+// Numbers across the app use comma thousands separators (1,600 / 12,714.286). Columns that hold
 // identifiers rather than amounts (project numbers, stream, PO, NCA, revisions ...) keep their
 // digits as they are.
 
 export const ID_COLUMN = /project\s*no|^po$|^nca$|nca\s*no|stream|series|revision|^rev\b|code|year|phone|^tel|^no\.?$|^#$/i;
 
-/** "1600" -> "1,600"; with places, a fixed number of decimals ("3.1" -> "3.100") */
+/**
+ * "1600" -> "1,600"; a value with decimals shows 3 of them ("3.1" -> "3.100"); with places,
+ * that fixed number of decimals
+ */
 export function formatNumber(n: number, places?: number): string {
-  return n.toLocaleString(
-    'en-US',
-    places !== undefined ? { minimumFractionDigits: places, maximumFractionDigits: places } : { maximumFractionDigits: 3 }
-  );
+  const decimals = places ?? (Number.isInteger(n) ? 0 : 3);
+  return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
 /** A cell value as shown: numbers (or numeric text) get separators unless the column is an identifier */

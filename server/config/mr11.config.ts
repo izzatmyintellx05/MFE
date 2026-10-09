@@ -38,7 +38,7 @@ export const MR11_HEADER_GROUPS: HeaderGroup[] = [
 export const MR11_NUMBER_FORMATS: Record<string, number> = {
   'LME Rate (USD)': 3,
   'LME Adjusted (USD)': 3,
-  'Final Selling Price (USD)': 2,
+  'Final Selling Price (USD)': 3,
 };
 
 export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {

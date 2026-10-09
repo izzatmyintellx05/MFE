@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, RefreshCw } from 'lucide-react';
 import { api } from '../../api/client';
 import { todayInMalaysia } from '../../utils/designDates';
+import { formatNumber } from '../../utils/formatNumber';
 
 export interface DispatchMonthlyRow {
   shortName: string | null;
@@ -18,7 +19,7 @@ export interface DispatchMonthlyRow {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 // "2026-10" -> "Oct-26"
 const monthLabel = (key: string) => `${MONTHS[Number(key.slice(5, 7)) - 1]}-${key.slice(2, 4)}`;
-const m2 = (v: number) => Number(v.toFixed(2)).toLocaleString('en-US');
+const m2 = (v: number) => formatNumber(Number(v.toFixed(3)));
 
 // m2 dispatched per month for each MR11 row (Dispatch page). The current month is month to date.
 export const DispatchMonthlyTable: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) => {

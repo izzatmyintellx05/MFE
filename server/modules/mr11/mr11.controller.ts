@@ -220,7 +220,7 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       headers.forEach((h, i) => {
         const v = orderedRowData[h];
         if (typeof v !== 'number' || MR11_NUMBER_FORMATS[h] !== undefined || ID_COLUMN.test(h)) return;
-        addedRow.getCell(i + 1).numFmt = Number.isInteger(v) ? '#,##0' : '#,##0.00';
+        addedRow.getCell(i + 1).numFmt = Number.isInteger(v) ? '#,##0' : '#,##0.000';
       });
       // Values on several lines (e.g. ETD/ATD) are shown wrapped, one line each
       headers.forEach((h, i) => {

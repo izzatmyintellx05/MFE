@@ -828,18 +828,18 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(2)) : null;
+        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
         if (l.endsWith('-26')) total2026 += values[l];
         else total2027 += values[l];
       }
-      row['Total 2026 m2'] = total2026 > 0 ? Number(total2026.toFixed(2)) : null;
-      row['Total 2027 m2'] = total2027 > 0 ? Number(total2027.toFixed(2)) : null;
+      row['Total 2026 m2'] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
+      row['Total 2027 m2'] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
       row['_forecastSource'] = target === null ? null : source;
 
       // Pipeline per month. A month still open records its Design and Processed forecast; once
       // it has ended, the last record stands (what was planned for it, against what was dispatched)
       const stages: Record<string, any> = {};
-      const round = (n: number | undefined | null) => (n === undefined || n === null ? null : Number(n.toFixed(2)));
+      const round = (n: number | undefined | null) => (n === undefined || n === null ? null : Number(n.toFixed(3)));
       for (const l of labels) {
         const key = monthKeyOf(l);
         if (key >= currentMonth) history[key] = { design: designValues[l], processed: values[l] };
@@ -1498,7 +1498,7 @@ export async function executeMr11Pipeline(
         .sort(([a], [b]) => b.localeCompare(a))
         .map(([iso, m2]) => {
           const [y, m, d] = iso.split('-').map((p) => parseInt(p, 10));
-          return `${d}/${m}/${y}${m2 !== null ? ` (${m2.toLocaleString('en-US', { maximumFractionDigits: 2 })} m2)` : ''}`;
+          return `${d}/${m}/${y}${m2 !== null ? ` (${m2.toLocaleString('en-US', Number.isInteger(m2) ? {} : { minimumFractionDigits: 3, maximumFractionDigits: 3 })} m2)` : ''}`;
         })
         .join(', ');
     };
