@@ -119,6 +119,7 @@ export const ORDERED_HEADER_LIST = [
   'Project No',
   'Short Name',
   'Stream',
+  'Building Name',
   'Countries',
   'PIC',
   'Status',
@@ -215,6 +216,7 @@ export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
   { target: 'Project No', sourceDept: RoleCode.BD, sourceColumn: 'Project No.', type: 'string', exact: true, aliases: ['Project No'] }, // B
   { target: 'Short Name', sourceDept: RoleCode.BD, sourceColumn: 'Project Shortname', type: 'string', exact: true, aliases: ['Short Name', 'Shortname'] }, // C
   { target: 'Stream', sourceDept: RoleCode.BD, sourceColumn: 'Stream', type: 'string', exact: true }, // D
+  { target: 'Building Name', sourceDept: RoleCode.BD, sourceColumn: 'Building Name', type: 'string', exact: true }, // E
   { target: 'Countries', sourceDept: RoleCode.BD, sourceColumn: 'Countries', type: 'string', exact: true, aliases: ['Country'] }, // E
   { target: 'PIC', sourceDept: RoleCode.BD, sourceColumn: 'PIC', type: 'string', exact: true }, // F
   { target: 'Status', sourceDept: RoleCode.BD, sourceColumn: 'Status', type: 'string', exact: true }, // G
