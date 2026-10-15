@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import ExcelJS from 'exceljs';
-import { executeMr11Pipeline, ApprovalHistoryGroup } from './mr11.engine';
+import { executeMr11Pipeline, ApprovalHistoryGroup, DeletedMr11Row } from './mr11.engine';
 import { getLatestMr11Run, hydrateActiveVersionsFromDb } from '../../db/supabase';
 import * as mr11ConfigModule from '../../config/mr11.config';
 import {
@@ -135,6 +135,68 @@ export async function getDispatchMonthly(req: Request, res: Response) {
         months: r._dispatchedByMonth as Record<string, number>,
       }));
     return res.json({ success: true, data: rows });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Deleted MR11 rows (administrators): a deleted row stays out of MR11 until it is restored
+// ---------------------------------------------------------------------------------------------
+
+async function currentDeletedRows(): Promise<{ run: any; rows: DeletedMr11Row[] }> {
+  const run: any = await getLatestMr11Run(prisma);
+  return { run, rows: run?.sourceSnapshot?.deletedRows || [] };
+}
+
+// Rebuild MR11 with the new list (each department's latest workbook first, as on Sync)
+async function rebuildWith(rows: DeletedMr11Row[]) {
+  await hydrateActiveVersionsFromDb(prisma);
+  await executeMr11Pipeline(prisma, { deletedRows: rows });
+}
+
+export async function getDeletedRows(req: Request, res: Response) {
+  try {
+    const { rows } = await currentDeletedRows();
+    return res.json({ success: true, data: rows });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
+export async function deleteMr11Row(req: Request, res: Response) {
+  try {
+    const key = String(req.body?.key || '').trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: 'No row given' } });
+    const { run, rows } = await currentDeletedRows();
+    if (rows.some((d) => d.key === key)) return res.json({ success: true, data: rows });
+    const record = ((run?.records as any[]) || []).find((r) => r?._rowKey === key);
+    if (!record) return res.status(404).json({ success: false, error: { message: 'That row is no longer in MR11' } });
+    const entry: DeletedMr11Row = {
+      key,
+      shortName: record['Short Name'] ?? null,
+      projectNo: record['Project No'] ?? null,
+      projectName: record['Customer & Project Name'] ?? null,
+      stream: record['Stream'] != null ? String(record['Stream']) : null,
+      productType: record['Products type'] ?? null,
+      deletedAt: new Date().toISOString(),
+      deletedBy: (req as any).user?.email ?? null,
+    };
+    const next = [...rows, entry];
+    await rebuildWith(next);
+    return res.json({ success: true, data: next });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
+export async function restoreMr11Row(req: Request, res: Response) {
+  try {
+    const key = String(req.body?.key || '').trim();
+    const { rows } = await currentDeletedRows();
+    const next = rows.filter((d) => d.key !== key);
+    if (next.length !== rows.length) await rebuildWith(next);
+    return res.json({ success: true, data: next });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }

@@ -19,6 +19,9 @@ import {
   ArrowRightLeft,
 } from 'lucide-react';
 import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice, CurrencyRate } from '../components/common/MarketRates';
+import { DeletedRowsMenu, DeletedRow } from '../components/workbook/DeletedRowsMenu';
+import { useAuthStore } from '../store/auth.store';
+import { isAdmin } from '../utils/access';
 
 // A symbol on the right-hand icon bar; dark when what it opens is showing
 const RailButton: React.FC<{
@@ -69,6 +72,12 @@ export const Mr11Dashboard: React.FC = () => {
   const [showRates, setShowRates] = usePersistentState<boolean>('mr11.showRatesStrip', true);
   const tableRef = useRef<HTMLDivElement>(null);
 
+  // Administrators can delete MR11 rows (and restore them from the Deleted rows list)
+  const { user } = useAuthStore();
+  const admin = isAdmin(user);
+  const [deletedRows, setDeletedRows] = useState<DeletedRow[]>([]);
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+
   const fetchMr11Data = async () => {
     setLoading(true);
     setError(null);
@@ -94,6 +103,48 @@ export const Mr11Dashboard: React.FC = () => {
   useEffect(() => {
     fetchMr11Data();
   }, []);
+
+  useEffect(() => {
+    if (!admin) return;
+    api
+      .get('/mr11/deleted-rows')
+      .then((res) => setDeletedRows(res.data?.data || []))
+      .catch(() => setDeletedRows([]));
+  }, [admin]);
+
+  const describeRow = (r: any) =>
+    `${r['Short Name'] || r['Project No'] || 'this project'}, stream ${r['Stream'] ?? '—'}${r['Products type'] ? ` (${r['Products type']})` : ''}`;
+
+  const handleDeleteRow = async (row: any) => {
+    if (rowBusy) return;
+    if (!window.confirm(`Delete ${describeRow(row)} from MR11?\n\nIt stays out of MR11 after new uploads too. You can bring it back from "Deleted rows".`)) return;
+    setRowBusy(row._rowKey);
+    setError(null);
+    try {
+      const res = await api.post('/mr11/rows/delete', { key: row._rowKey });
+      setDeletedRows(res.data?.data || []);
+      await fetchMr11Data();
+    } catch (err: any) {
+      setError(err.response?.data?.error?.message || err.message || 'Could not delete the row');
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const handleRestoreRow = async (row: DeletedRow) => {
+    if (rowBusy) return;
+    setRowBusy(row.key);
+    setError(null);
+    try {
+      const res = await api.post('/mr11/rows/restore', { key: row.key });
+      setDeletedRows(res.data?.data || []);
+      await fetchMr11Data();
+    } catch (err: any) {
+      setError(err.response?.data?.error?.message || err.message || 'Could not restore the row');
+    } finally {
+      setRowBusy(null);
+    }
+  };
 
   const handleRegenerate = async () => {
     setRegenerating(true);
@@ -206,6 +257,8 @@ export const Mr11Dashboard: React.FC = () => {
 
             <FullscreenButton target={tableRef} />
 
+            {admin && <DeletedRowsMenu rows={deletedRows} busyKey={rowBusy} onRestore={handleRestoreRow} />}
+
             <button
               onClick={handleRegenerate}
               disabled={regenerating}
@@ -312,6 +365,7 @@ export const Mr11Dashboard: React.FC = () => {
               numberFormats={numberFormats}
               highlightColumns={highlightColumns}
               zoom={zoom}
+              onDeleteRow={admin && !rowBusy ? handleDeleteRow : undefined}
             />
           )}
         </div>

@@ -801,9 +801,21 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
   }
 }
 
+/** An MR11 row an administrator deleted: kept out of every MR11 build until restored */
+export interface DeletedMr11Row {
+  key: string;
+  shortName: string | null;
+  projectNo: string | null;
+  projectName: string | null;
+  stream: string | null;
+  productType: string | null;
+  deletedAt: string;
+  deletedBy: string | null;
+}
+
 export async function executeMr11Pipeline(
   prisma: PrismaClient,
-  options: { persist?: boolean } = {}
+  options: { persist?: boolean; deletedRows?: DeletedMr11Row[] } = {}
 ): Promise<string> {
   const { persist = true } = options;
 
@@ -2038,9 +2050,19 @@ export async function executeMr11Pipeline(
 
     outRow['_fontColor'] = bdFontColor;
     outRow['_fillColor'] = bdFillColor;
+    // Identifies the row across uploads (for deleting it from MR11)
+    outRow['_rowKey'] = rowHistoryKey;
 
     return outRow;
   });
+
+  // Rows an administrator deleted stay out of MR11 (the list is kept with each MR11 run)
+  const deletedRows: DeletedMr11Row[] =
+    options.deletedRows ?? ((previousRun?.sourceSnapshot as any)?.deletedRows || []);
+  const deletedKeys = new Set(deletedRows.map((d) => d.key));
+  for (let k = derivedMr11Rows.length - 1; k >= 0; k--) {
+    if (deletedKeys.has(derivedMr11Rows[k]['_rowKey'])) derivedMr11Rows.splice(k, 1);
+  }
 
   applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7), monthStageHistory);
 
@@ -2166,6 +2188,7 @@ export async function executeMr11Pipeline(
         localDispatchByMonth,
         productionByMonth,
         monthStageHistory,
+        deletedRows,
         shellplanApprovalHistory: approvalHistory,
       },
       recordCount: derivedMr11Rows.length,
@@ -2185,6 +2208,7 @@ export async function executeMr11Pipeline(
           localDispatchByMonth,
           productionByMonth,
           monthStageHistory,
+          deletedRows,
           shellplanApprovalHistory: approvalHistory,
           engineHistory: exportEngineHistory(),
         },
