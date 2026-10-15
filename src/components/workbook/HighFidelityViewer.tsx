@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 import { formatCellNumber } from '../../utils/formatNumber';
 
+// "1 Dec 2026" for a header cell holding an Excel date number (46357), as the Dispatch and
+// Production day columns are saved; null for anything else
+function headerDate(v: any): string | null {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v <= 40000 || v >= 60000) return null;
+  const date = new Date(Date.UTC(1899, 11, 30) + v * 86400000);
+  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
 // Excel column letters for a 0-based index: A..Z, then AA..AZ, BA..BZ, ...
 export function columnLetter(index: number): string {
   let n = index + 1;
@@ -121,8 +129,11 @@ export const HighFidelityViewer: React.FC<HighFidelityViewerProps> = ({ data }) 
                     >
                       {value === undefined || value === null
                         ? ''
-                        : // Amounts get comma separators; the header row and identifier columns stay as typed
-                          rowIdx > 0 && typeof cell?.v === 'number'
+                        : // A day column's header saved as an Excel date number (46357) shows as its date;
+                          // amounts get comma separators; identifier columns stay as typed
+                          rowIdx <= 1 && headerDate(cell?.v)
+                          ? headerDate(cell?.v)
+                          : rowIdx > 0 && typeof cell?.v === 'number'
                           ? formatCellNumber(cell.v, String(gridMap[`0_${colIdx}`]?.m ?? gridMap[`0_${colIdx}`]?.v ?? ''))
                           : String(value)}
                     </td>
