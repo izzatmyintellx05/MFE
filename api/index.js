@@ -3544,8 +3544,14 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     };
     outRow["_fontColor"] = bdFontColor;
     outRow["_fillColor"] = bdFillColor;
+    outRow["_rowKey"] = rowHistoryKey;
     return outRow;
   });
+  const deletedRows = options.deletedRows ?? (previousRun?.sourceSnapshot?.deletedRows || []);
+  const deletedKeys = new Set(deletedRows.map((d) => d.key));
+  for (let k = derivedMr11Rows.length - 1; k >= 0; k--) {
+    if (deletedKeys.has(derivedMr11Rows[k]["_rowKey"])) derivedMr11Rows.splice(k, 1);
+  }
   applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7), monthStageHistory);
   const designStatesByProject = /* @__PURE__ */ new Map();
   const projectKeyOf = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
@@ -3619,6 +3625,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         localDispatchByMonth,
         productionByMonth,
         monthStageHistory,
+        deletedRows,
         shellplanApprovalHistory: approvalHistory
       },
       recordCount: derivedMr11Rows.length,
@@ -3636,6 +3643,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
           localDispatchByMonth,
           productionByMonth,
           monthStageHistory,
+          deletedRows,
           shellplanApprovalHistory: approvalHistory,
           engineHistory: exportEngineHistory()
         },
@@ -4088,6 +4096,58 @@ async function getDispatchMonthly(req, res) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
 }
+async function currentDeletedRows() {
+  const run = await getLatestMr11Run(prisma5);
+  return { run, rows: run?.sourceSnapshot?.deletedRows || [] };
+}
+async function rebuildWith(rows) {
+  await hydrateActiveVersionsFromDb(prisma5);
+  await executeMr11Pipeline(prisma5, { deletedRows: rows });
+}
+async function getDeletedRows(req, res) {
+  try {
+    const { rows } = await currentDeletedRows();
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function deleteMr11Row(req, res) {
+  try {
+    const key = String(req.body?.key || "").trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: "No row given" } });
+    const { run, rows } = await currentDeletedRows();
+    if (rows.some((d) => d.key === key)) return res.json({ success: true, data: rows });
+    const record = (run?.records || []).find((r) => r?._rowKey === key);
+    if (!record) return res.status(404).json({ success: false, error: { message: "That row is no longer in MR11" } });
+    const entry = {
+      key,
+      shortName: record["Short Name"] ?? null,
+      projectNo: record["Project No"] ?? null,
+      projectName: record["Customer & Project Name"] ?? null,
+      stream: record["Stream"] != null ? String(record["Stream"]) : null,
+      productType: record["Products type"] ?? null,
+      deletedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      deletedBy: req.user?.email ?? null
+    };
+    const next = [...rows, entry];
+    await rebuildWith(next);
+    return res.json({ success: true, data: next });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function restoreMr11Row(req, res) {
+  try {
+    const key = String(req.body?.key || "").trim();
+    const { rows } = await currentDeletedRows();
+    const next = rows.filter((d) => d.key !== key);
+    if (next.length !== rows.length) await rebuildWith(next);
+    return res.json({ success: true, data: next });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
 async function getPlanningSeriesHistory(req, res) {
   try {
     const data = await prisma5.planningSeriesHistory.findMany({
@@ -4256,7 +4316,29 @@ ${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
   }
 }
 
+// server/middleware/rbac.middleware.ts
+init_prisma();
+function requireRoles(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: { code: "AUTH_REQUIRED" } });
+    }
+    if (req.user.roles.includes("ADMIN" /* ADMIN */)) {
+      return next();
+    }
+    const hasRole = req.user.roles.some((role) => allowedRoles.includes(role));
+    if (!hasRole) {
+      return res.status(403).json({
+        success: false,
+        error: { code: "ACCESS_DENIED", message: "You do not have permission for this resource." }
+      });
+    }
+    next();
+  };
+}
+
 // server/modules/mr11/mr11.routes.ts
+init_prisma();
 var router3 = Router3();
 router3.use(requireAuth);
 router3.get("/", getLatestMr11);
@@ -4266,6 +4348,9 @@ router3.get("/planning-series", getPlanningSeriesHistory);
 router3.get("/production-series", getProductionSeriesHistory);
 router3.get("/shellplan-history", getShellplanApprovalHistory);
 router3.get("/dispatch-monthly", getDispatchMonthly);
+router3.get("/deleted-rows", requireRoles("ADMIN" /* ADMIN */), getDeletedRows);
+router3.post("/rows/delete", requireRoles("ADMIN" /* ADMIN */), deleteMr11Row);
+router3.post("/rows/restore", requireRoles("ADMIN" /* ADMIN */), restoreMr11Row);
 var mr11_routes_default = router3;
 
 // server/modules/admin/admin.routes.ts
@@ -4606,29 +4691,6 @@ __export(visualization_routes_exports, {
   default: () => visualization_routes_default
 });
 import { Router as Router5 } from "express";
-
-// server/middleware/rbac.middleware.ts
-init_prisma();
-function requireRoles(...allowedRoles) {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ success: false, error: { code: "AUTH_REQUIRED" } });
-    }
-    if (req.user.roles.includes("ADMIN" /* ADMIN */)) {
-      return next();
-    }
-    const hasRole = req.user.roles.some((role) => allowedRoles.includes(role));
-    if (!hasRole) {
-      return res.status(403).json({
-        success: false,
-        error: { code: "ACCESS_DENIED", message: "You do not have permission for this resource." }
-      });
-    }
-    next();
-  };
-}
-
-// server/modules/visualization/visualization.routes.ts
 init_prisma();
 
 // server/modules/visualization/visualization.controller.ts
