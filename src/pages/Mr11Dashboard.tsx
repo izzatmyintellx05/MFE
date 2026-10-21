@@ -17,8 +17,12 @@ import {
   X,
   SlidersHorizontal,
   ArrowRightLeft,
+  Trash2,
 } from 'lucide-react';
 import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice, CurrencyRate } from '../components/common/MarketRates';
+import { DeletedRowsMenu, DeletedRow } from '../components/workbook/DeletedRowsMenu';
+import { useAuthStore } from '../store/auth.store';
+import { isAdmin } from '../utils/access';
 
 // A symbol on the right-hand icon bar; dark when what it opens is showing
 const RailButton: React.FC<{
@@ -69,6 +73,14 @@ export const Mr11Dashboard: React.FC = () => {
   const [showRates, setShowRates] = usePersistentState<boolean>('mr11.showRatesStrip', true);
   const tableRef = useRef<HTMLDivElement>(null);
 
+  // Administrators can delete MR11 rows (and restore them from the Deleted rows list)
+  const { user } = useAuthStore();
+  const admin = isAdmin(user);
+  const [deletedRows, setDeletedRows] = useState<DeletedRow[]>([]);
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  // The row waiting for the administrator to confirm its deletion
+  const [confirmRow, setConfirmRow] = useState<any | null>(null);
+
   const fetchMr11Data = async () => {
     setLoading(true);
     setError(null);
@@ -94,6 +106,48 @@ export const Mr11Dashboard: React.FC = () => {
   useEffect(() => {
     fetchMr11Data();
   }, []);
+
+  useEffect(() => {
+    if (!admin) return;
+    api
+      .get('/mr11/deleted-rows')
+      .then((res) => setDeletedRows(res.data?.data || []))
+      .catch(() => setDeletedRows([]));
+  }, [admin]);
+
+  const describeRow = (r: any) =>
+    `${r['Short Name'] || r['Project No'] || 'this project'}, stream ${r['Stream'] ?? '—'}${r['Products type'] ? ` (${r['Products type']})` : ''}`;
+
+  const handleDeleteRow = async (row: any) => {
+    if (rowBusy) return;
+    setConfirmRow(null);
+    setRowBusy(row._rowKey);
+    setError(null);
+    try {
+      const res = await api.post('/mr11/rows/delete', { key: row._rowKey });
+      setDeletedRows(res.data?.data || []);
+      await fetchMr11Data();
+    } catch (err: any) {
+      setError(err.response?.data?.error?.message || err.message || 'Could not delete the row');
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const handleRestoreRow = async (row: DeletedRow) => {
+    if (rowBusy) return;
+    setRowBusy(row.key);
+    setError(null);
+    try {
+      const res = await api.post('/mr11/rows/restore', { key: row.key });
+      setDeletedRows(res.data?.data || []);
+      await fetchMr11Data();
+    } catch (err: any) {
+      setError(err.response?.data?.error?.message || err.message || 'Could not restore the row');
+    } finally {
+      setRowBusy(null);
+    }
+  };
 
   const handleRegenerate = async () => {
     setRegenerating(true);
@@ -162,6 +216,58 @@ export const Mr11Dashboard: React.FC = () => {
 
   return (
     <div className="relative flex h-full bg-[#FAF9F6] p-5 overflow-hidden select-none">
+      {/* Confirm deleting an MR11 row */}
+      {confirmRow && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-row-title"
+          onMouseDown={(e) => e.target === e.currentTarget && setConfirmRow(null)}
+        >
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-stone-200 overflow-hidden">
+            <div className="flex items-start gap-3 px-5 pt-5">
+              <span className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-4 h-4" />
+              </span>
+              <div className="min-w-0">
+                <h2 id="delete-row-title" className="text-sm font-extrabold text-stone-900">
+                  Delete this row from MR11?
+                </h2>
+                <p className="mt-1 text-xs text-stone-600">
+                  <span className="font-semibold text-stone-900">{describeRow(confirmRow)}</span>
+                </p>
+                <p className="mt-0.5 text-[11px] text-stone-500 truncate" title={confirmRow['Customer & Project Name']}>
+                  {confirmRow['Customer & Project Name']}
+                </p>
+                <p className="mt-3 text-[11px] text-stone-500">
+                  It stays out of MR11 after new uploads too. You can bring it back any time from{' '}
+                  <span className="font-semibold text-stone-700">Deleted rows</span>.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 px-5 py-4 mt-4 bg-stone-50 border-t border-stone-100">
+              <button
+                type="button"
+                onClick={() => setConfirmRow(null)}
+                className="px-3.5 py-1.5 rounded-lg border border-stone-200 bg-white text-xs font-semibold text-stone-700 hover:bg-stone-50 cursor-pointer"
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteRow(confirmRow)}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete row
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 min-w-0 flex flex-col">
         {/* Top bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-stone-200/80 rounded-xl px-4 py-3 shadow-sm mb-3.5 flex-shrink-0">
@@ -205,6 +311,8 @@ export const Mr11Dashboard: React.FC = () => {
             <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
 
             <FullscreenButton target={tableRef} />
+
+            {admin && <DeletedRowsMenu rows={deletedRows} busyKey={rowBusy} onRestore={handleRestoreRow} />}
 
             <button
               onClick={handleRegenerate}
@@ -312,6 +420,7 @@ export const Mr11Dashboard: React.FC = () => {
               numberFormats={numberFormats}
               highlightColumns={highlightColumns}
               zoom={zoom}
+              onDeleteRow={admin && !rowBusy ? setConfirmRow : undefined}
             />
           )}
         </div>

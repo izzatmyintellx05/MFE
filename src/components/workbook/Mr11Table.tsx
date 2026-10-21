@@ -1,4 +1,5 @@
 import React from 'react';
+import { Trash2 } from 'lucide-react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 import { formatCellNumber } from '../../utils/formatNumber';
 
@@ -53,6 +54,8 @@ interface Mr11TableProps {
   /** Columns to outline with a glow, mapped to the colour (e.g. the logged-in department's columns) */
   highlightColumns?: Record<string, string>;
   zoom: number;
+  /** Administrators: a delete button on each row */
+  onDeleteRow?: (row: any) => void;
 }
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
@@ -71,7 +74,15 @@ const columnGlow = (color: string, last: boolean): React.CSSProperties => ({
 });
 
 // MR11 master ledger grid, shared by the MR11 page and the CEO dashboard's raw data view
-export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGroups = [], numberFormats = {}, highlightColumns = {}, zoom }) => {
+export const Mr11Table: React.FC<Mr11TableProps> = ({
+  records,
+  headers,
+  headerGroups = [],
+  numberFormats = {},
+  highlightColumns = {},
+  zoom,
+  onDeleteRow,
+}) => {
   // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
   // decimals); identifier columns such as Project No keep their digits
   const cellText = (h: string, v: any): string => {
@@ -172,12 +183,27 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({ records, headers, headerGr
               return (
                 <tr
                   key={rIdx}
-                  className="hover:bg-stone-50/70 transition-colors"
+                  className="group hover:bg-stone-50/70 transition-colors"
                   style={{ backgroundColor: rowBg }}
                 >
-                  {/* Sticky Index Column */}
+                  {/* Sticky Index Column (with the delete button for administrators) */}
                   <td className="p-2 border-r border-stone-200 text-center text-stone-400 font-mono text-[11px] sticky left-0 z-10 bg-white font-medium">
-                    {rIdx + 1}
+                    {onDeleteRow && row?._rowKey ? (
+                      <>
+                        <span className="group-hover:hidden">{rIdx + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteRow(row)}
+                          className="hidden group-hover:inline-flex items-center justify-center w-5 h-5 rounded text-rose-500 hover:text-white hover:bg-rose-600 cursor-pointer"
+                          title="Delete this row from MR11"
+                          aria-label={`Delete row ${rIdx + 1} from MR11`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    ) : (
+                      rIdx + 1
+                    )}
                   </td>
 
                   {/* Cell Data */}
