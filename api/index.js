@@ -2207,6 +2207,19 @@ function normalizeFillColor(color) {
   }
   return s.startsWith("#") ? s : `#${s}`;
 }
+function countryOfRow(row) {
+  const country = String(row["Countries"] ?? "").trim();
+  if (country && !/^rest of (the )?world$/i.test(country)) return country;
+  const name = String(row["Customer & Project Name"] ?? "");
+  return name.includes(" - ") && name.split(" - ")[0].trim() || country;
+}
+function compareCountries(a, b) {
+  const rank = (c) => /^india\b/i.test(c) ? 0 : /^malaysia\b|sabah|sarawak|labuan/i.test(c) ? 1 : c ? 2 : 3;
+  const rankA = rank(a);
+  const rankB = rank(b);
+  if (rankA !== rankB) return rankA - rankB;
+  return rankA === 2 ? a.localeCompare(b, void 0, { sensitivity: "base" }) : 0;
+}
 function getProjectIdentifier(row) {
   const pNo = cleanStr(
     row["Project No"] || row["Project No."] || row["Project No. (from design column A)"] || row["Project No. (from bd column B)"] || row["PROJECT NO"] || row["PROJECT NO."]
@@ -3567,10 +3580,18 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     r["Formwork Design Status"] = status;
     r["design status"] = status;
   }
+  const countryByProject = /* @__PURE__ */ new Map();
+  for (const r of derivedMr11Rows) {
+    const proj = getProjectIdentifier(r);
+    if (!countryByProject.get(proj)) countryByProject.set(proj, countryOfRow(r));
+  }
+  const countryOf = (r) => countryByProject.get(getProjectIdentifier(r)) || "";
   derivedMr11Rows.sort((a, b) => {
     const projA = getProjectIdentifier(a);
     const projB = getProjectIdentifier(b);
     if (projA !== projB) {
+      const byCountry = compareCountries(countryOf(a), countryOf(b));
+      if (byCountry !== 0) return byCountry;
       return projA.localeCompare(projB);
     }
     const streamA = parseFloat(String(a["Stream"] || "1").replace(/[^0-9.]/g, "")) || 1;

@@ -192,6 +192,25 @@ function normalizeFillColor(color: any): string {
   return s.startsWith('#') ? s : `#${s}`;
 }
 
+// Country of an MR11 row: the BD "Countries" column, or, when that is blank or only says
+// "Rest of the World", the country that starts "Customer & Project Name" ("SINGAPORE - ...")
+function countryOfRow(row: Record<string, any>): string {
+  const country = String(row['Countries'] ?? '').trim();
+  if (country && !/^rest of (the )?world$/i.test(country)) return country;
+  const name = String(row['Customer & Project Name'] ?? '');
+  return (name.includes(' - ') && name.split(' - ')[0].trim()) || country;
+}
+
+// India first, then Malaysia (Sabah, Sarawak and Labuan included), then every other country A-Z,
+// with projects that name no country last
+function compareCountries(a: string, b: string): number {
+  const rank = (c: string) => (/^india\b/i.test(c) ? 0 : /^malaysia\b|sabah|sarawak|labuan/i.test(c) ? 1 : c ? 2 : 3);
+  const rankA = rank(a);
+  const rankB = rank(b);
+  if (rankA !== rankB) return rankA - rankB;
+  return rankA === 2 ? a.localeCompare(b, undefined, { sensitivity: 'base' }) : 0;
+}
+
 function getProjectIdentifier(row: Record<string, any>): string {
   const pNo = cleanStr(
     row['Project No'] ||
@@ -2093,12 +2112,23 @@ export async function executeMr11Pipeline(
     r['design status'] = status;
   }
 
-  // 5. SORTING: PROJECT -> STREAM -> NO FILL BEFORE FILLED -> FILL COLOR -> FONT COLOR (BLACK FIRST)
+  // 5. SORTING: COUNTRY (INDIA, MALAYSIA, THEN THE REST A-Z) -> PROJECT -> STREAM -> NO FILL BEFORE FILLED
+  //    -> FILL COLOR -> FONT COLOR (BLACK FIRST)
   // --------------------------------------------------------------------------
+  // One country per project (its first row that names one), so a project's rows never split up
+  const countryByProject = new Map<string, string>();
+  for (const r of derivedMr11Rows) {
+    const proj = getProjectIdentifier(r);
+    if (!countryByProject.get(proj)) countryByProject.set(proj, countryOfRow(r));
+  }
+  const countryOf = (r: Record<string, any>) => countryByProject.get(getProjectIdentifier(r)) || '';
+
   derivedMr11Rows.sort((a, b) => {
     const projA = getProjectIdentifier(a);
     const projB = getProjectIdentifier(b);
     if (projA !== projB) {
+      const byCountry = compareCountries(countryOf(a), countryOf(b));
+      if (byCountry !== 0) return byCountry;
       return projA.localeCompare(projB);
     }
 
