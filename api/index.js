@@ -745,12 +745,14 @@ __export(supabase_exports, {
   fetchActiveFileSummariesFromDb: () => fetchActiveFileSummariesFromDb,
   fetchActiveVersionForDepartment: () => fetchActiveVersionForDepartment,
   fetchActiveVersionsFromDb: () => fetchActiveVersionsFromDb,
+  fetchChangeLogsFromDb: () => fetchChangeLogsFromDb,
   fetchLatestMr11RunFromDb: () => fetchLatestMr11RunFromDb,
   getLatestMr11Run: () => getLatestMr11Run,
   hydrateActiveVersionsFromDb: () => hydrateActiveVersionsFromDb,
   hydrateUsersFromDb: () => hydrateUsersFromDb,
   isDatabaseConfigured: () => isDatabaseConfigured,
   restoreEngineHistory: () => restoreEngineHistory,
+  saveChangeLogToDb: () => saveChangeLogToDb,
   saveFileVersionToDb: () => saveFileVersionToDb,
   saveMr11RunToDb: () => saveMr11RunToDb,
   saveUserToDb: () => saveUserToDb
@@ -851,12 +853,13 @@ async function inTransaction(fn) {
     });
   }
 }
-async function fetchActiveVersionsFromDb() {
+async function fetchActiveVersionsFromDb(onlyCode) {
   return withPool(async (pool) => {
     const result = await pool.query(
       `SELECT d.code AS "deptCode", f.*
          FROM "Department" d
-         JOIN "FileVersion" f ON f.id = d."activeVersionId";`
+         JOIN "FileVersion" f ON f.id = d."activeVersionId"${onlyCode ? " WHERE d.code::text = $1" : ""};`,
+      onlyCode ? [onlyCode] : []
     );
     const byCode = {};
     for (const row of result.rows) {
@@ -867,8 +870,8 @@ async function fetchActiveVersionsFromDb() {
   });
 }
 async function fetchActiveVersionForDepartment(code) {
-  const all = await fetchActiveVersionsFromDb();
-  return all?.[code] ?? null;
+  const one = await fetchActiveVersionsFromDb(code);
+  return one?.[code] ?? null;
 }
 async function fetchLatestMr11RunFromDb() {
   return withPool(async (pool) => {
@@ -1090,13 +1093,86 @@ async function getLatestMr11Run(prisma8) {
   if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) return dbRun;
   return prisma8.mr11Run.findFirst({ orderBy: { generatedAt: "desc" } });
 }
-var NOW, columnCache;
+async function ensureChangeLogTable(pool) {
+  if (changeLogTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "WorkbookChangeLog" (
+      "id" TEXT PRIMARY KEY,
+      "scope" TEXT NOT NULL,
+      "fileVersionId" TEXT,
+      "previousVersionId" TEXT,
+      "originalFilename" TEXT,
+      "previousFilename" TEXT,
+      "source" TEXT,
+      "uploadedById" TEXT,
+      "uploadedByName" TEXT,
+      "isFirst" BOOLEAN NOT NULL DEFAULT false,
+      "summary" JSONB NOT NULL DEFAULT '{}'::jsonb,
+      "changes" JSONB NOT NULL DEFAULT '[]'::jsonb,
+      "truncated" BOOLEAN NOT NULL DEFAULT false,
+      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );`);
+  await pool.query('CREATE INDEX IF NOT EXISTS "WorkbookChangeLog_scope_createdAt_idx" ON "WorkbookChangeLog" ("scope", "createdAt" DESC);');
+  changeLogTableReady = true;
+}
+async function saveChangeLogToDb(entry) {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureChangeLogTable(pool);
+    await pool.query(
+      `INSERT INTO "WorkbookChangeLog"
+         ("id", "scope", "fileVersionId", "previousVersionId", "originalFilename", "previousFilename", "source",
+          "uploadedById", "uploadedByName", "isFirst", "summary", "changes", "truncated", "createdAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT ("id") DO NOTHING;`,
+      [
+        entry.id,
+        entry.scope,
+        entry.fileVersionId ?? null,
+        entry.previousVersionId ?? null,
+        entry.originalFilename ?? null,
+        entry.previousFilename ?? null,
+        entry.source ?? null,
+        entry.uploadedById ?? null,
+        entry.uploadedByName ?? null,
+        Boolean(entry.isFirst),
+        JSON.stringify(entry.summary ?? {}),
+        JSON.stringify(entry.changes ?? []),
+        Boolean(entry.truncated),
+        entry.createdAt ?? /* @__PURE__ */ new Date()
+      ]
+    );
+    return true;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+async function fetchChangeLogsFromDb(scope, options = {}) {
+  return withPool(async (pool) => {
+    await ensureChangeLogTable(pool);
+    const cols = `"id", "scope", "fileVersionId", "previousVersionId", "originalFilename", "previousFilename", "source",
+                  "uploadedById", "uploadedByName", "isFirst", "summary", "truncated", "createdAt"${options.withChanges ? ', "changes"' : ""}`;
+    const result = options.id ? await pool.query(`SELECT ${cols} FROM "WorkbookChangeLog" WHERE "scope" = $1 AND "id" = $2;`, [scope, options.id]) : await pool.query(`SELECT ${cols} FROM "WorkbookChangeLog" WHERE "scope" = $1 ORDER BY "createdAt" DESC LIMIT $2;`, [
+      scope,
+      options.limit ?? 100
+    ]);
+    return result.rows.map((r) => ({
+      ...r,
+      summary: parseJson(r.summary),
+      ...options.withChanges ? { changes: parseJson(r.changes) } : {}
+    }));
+  });
+}
+var NOW, columnCache, changeLogTableReady;
 var init_supabase = __esm({
   "server/db/supabase.ts"() {
     init_database_config();
     init_prisma();
     NOW = Symbol("now");
     columnCache = {};
+    changeLogTableReady = false;
   }
 });
 
@@ -2101,6 +2177,474 @@ var MR11_COLUMN_DEPARTMENTS = (() => {
 // server/modules/mr11/mr11.engine.ts
 init_supabase();
 init_prisma();
+
+// server/utils/workbook-diff.ts
+var MAX_ROW_CHANGES = 3e3;
+var MAX_ROW_VALUES = 40;
+var MAX_TEXT = 300;
+function sheetsOf(parsedWorkbook) {
+  if (Array.isArray(parsedWorkbook)) return parsedWorkbook;
+  if (Array.isArray(parsedWorkbook?.sheets)) return parsedWorkbook.sheets;
+  return [];
+}
+function columnLetter(index) {
+  let n = index + 1;
+  let letters = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letters = String.fromCharCode(65 + rem) + letters;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letters;
+}
+function cellText(v) {
+  if (!v) return "";
+  const shown = v.m !== void 0 && v.m !== null ? String(v.m).trim() : "";
+  if (shown !== "") return shown;
+  if (v.v === void 0 || v.v === null) return "";
+  return String(v.v).trim();
+}
+function clip(s) {
+  return s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}\u2026` : s;
+}
+function toGrid(sheet) {
+  const byRow = /* @__PURE__ */ new Map();
+  for (const cell of sheet?.celldata || []) {
+    const text = cellText(cell?.v);
+    if (text === "") continue;
+    let row = byRow.get(cell.r);
+    if (!row) byRow.set(cell.r, row = /* @__PURE__ */ new Map());
+    row.set(cell.c, text);
+  }
+  const rows = [...byRow.entries()].sort((a, b) => a[0] - b[0]).map(([r, cells]) => ({ rowNo: r + 1, cells }));
+  let header = null;
+  let best = 2;
+  for (const row of rows.slice(0, 20)) {
+    const textCells = [...row.cells.values()].filter((t) => isNaN(Number(t.replace(/,/g, "")))).length;
+    if (textCells > best) {
+      best = textCells;
+      header = row;
+    }
+  }
+  return {
+    name: String(sheet?.name ?? ""),
+    rows,
+    headerRowNo: header?.rowNo ?? null,
+    headers: header ? new Map(header.cells) : /* @__PURE__ */ new Map()
+  };
+}
+function matchColumns(prev, next) {
+  const allCols = (g2) => {
+    const cols = /* @__PURE__ */ new Set();
+    for (const row of g2.rows) for (const c of row.cells.keys()) cols.add(c);
+    return [...cols].sort((a, b) => a - b);
+  };
+  const prevCols = allCols(prev);
+  const nextCols = allCols(next);
+  const mapping = /* @__PURE__ */ new Map();
+  const labelsUsable = (g2) => {
+    const labels = [...g2.headers.values()].map((h) => h.toLowerCase());
+    return g2.headers.size >= 3 && new Set(labels).size >= labels.length * 0.8;
+  };
+  if (!labelsUsable(prev) || !labelsUsable(next)) {
+    const nextSet2 = new Set(nextCols);
+    for (const c of prevCols) if (nextSet2.has(c)) mapping.set(c, c);
+    return mapping;
+  }
+  const key = (g2, c) => (g2.headers.get(c) ?? `#${c}`).toLowerCase().replace(/\s+/g, " ");
+  const pairs = alignSequences(
+    prevCols.map((c) => key(prev, c)),
+    nextCols.map((c) => key(next, c))
+  );
+  for (const [i, j] of pairs) mapping.set(prevCols[i], nextCols[j]);
+  const usedNext = new Set(mapping.values());
+  const nextSet = new Set(nextCols);
+  for (const c of prevCols) {
+    if (mapping.has(c) || prev.headers.has(c)) continue;
+    let anchor = -1;
+    for (const m of mapping.keys()) if (m < c && m > anchor) anchor = m;
+    const target = anchor >= 0 ? mapping.get(anchor) + (c - anchor) : c;
+    if (nextSet.has(target) && !usedNext.has(target) && !next.headers.has(target)) {
+      mapping.set(c, target);
+      usedNext.add(target);
+    }
+  }
+  for (const c of prevCols) {
+    if (!mapping.has(c) && nextSet.has(c) && !usedNext.has(c)) {
+      mapping.set(c, c);
+      usedNext.add(c);
+    }
+  }
+  return mapping;
+}
+function alignSequences(a, b) {
+  const out = [];
+  const recurse = (aLo, aHi, bLo, bHi) => {
+    while (aLo < aHi && bLo < bHi && a[aLo] === b[bLo]) out.push([aLo++, bLo++]);
+    const tail = [];
+    while (aLo < aHi && bLo < bHi && a[aHi - 1] === b[bHi - 1]) tail.unshift([--aHi, --bHi]);
+    if (aLo < aHi && bLo < bHi) {
+      const count = (arr, lo, hi) => {
+        const m = /* @__PURE__ */ new Map();
+        for (let i = lo; i < hi; i++) {
+          const list = m.get(arr[i]);
+          if (list) list.push(i);
+          else m.set(arr[i], [i]);
+        }
+        return m;
+      };
+      const ca = count(a, aLo, aHi);
+      const cb = count(b, bLo, bHi);
+      const anchors = [];
+      for (let i = aLo; i < aHi; i++) {
+        const ia = ca.get(a[i]);
+        const ib = cb.get(a[i]);
+        if (ia.length === 1 && ib?.length === 1) anchors.push([i, ib[0]]);
+      }
+      if (anchors.length > 0) {
+        const lis = longestIncreasing(anchors);
+        let pa = aLo;
+        let pb = bLo;
+        for (const [i, j] of lis) {
+          recurse(pa, i, pb, j);
+          out.push([i, j]);
+          pa = i + 1;
+          pb = j + 1;
+        }
+        recurse(pa, aHi, pb, bHi);
+      } else if ((aHi - aLo) * (bHi - bLo) <= 4e6) {
+        lcsFill(a, b, aLo, aHi, bLo, bHi, out);
+      }
+    }
+    out.push(...tail);
+  };
+  recurse(0, a.length, 0, b.length);
+  return out.sort((x, y) => x[0] - y[0]);
+}
+function longestIncreasing(pairs) {
+  const tails = [];
+  const prev = new Array(pairs.length).fill(-1);
+  for (let k = 0; k < pairs.length; k++) {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = lo + hi >> 1;
+      if (pairs[tails[mid]][1] < pairs[k][1]) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0) prev[k] = tails[lo - 1];
+    tails[lo] = k;
+  }
+  const result = [];
+  for (let k = tails.length ? tails[tails.length - 1] : -1; k >= 0; k = prev[k]) result.unshift(pairs[k]);
+  return result;
+}
+function lcsFill(a, b, aLo, aHi, bLo, bHi, out) {
+  const n = aHi - aLo;
+  const m = bHi - bLo;
+  const table = new Uint32Array((n + 1) * (m + 1));
+  const at = (i2, j2) => i2 * (m + 1) + j2;
+  for (let i2 = n - 1; i2 >= 0; i2--) {
+    for (let j2 = m - 1; j2 >= 0; j2--) {
+      table[at(i2, j2)] = a[aLo + i2] === b[bLo + j2] ? table[at(i2 + 1, j2 + 1)] + 1 : Math.max(table[at(i2 + 1, j2)], table[at(i2, j2 + 1)]);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[aLo + i] === b[bLo + j]) {
+      out.push([aLo + i, bLo + j]);
+      i++;
+      j++;
+    } else if (table[at(i + 1, j)] >= table[at(i, j + 1)]) i++;
+    else j++;
+  }
+}
+function headerOf(grid, col) {
+  return grid.headers.get(col) ?? null;
+}
+function rowLabel(row) {
+  const values = [...row.cells.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+  return clip(values.slice(0, 3).join(" \xB7 "));
+}
+function rowValues(grid, row) {
+  return [...row.cells.entries()].sort((a, b) => a[0] - b[0]).slice(0, MAX_ROW_VALUES).map(([c, v]) => ({ column: columnLetter(c), header: headerOf(grid, c), value: clip(v) }));
+}
+function diffSheet(prev, next) {
+  const colMap = matchColumns(prev, next);
+  const mappedPrevCols = [...colMap.keys()].sort((a, b) => a - b);
+  const mappedNextCols = new Set(colMap.values());
+  const prevAllCols = /* @__PURE__ */ new Set();
+  for (const r of prev.rows) for (const c of r.cells.keys()) prevAllCols.add(c);
+  const nextAllCols = /* @__PURE__ */ new Set();
+  for (const r of next.rows) for (const c of r.cells.keys()) nextAllCols.add(c);
+  const colName = (g2, c) => g2.headers.get(c) ? `${columnLetter(c)} (${g2.headers.get(c)})` : columnLetter(c);
+  const columnsRemoved = [...prevAllCols].filter((c) => !colMap.has(c)).sort((a, b) => a - b).map((c) => colName(prev, c));
+  const columnsAdded = [...nextAllCols].filter((c) => !mappedNextCols.has(c)).sort((a, b) => a - b).map((c) => colName(next, c));
+  const signature = (row, side) => mappedPrevCols.map((c) => row.cells.get(side === "prev" ? c : colMap.get(c)) ?? "").join("");
+  const prevSigs = prev.rows.map((r) => signature(r, "prev"));
+  const nextSigs = next.rows.map((r) => signature(r, "next"));
+  const matched = alignSequences(prevSigs, nextSigs);
+  const rows = [];
+  const cellChanges = (p, n) => {
+    const changes = [];
+    for (const c of mappedPrevCols) {
+      const nc = colMap.get(c);
+      const before = p.cells.get(c) ?? "";
+      const after = n.cells.get(nc) ?? "";
+      if (before !== after) {
+        changes.push({ column: columnLetter(nc), header: headerOf(next, nc) ?? headerOf(prev, c), before: clip(before), after: clip(after) });
+      }
+    }
+    return changes;
+  };
+  const similarity = (p, n) => {
+    let same = 0;
+    let filled = 0;
+    for (const c of mappedPrevCols) {
+      const before = p.cells.get(c) ?? "";
+      const after = n.cells.get(colMap.get(c)) ?? "";
+      if (before === "" && after === "") continue;
+      filled++;
+      if (before === after) same++;
+    }
+    return filled === 0 ? 0 : same / filled;
+  };
+  const handleGap = (pFrom, pTo, nFrom, nTo) => {
+    const removed = prev.rows.slice(pFrom, pTo);
+    const added = next.rows.slice(nFrom, nTo);
+    const pairedWith = /* @__PURE__ */ new Map();
+    const usedAdded = /* @__PURE__ */ new Set();
+    const firstValue = (r) => r.cells.get(Math.min(...r.cells.keys())) ?? "";
+    const addedByKey = /* @__PURE__ */ new Map();
+    added.forEach((r, j) => {
+      const k = firstValue(r);
+      addedByKey.set(k, [...addedByKey.get(k) || [], j]);
+    });
+    const removedKeyCount = /* @__PURE__ */ new Map();
+    for (const r of removed) removedKeyCount.set(firstValue(r), (removedKeyCount.get(firstValue(r)) || 0) + 1);
+    removed.forEach((r, i2) => {
+      const k = firstValue(r);
+      const candidates = addedByKey.get(k);
+      if (k && candidates?.length === 1 && removedKeyCount.get(k) === 1 && similarity(r, added[candidates[0]]) >= 0.3) {
+        pairedWith.set(i2, candidates[0]);
+        usedAdded.add(candidates[0]);
+      }
+    });
+    let lastJ = -1;
+    removed.forEach((r, i2) => {
+      if (pairedWith.has(i2)) {
+        lastJ = Math.max(lastJ, pairedWith.get(i2));
+        return;
+      }
+      let bestJ = -1;
+      let bestScore = 0.5;
+      for (let j = lastJ + 1; j < added.length && j <= lastJ + 50; j++) {
+        if (usedAdded.has(j)) continue;
+        const score = similarity(r, added[j]);
+        if (score > bestScore) {
+          bestScore = score;
+          bestJ = j;
+        }
+      }
+      if (bestJ >= 0) {
+        pairedWith.set(i2, bestJ);
+        usedAdded.add(bestJ);
+        lastJ = bestJ;
+      }
+    });
+    const addedByRowNo = new Map(added.map((r, j) => [r.rowNo, j]));
+    removed.forEach((r, i2) => {
+      const j = addedByRowNo.get(r.rowNo);
+      if (!pairedWith.has(i2) && j !== void 0 && !usedAdded.has(j)) {
+        pairedWith.set(i2, j);
+        usedAdded.add(j);
+      }
+    });
+    const addedToRemoved = new Map([...pairedWith.entries()].map(([i2, j]) => [j, i2]));
+    let i = 0;
+    for (let j = 0; j < added.length; j++) {
+      const partner = addedToRemoved.get(j);
+      if (partner === void 0) {
+        rows.push({ type: "added", row: added[j].rowNo, label: rowLabel(added[j]), values: rowValues(next, added[j]) });
+        continue;
+      }
+      for (; i < partner; i++) {
+        if (!pairedWith.has(i)) {
+          rows.push({ type: "removed", previousRow: removed[i].rowNo, label: rowLabel(removed[i]), values: rowValues(prev, removed[i]) });
+        }
+      }
+      i = Math.max(i, partner + 1);
+      const cells = cellChanges(removed[partner], added[j]);
+      if (cells.length > 0) {
+        rows.push({ type: "modified", row: added[j].rowNo, previousRow: removed[partner].rowNo, label: rowLabel(added[j]), cells });
+      }
+    }
+    for (; i < removed.length; i++) {
+      if (!pairedWith.has(i)) {
+        rows.push({ type: "removed", previousRow: removed[i].rowNo, label: rowLabel(removed[i]), values: rowValues(prev, removed[i]) });
+      }
+    }
+  };
+  let pi = 0;
+  let ni = 0;
+  for (const [i, j] of matched) {
+    handleGap(pi, i, ni, j);
+    pi = i + 1;
+    ni = j + 1;
+  }
+  handleGap(pi, prev.rows.length, ni, next.rows.length);
+  return { sheet: next.name, status: "changed", columnsAdded, columnsRemoved, rows };
+}
+function diffWorkbooks(previousWorkbook, nextWorkbook) {
+  const prevSheets = sheetsOf(previousWorkbook);
+  const nextSheets = sheetsOf(nextWorkbook);
+  const summary = { cellsChanged: 0, rowsAdded: 0, rowsRemoved: 0, rowsModified: 0, sheetsAdded: 0, sheetsRemoved: 0 };
+  const sheets = [];
+  const prevByName = new Map(prevSheets.map((s) => [String(s?.name ?? ""), s]));
+  const nextNames = new Set(nextSheets.map((s) => String(s?.name ?? "")));
+  for (const sheet of nextSheets) {
+    const name = String(sheet?.name ?? "");
+    const prev = prevByName.get(name);
+    if (!prev) {
+      const grid = toGrid(sheet);
+      summary.sheetsAdded++;
+      summary.rowsAdded += grid.rows.length;
+      sheets.push({ sheet: name, status: "added", columnsAdded: [], columnsRemoved: [], rows: [] });
+      continue;
+    }
+    const change = diffSheet(toGrid(prev), toGrid(sheet));
+    for (const r of change.rows) {
+      if (r.type === "modified") {
+        summary.rowsModified++;
+        summary.cellsChanged += r.cells.length;
+      } else if (r.type === "added") summary.rowsAdded++;
+      else summary.rowsRemoved++;
+    }
+    if (change.rows.length || change.columnsAdded.length || change.columnsRemoved.length) sheets.push(change);
+  }
+  for (const sheet of prevSheets) {
+    const name = String(sheet?.name ?? "");
+    if (nextNames.has(name)) continue;
+    summary.sheetsRemoved++;
+    summary.rowsRemoved += toGrid(sheet).rows.length;
+    sheets.push({ sheet: name, status: "removed", columnsAdded: [], columnsRemoved: [], rows: [] });
+  }
+  let budget = MAX_ROW_CHANGES;
+  let truncated = false;
+  for (const s of sheets) {
+    if (s.rows.length > budget) {
+      s.rows = s.rows.slice(0, budget);
+      truncated = true;
+    }
+    budget -= s.rows.length;
+  }
+  return { summary, sheets, truncated };
+}
+function recordText(v) {
+  if (v === null || v === void 0) return "";
+  if (typeof v === "number") return Number.isFinite(v) ? String(Number(v.toFixed(4))) : "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v).trim();
+}
+var MR11_LIVE_COLUMNS = /* @__PURE__ */ new Set(["Selling Price (USD)", "LME Adjusted (USD)", "Final Selling Price (USD)"]);
+function diffMr11Records(previousRecords, nextRecords, columns) {
+  const compared = columns.filter((c) => !c.startsWith("_") && !MR11_LIVE_COLUMNS.has(c));
+  const keyed = (records) => {
+    const seen = /* @__PURE__ */ new Map();
+    return records.map((r, i) => {
+      const base = String(r?._rowKey ?? `row-${i}`);
+      const n = (seen.get(base) || 0) + 1;
+      seen.set(base, n);
+      return { key: n > 1 ? `${base}#${n}` : base, record: r ?? {}, rowNo: i + 1 };
+    });
+  };
+  const prev = keyed(previousRecords || []);
+  const next = keyed(nextRecords || []);
+  const prevByKey = new Map(prev.map((p) => [p.key, p]));
+  const nextKeys = new Set(next.map((n) => n.key));
+  const label = (r) => clip([r["Project No"], r["Short Name"], r["Stream"] ? `Stream ${r["Stream"]}` : null].filter((v) => recordText(v) !== "").map(recordText).join(" \xB7 ")) || clip(recordText(r["Customer & Project Name"]));
+  const values = (r) => compared.filter((c) => recordText(r[c]) !== "").slice(0, MAX_ROW_VALUES).map((c) => ({ column: "", header: c, value: clip(recordText(r[c])) }));
+  const summary = { cellsChanged: 0, rowsAdded: 0, rowsRemoved: 0, rowsModified: 0, sheetsAdded: 0, sheetsRemoved: 0 };
+  const rows = [];
+  for (const n of next) {
+    const p = prevByKey.get(n.key);
+    if (!p) {
+      rows.push({ type: "added", row: n.rowNo, label: label(n.record), values: values(n.record) });
+      summary.rowsAdded++;
+      continue;
+    }
+    const cells = [];
+    for (const c of compared) {
+      const before = recordText(p.record[c]);
+      const after = recordText(n.record[c]);
+      if (before !== after) cells.push({ column: "", header: c, before: clip(before), after: clip(after) });
+    }
+    if (cells.length > 0) {
+      rows.push({ type: "modified", row: n.rowNo, previousRow: p.rowNo, label: label(n.record), cells });
+      summary.rowsModified++;
+      summary.cellsChanged += cells.length;
+    }
+  }
+  for (const p of prev) {
+    if (nextKeys.has(p.key)) continue;
+    rows.push({ type: "removed", previousRow: p.rowNo, label: label(p.record), values: values(p.record) });
+    summary.rowsRemoved++;
+  }
+  const truncated = rows.length > MAX_ROW_CHANGES;
+  const sheets = rows.length ? [{ sheet: "MR11", status: "changed", columnsAdded: [], columnsRemoved: [], rows: rows.slice(0, MAX_ROW_CHANGES) }] : [];
+  return { summary, sheets, truncated };
+}
+
+// server/modules/changelog/changelog.service.ts
+init_supabase();
+import crypto3 from "crypto";
+var MEMORY_LIMIT = 200;
+var memoryLog = [];
+var MR11_SCOPE = "MR11";
+async function recordChange(scope, diff, details) {
+  const entry = {
+    id: crypto3.randomUUID(),
+    scope,
+    fileVersionId: details.fileVersionId ?? null,
+    previousVersionId: details.previousVersionId ?? null,
+    originalFilename: details.originalFilename ?? null,
+    previousFilename: details.previousFilename ?? null,
+    source: details.source ?? null,
+    uploadedById: details.uploadedById ?? null,
+    uploadedByName: details.uploadedByName ?? null,
+    isFirst: Boolean(details.isFirst) || !diff,
+    summary: diff?.summary ?? { cellsChanged: 0, rowsAdded: 0, rowsRemoved: 0, rowsModified: 0, sheetsAdded: 0, sheetsRemoved: 0 },
+    changes: diff?.sheets ?? [],
+    truncated: diff?.truncated ?? false,
+    createdAt: /* @__PURE__ */ new Date()
+  };
+  memoryLog.unshift(entry);
+  if (memoryLog.length > MEMORY_LIMIT) memoryLog.length = MEMORY_LIMIT;
+  try {
+    await saveChangeLogToDb(entry);
+  } catch (err) {
+    console.warn(`[CHANGE LOG] Could not save the ${scope} change log:`, err?.message || err);
+  }
+  return entry;
+}
+var withoutChanges = ({ changes, ...rest }) => rest;
+async function listChanges(scope, limit = 100) {
+  if (isDatabaseConfigured()) {
+    const rows = await fetchChangeLogsFromDb(scope, { limit });
+    if (rows) return rows;
+  }
+  return memoryLog.filter((e) => e.scope === scope).slice(0, limit).map(withoutChanges);
+}
+async function getChange(scope, id) {
+  if (isDatabaseConfigured()) {
+    const rows = await fetchChangeLogsFromDb(scope, { id, withChanges: true });
+    if (rows?.length) return rows[0];
+  }
+  return memoryLog.find((e) => e.scope === scope && e.id === id) ?? null;
+}
+
+// server/modules/mr11/mr11.engine.ts
 var DISPATCH_PARTS = ["LOCAL", "OVERSEAS"];
 function parseNumeric(val) {
   if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -2206,6 +2750,19 @@ function normalizeFillColor(color) {
     return "";
   }
   return s.startsWith("#") ? s : `#${s}`;
+}
+function countryOfRow(row) {
+  const country = String(row["Countries"] ?? "").trim();
+  if (country && !/^rest of (the )?world$/i.test(country)) return country;
+  const name = String(row["Customer & Project Name"] ?? "");
+  return name.includes(" - ") && name.split(" - ")[0].trim() || country;
+}
+function compareCountries(a, b) {
+  const rank = (c) => /^india\b/i.test(c) ? 0 : /^malaysia\b|sabah|sarawak|labuan/i.test(c) ? 1 : c ? 2 : 3;
+  const rankA = rank(a);
+  const rankB = rank(b);
+  if (rankA !== rankB) return rankA - rankB;
+  return rankA === 2 ? a.localeCompare(b, void 0, { sensitivity: "base" }) : 0;
 }
 function getProjectIdentifier(row) {
   const pNo = cleanStr(
@@ -3567,10 +4124,18 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     r["Formwork Design Status"] = status;
     r["design status"] = status;
   }
+  const countryByProject = /* @__PURE__ */ new Map();
+  for (const r of derivedMr11Rows) {
+    const proj = getProjectIdentifier(r);
+    if (!countryByProject.get(proj)) countryByProject.set(proj, countryOfRow(r));
+  }
+  const countryOf = (r) => countryByProject.get(getProjectIdentifier(r)) || "";
   derivedMr11Rows.sort((a, b) => {
     const projA = getProjectIdentifier(a);
     const projB = getProjectIdentifier(b);
     if (projA !== projB) {
+      const byCountry = compareCountries(countryOf(a), countryOf(b));
+      if (byCountry !== 0) return byCountry;
       return projA.localeCompare(projB);
     }
     const streamA = parseFloat(String(a["Stream"] || "1").replace(/[^0-9.]/g, "")) || 1;
@@ -3652,6 +4217,24 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     } catch (mr11DbErr) {
       console.error("[MR11 ENGINE] Could not save MR11 to the database:", mr11DbErr?.message);
     }
+    try {
+      const previousRecords = Array.isArray(previousRun?.records) ? previousRun.records : [];
+      const hadPrevious = previousRecords.length > 0;
+      const columns = [.../* @__PURE__ */ new Set([...ORDERED_HEADER_LIST, ...derivedMr11Rows.flatMap((r) => Object.keys(r))])];
+      const diff = hadPrevious ? diffMr11Records(previousRecords, derivedMr11Rows, columns) : null;
+      if (!diff || diff.sheets.length > 0) {
+        const changedBy = options.changedById ? await prisma8.user.findUnique({ where: { id: options.changedById } }) : null;
+        await recordChange(MR11_SCOPE, diff, {
+          fileVersionId: run.id,
+          previousVersionId: previousRun?.id ?? null,
+          source: options.changeSource ?? "MR11 rebuilt",
+          uploadedById: options.changedById ?? null,
+          uploadedByName: changedBy?.fullName ?? null
+        });
+      }
+    } catch (logErr) {
+      console.warn("[MR11 ENGINE] MR11 change log skipped:", logErr?.message || logErr);
+    }
   }
   return run.id;
 }
@@ -3672,12 +4255,13 @@ function detectDispatchPart(filename, sheets) {
   const headerTexts = (sheets?.[0]?.celldata || []).filter((cell) => cell.r === 0).map((cell) => String(cell.v?.v ?? cell.v?.m ?? "").trim());
   return headerTexts.some((h) => /^(atd|eta pol)$|\betd\b/i.test(h)) ? "OVERSEAS" : "LOCAL";
 }
-async function combineDispatchFiles(prisma8, deptId, part, sheets, originalFilename) {
-  let previous = await fetchActiveVersionForDepartment("DISPATCH" /* DISPATCH */);
-  if (!previous) {
-    const dept = await prisma8.department.findUnique({ where: { id: deptId }, include: { activeVersion: true } });
-    previous = dept?.activeVersion ?? null;
-  }
+async function previousVersionOf(prisma8, deptCode, deptId) {
+  const fromDb = await fetchActiveVersionForDepartment(deptCode);
+  if (fromDb) return fromDb;
+  const dept = await prisma8.department.findUnique({ where: { id: deptId }, include: { activeVersion: true } });
+  return dept?.activeVersion ?? null;
+}
+async function combineDispatchFiles(previous, part, sheets, originalFilename) {
   const prevWb = previous?.parsedWorkbook;
   const prevSheets = Array.isArray(prevWb) ? prevWb : Array.isArray(prevWb?.sheets) ? prevWb.sheets : [];
   const files = prevWb?.dispatchFiles ? { ...prevWb.dispatchFiles } : prevSheets.length > 0 ? { OVERSEAS: { originalFilename: previous.originalFilename, uploadedAt: previous.uploadedAt ?? null, sheets: prevSheets } } : {};
@@ -3718,9 +4302,10 @@ async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, 
     const adminUser2 = await prisma8.user.findFirst({ where: { email: "admin@mfeformwork.com" } });
     validUserId = adminUser2 ? adminUser2.id : null;
   }
+  const previous = persist || deptCode === "DISPATCH" /* DISPATCH */ ? await previousVersionOf(prisma8, deptCode, dept.id) : null;
   if (deptCode === "DISPATCH" /* DISPATCH */) {
     const part = options.dispatchPart ?? detectDispatchPart(originalFilename, parsedWorkbook);
-    ({ parsedWorkbook, originalFilename } = await combineDispatchFiles(prisma8, dept.id, part, parsedWorkbook, originalFilename));
+    ({ parsedWorkbook, originalFilename } = await combineDispatchFiles(previous, part, parsedWorkbook, originalFilename));
   }
   const storageKey = Buffer.isBuffer(filePathOrBuffer) ? `buffer://${uploadedFilename}` : filePathOrBuffer;
   const newVersion = await prisma8.fileVersion.create({
@@ -3760,6 +4345,22 @@ async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, 
     where: { id: dept.id },
     data: { activeVersionId: newVersion.id, activeSetAt: Date.now() }
   });
+  if (persist) {
+    try {
+      const uploader = validUserId ? await prisma8.user.findUnique({ where: { id: validUserId } }) : null;
+      await recordChange(deptCode, previous?.parsedWorkbook ? diffWorkbooks(previous.parsedWorkbook, parsedWorkbook) : null, {
+        fileVersionId: newVersion.id,
+        previousVersionId: previous?.id ?? null,
+        originalFilename,
+        previousFilename: previous?.originalFilename ?? null,
+        source: `${deptCode} upload`,
+        uploadedById: validUserId,
+        uploadedByName: uploader?.fullName ?? null
+      });
+    } catch (logErr) {
+      console.warn("[DEPARTMENT SERVICE] Change log skipped:", logErr?.message || logErr);
+    }
+  }
   try {
     await prisma8.auditLog.create({
       data: {
@@ -3776,7 +4377,7 @@ async function processAtomicWorkbookUpload(prisma8, deptCode, filePathOrBuffer, 
   if (regenerate) {
     try {
       await hydrateActiveVersionsFromDb(prisma8, [deptCode]);
-      await executeMr11Pipeline(prisma8);
+      await executeMr11Pipeline(prisma8, { changeSource: `${deptCode} upload`, changedById: validUserId });
     } catch (pipelineErr) {
       console.error("Auto MR11 pipeline calculation error:", pipelineErr);
     }
@@ -3964,6 +4565,33 @@ async function listDepartments(req, res) {
   }
 }
 
+// server/modules/changelog/changelog.controller.ts
+function scopeOf(req) {
+  const code = String(req.params.code || "").trim().toUpperCase();
+  return code === "SHELLPLAN" ? "DESIGN" : code;
+}
+async function sendList(scope, req, res) {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    return res.json({ success: true, data: await listChanges(scope, limit) });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function sendOne(scope, req, res) {
+  try {
+    const entry = await getChange(scope, String(req.params.logId || ""));
+    if (!entry) return res.status(404).json({ success: false, error: { code: "LOG_NOT_FOUND", message: "Log entry not found" } });
+    return res.json({ success: true, data: entry });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+var listDepartmentChanges = (req, res) => sendList(scopeOf(req), req, res);
+var getDepartmentChange = (req, res) => sendOne(scopeOf(req), req, res);
+var listMr11Changes = (req, res) => sendList(MR11_SCOPE, req, res);
+var getMr11Change = (req, res) => sendOne(MR11_SCOPE, req, res);
+
 // server/modules/departments/department.routes.ts
 var router2 = Router2();
 var DEPARTMENT_ROLES = {
@@ -3992,6 +4620,8 @@ router2.get("/", listDepartments);
 router2.get("/:code", requireDepartmentAccess, getActiveDepartmentWorkbook);
 router2.get("/:code/workbook", requireDepartmentAccess, getActiveDepartmentWorkbook);
 router2.get("/:code/active", requireDepartmentAccess, getActiveDepartmentWorkbook);
+router2.get("/:code/changelog", requireDepartmentAccess, listDepartmentChanges);
+router2.get("/:code/changelog/:logId", requireDepartmentAccess, getDepartmentChange);
 router2.post("/:code/upload", requireDepartmentAccess, upload.single("file"), uploadDepartmentWorkbook);
 router2.post("/:code", requireDepartmentAccess, upload.single("file"), uploadDepartmentWorkbook);
 router2.get("/:code/download", requireDepartmentAccess, downloadOriginalFile);
@@ -4011,7 +4641,7 @@ init_supabase();
 var SHOWN_CURRENCIES = ["MYR", "SGD", "AUD", "INR", "CNY", "EUR", "GBP", "AED"];
 var prisma5 = new PrismaClient();
 var ID_COLUMN = /project\s*no|^po$|^nca$|nca\s*no|stream|series|revision|^rev\b|code|year|phone|^tel|^no\.?$|^#$/i;
-var ORDERED_HEADER_LIST3 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
+var ORDERED_HEADER_LIST2 = ORDERED_HEADER_LIST || (MR11_ORDERED_COLUMNS || []).map((col) => col.target || col.header || String(col));
 async function getLatestMr11(req, res) {
   try {
     const latestRun = await getLatestMr11Run(prisma5);
@@ -4029,7 +4659,7 @@ async function getLatestMr11(req, res) {
         currencyRates,
         lmePrice,
         visibleColumns: config?.visibleColumns || [],
-        orderedHeaders: ORDERED_HEADER_LIST3,
+        orderedHeaders: ORDERED_HEADER_LIST2,
         headerGroups: MR11_HEADER_GROUPS,
         numberFormats: MR11_NUMBER_FORMATS,
         // Lets a department user's own columns be highlighted in their department colour
@@ -4044,7 +4674,7 @@ async function getLatestMr11(req, res) {
 async function triggerMr11Regenerate(req, res) {
   try {
     await hydrateActiveVersionsFromDb(prisma5);
-    const runId = await executeMr11Pipeline(prisma5);
+    const runId = await executeMr11Pipeline(prisma5, { changeSource: "MR11 synced", changedById: req.user?.id ?? null });
     return res.json({ success: true, message: "MR11 regenerated", runId });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -4100,9 +4730,9 @@ async function currentDeletedRows() {
   const run = await getLatestMr11Run(prisma5);
   return { run, rows: run?.sourceSnapshot?.deletedRows || [] };
 }
-async function rebuildWith(rows) {
+async function rebuildWith(rows, changeSource, changedById) {
   await hydrateActiveVersionsFromDb(prisma5);
-  await executeMr11Pipeline(prisma5, { deletedRows: rows });
+  await executeMr11Pipeline(prisma5, { deletedRows: rows, changeSource, changedById });
 }
 async function getDeletedRows(req, res) {
   try {
@@ -4131,7 +4761,7 @@ async function deleteMr11Row(req, res) {
       deletedBy: req.user?.email ?? null
     };
     const next = [...rows, entry];
-    await rebuildWith(next);
+    await rebuildWith(next, "MR11 row deleted", req.user?.id ?? null);
     return res.json({ success: true, data: next });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -4142,7 +4772,7 @@ async function restoreMr11Row(req, res) {
     const key = String(req.body?.key || "").trim();
     const { rows } = await currentDeletedRows();
     const next = rows.filter((d) => d.key !== key);
-    if (next.length !== rows.length) await rebuildWith(next);
+    if (next.length !== rows.length) await rebuildWith(next, "MR11 row restored", req.user?.id ?? null);
     return res.json({ success: true, data: next });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -4186,7 +4816,7 @@ async function exportMr11ToExcel(req, res) {
     const records = applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates);
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
-    const headers = ORDERED_HEADER_LIST3;
+    const headers = ORDERED_HEADER_LIST2;
     worksheet.columns = headers.map((header) => ({
       key: header,
       width: Math.max(header.length + 4, 16),
@@ -4348,6 +4978,8 @@ router3.get("/planning-series", getPlanningSeriesHistory);
 router3.get("/production-series", getProductionSeriesHistory);
 router3.get("/shellplan-history", getShellplanApprovalHistory);
 router3.get("/dispatch-monthly", getDispatchMonthly);
+router3.get("/changelog", listMr11Changes);
+router3.get("/changelog/:logId", getMr11Change);
 router3.get("/deleted-rows", requireRoles("ADMIN" /* ADMIN */), getDeletedRows);
 router3.post("/rows/delete", requireRoles("ADMIN" /* ADMIN */), deleteMr11Row);
 router3.post("/rows/restore", requireRoles("ADMIN" /* ADMIN */), restoreMr11Row);
@@ -4366,7 +4998,7 @@ import jwt3 from "jsonwebtoken";
 init_prisma();
 init_supabase();
 import bcrypt2 from "bcryptjs";
-import crypto3 from "crypto";
+import crypto4 from "crypto";
 var prisma6 = new PrismaClient();
 async function persistUser(userId) {
   const user = await prisma6.user.findUnique({ where: { id: userId } });
@@ -4620,7 +5252,7 @@ async function deleteUser(req, res) {
 var TEMP_PASSWORD_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
 function temporaryPassword(length = 10) {
   let out = "";
-  for (let i = 0; i < length; i++) out += TEMP_PASSWORD_CHARS[crypto3.randomInt(TEMP_PASSWORD_CHARS.length)];
+  for (let i = 0; i < length; i++) out += TEMP_PASSWORD_CHARS[crypto4.randomInt(TEMP_PASSWORD_CHARS.length)];
   return out;
 }
 async function resetUserPassword(req, res) {
