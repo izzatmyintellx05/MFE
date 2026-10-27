@@ -6,6 +6,8 @@ import { MR11_ORDERED_COLUMNS, ORDERED_HEADER_LIST } from '../../config/mr11.con
 import { saveMr11RunToDb, fetchLatestMr11RunFromDb, restoreEngineHistory } from '../../db/supabase';
 import { exportEngineHistory } from '../../db/prisma';
 import { FortuneSheet } from '../../utils/excel-normalizer';
+import { diffMr11Records } from '../../utils/workbook-diff';
+import { recordChange, MR11_SCOPE } from '../changelog/changelog.service';
 
 export const Mr11Status = {
   EMPTY: 'EMPTY',
@@ -815,7 +817,7 @@ export interface DeletedMr11Row {
 
 export async function executeMr11Pipeline(
   prisma: PrismaClient,
-  options: { persist?: boolean; deletedRows?: DeletedMr11Row[] } = {}
+  options: { persist?: boolean; deletedRows?: DeletedMr11Row[]; changeSource?: string; changedById?: string | null } = {}
 ): Promise<string> {
   const { persist = true } = options;
 
@@ -2216,6 +2218,27 @@ export async function executeMr11Pipeline(
       });
     } catch (mr11DbErr: any) {
       console.error('[MR11 ENGINE] Could not save MR11 to the database:', mr11DbErr?.message);
+    }
+
+    // Only the MR11 cells that differ from the previous MR11 (nothing is logged when none do)
+    try {
+      // previousRun (step 3) is the MR11 this run replaces
+      const previousRecords: any[] = Array.isArray((previousRun as any)?.records) ? (previousRun as any).records : [];
+      const hadPrevious = previousRecords.length > 0;
+      const columns = [...new Set([...ORDERED_HEADER_LIST, ...derivedMr11Rows.flatMap((r) => Object.keys(r))])];
+      const diff = hadPrevious ? diffMr11Records(previousRecords, derivedMr11Rows, columns) : null;
+      if (!diff || diff.sheets.length > 0) {
+        const changedBy = options.changedById ? await prisma.user.findUnique({ where: { id: options.changedById } }) : null;
+        await recordChange(MR11_SCOPE, diff, {
+          fileVersionId: run.id,
+          previousVersionId: previousRun?.id ?? null,
+          source: options.changeSource ?? 'MR11 rebuilt',
+          uploadedById: options.changedById ?? null,
+          uploadedByName: (changedBy as any)?.fullName ?? null,
+        });
+      }
+    } catch (logErr: any) {
+      console.warn('[MR11 ENGINE] MR11 change log skipped:', logErr?.message || logErr);
     }
   }
 

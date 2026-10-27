@@ -4,10 +4,13 @@ import { HighFidelityViewer } from '../components/workbook/HighFidelityViewer';
 import { ZoomControls } from '../components/common/ZoomControls';
 import { FullscreenButton } from '../components/common/FullscreenButton';
 import { usePersistentState } from '../utils/usePersistentState';
-import { Upload, History, FileSpreadsheet } from 'lucide-react';
+import { Upload, History, FileSpreadsheet, ListChecks } from 'lucide-react';
+import { ChangeLogPanel } from '../components/workbook/ChangeLogPanel';
 
 export const PlanningPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'sheet' | 'series'>('sheet');
+  // 'log': what changed between this department's uploads
+  const [activeTab, setActiveTab] = useState<'sheet' | 'series' | 'log'>('sheet');
+  const [logReload, setLogReload] = useState(0);
   const [workbookData, setWorkbookData] = useState<any[]>([]);
   const [seriesList, setSeriesList] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -44,6 +47,7 @@ export const PlanningPage: React.FC = () => {
     try {
       await api.post('/departments/PLANNING/upload', formData);
       await fetchDepartmentData();
+      setLogReload((k) => k + 1);
     } catch (err: any) {
       // Tell the uploader when the file was not saved, instead of failing silently
       window.alert(err.response?.data?.error?.message || err.message || 'File upload failed');
@@ -100,6 +104,19 @@ export const PlanningPage: React.FC = () => {
               <History className="w-3.5 h-3.5" />
               Series Ledger
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('log')}
+              title="What changed between uploads, by date"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+                activeTab === 'log'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              <ListChecks className="w-3.5 h-3.5" />
+              Log
+            </button>
           </div>
 
           <label className="luxury-btn-black flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">
@@ -112,7 +129,9 @@ export const PlanningPage: React.FC = () => {
 
       {/* Main Container */}
       <div ref={sheetRef} className="luxury-deck bg-white flex-1 rounded-xl overflow-hidden flex flex-col">
-        {activeTab === 'sheet' ? (
+        {activeTab === 'log' ? (
+          <ChangeLogPanel endpoint="/departments/PLANNING/changelog" reloadKey={logReload} />
+        ) : activeTab === 'sheet' ? (
           <div
             className="flex-1 overflow-hidden"
             style={{ zoom: `${zoom}%`, transformOrigin: 'top left' }}

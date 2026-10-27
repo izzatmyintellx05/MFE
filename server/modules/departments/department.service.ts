@@ -2,6 +2,8 @@ import { PrismaClient, RoleCode } from '@prisma/client';
 import { parseAndNormalizeWorkbook } from '../../utils/excel-normalizer';
 import { executeMr11Pipeline, DispatchPart, DISPATCH_PARTS } from '../mr11/mr11.engine';
 import { hydrateActiveVersionsFromDb, saveFileVersionToDb, fetchActiveVersionForDepartment } from '../../db/supabase';
+import { diffWorkbooks } from '../../utils/workbook-diff';
+import { recordChange } from '../changelog/changelog.service';
 
 const prisma = new PrismaClient();
 
@@ -293,23 +295,25 @@ function detectDispatchPart(filename: string, sheets: any[]): DispatchPart {
   return headerTexts.some((h: string) => /^(atd|eta pol)$|\betd\b/i.test(h)) ? 'OVERSEAS' : 'LOCAL';
 }
 
+/** The department's active version before this upload: the database's, else this instance's. */
+async function previousVersionOf(prisma: PrismaClient, deptCode: RoleCode, deptId: string): Promise<any | null> {
+  const fromDb = await fetchActiveVersionForDepartment(deptCode);
+  if (fromDb) return fromDb;
+  const dept: any = await prisma.department.findUnique({ where: { id: deptId }, include: { activeVersion: true } } as any);
+  return dept?.activeVersion ?? null;
+}
+
 /**
  * Dispatch keeps its Local and Overseas files together in one workbook version: an upload
  * replaces only its own file and keeps the other. A version saved before the split is the
  * Overseas file.
  */
 async function combineDispatchFiles(
-  prisma: PrismaClient,
-  deptId: string,
+  previous: any,
   part: DispatchPart,
   sheets: any[],
   originalFilename: string
 ): Promise<{ parsedWorkbook: any; originalFilename: string }> {
-  let previous: any = await fetchActiveVersionForDepartment(RoleCode.DISPATCH);
-  if (!previous) {
-    const dept: any = await prisma.department.findUnique({ where: { id: deptId }, include: { activeVersion: true } } as any);
-    previous = dept?.activeVersion ?? null;
-  }
   const prevWb = previous?.parsedWorkbook;
   const prevSheets = Array.isArray(prevWb) ? prevWb : Array.isArray(prevWb?.sheets) ? prevWb.sheets : [];
   const files: Record<string, any> = prevWb?.dispatchFiles
@@ -375,10 +379,13 @@ export async function processAtomicWorkbookUpload(
     validUserId = adminUser ? adminUser.id : null;
   }
 
+  // Compared with this upload for the department's change log; Dispatch also keeps its other file from it
+  const previous = persist || deptCode === RoleCode.DISPATCH ? await previousVersionOf(prisma, deptCode, dept.id) : null;
+
   // Dispatch: the upload is its Local or Overseas file, kept beside the other one
   if (deptCode === RoleCode.DISPATCH) {
     const part = options.dispatchPart ?? detectDispatchPart(originalFilename, parsedWorkbook);
-    ({ parsedWorkbook, originalFilename } = await combineDispatchFiles(prisma, dept.id, part, parsedWorkbook, originalFilename));
+    ({ parsedWorkbook, originalFilename } = await combineDispatchFiles(previous, part, parsedWorkbook, originalFilename));
   }
 
   const storageKey = Buffer.isBuffer(filePathOrBuffer)
@@ -428,6 +435,24 @@ export async function processAtomicWorkbookUpload(
     data: { activeVersionId: newVersion.id, activeSetAt: Date.now() },
   });
 
+  // Log only what differs from the previous upload (bundled sample files are not uploads)
+  if (persist) {
+    try {
+      const uploader = validUserId ? await prisma.user.findUnique({ where: { id: validUserId } }) : null;
+      await recordChange(deptCode, previous?.parsedWorkbook ? diffWorkbooks(previous.parsedWorkbook, parsedWorkbook) : null, {
+        fileVersionId: newVersion.id,
+        previousVersionId: previous?.id ?? null,
+        originalFilename,
+        previousFilename: previous?.originalFilename ?? null,
+        source: `${deptCode} upload`,
+        uploadedById: validUserId,
+        uploadedByName: (uploader as any)?.fullName ?? null,
+      });
+    } catch (logErr: any) {
+      console.warn('[DEPARTMENT SERVICE] Change log skipped:', logErr?.message || logErr);
+    }
+  }
+
   try {
     await prisma.auditLog.create({
       data: {
@@ -446,7 +471,7 @@ export async function processAtomicWorkbookUpload(
     try {
       // Other departments may have been uploaded on another server instance
       await hydrateActiveVersionsFromDb(prisma, [deptCode]);
-      await executeMr11Pipeline(prisma);
+      await executeMr11Pipeline(prisma, { changeSource: `${deptCode} upload`, changedById: validUserId });
     } catch (pipelineErr: any) {
       console.error('Auto MR11 pipeline calculation error:', pipelineErr);
     }

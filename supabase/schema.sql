@@ -158,7 +158,28 @@ CREATE TABLE IF NOT EXISTS "AuditLog" (
     CONSTRAINT "AuditLog_pkey" PRIMARY KEY ("id")
 );
 
+-- What changed between a department's uploads (its Log tab), and in MR11 between rebuilds
+-- (scope 'MR11'). The app also creates this table on first use.
+CREATE TABLE IF NOT EXISTS "WorkbookChangeLog" (
+    "id" TEXT NOT NULL,
+    "scope" TEXT NOT NULL,
+    "fileVersionId" TEXT,
+    "previousVersionId" TEXT,
+    "originalFilename" TEXT,
+    "previousFilename" TEXT,
+    "source" TEXT,
+    "uploadedById" TEXT,
+    "uploadedByName" TEXT,
+    "isFirst" BOOLEAN NOT NULL DEFAULT false,
+    "summary" JSONB NOT NULL DEFAULT '{}'::jsonb,
+    "changes" JSONB NOT NULL DEFAULT '[]'::jsonb,
+    "truncated" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT "WorkbookChangeLog_pkey" PRIMARY KEY ("id")
+);
+
 -- 3. Unique Constraints & Indexes
+CREATE INDEX IF NOT EXISTS "WorkbookChangeLog_scope_createdAt_idx" ON "WorkbookChangeLog" ("scope", "createdAt" DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"("email");
 CREATE UNIQUE INDEX IF NOT EXISTS "Role_code_key" ON "Role"("code");
 CREATE UNIQUE INDEX IF NOT EXISTS "UserRole_userId_roleId_key" ON "UserRole"("userId", "roleId");

@@ -12,6 +12,7 @@ import {
   restoreMr11Row,
 } from './mr11.controller';
 import { requireAuth } from '../../middleware/auth.middleware';
+import { listMr11Changes, getMr11Change } from '../changelog/changelog.controller';
 import { requireRoles } from '../../middleware/rbac.middleware';
 import { RoleCode } from '@prisma/client';
 
@@ -27,6 +28,8 @@ router.get('/planning-series', getPlanningSeriesHistory);
 router.get('/production-series', getProductionSeriesHistory);
 router.get('/shellplan-history', getShellplanApprovalHistory);
 router.get('/dispatch-monthly', getDispatchMonthly);
+router.get('/changelog', listMr11Changes);
+router.get('/changelog/:logId', getMr11Change);
 
 // Deleting and restoring MR11 rows: administrators only
 router.get('/deleted-rows', requireRoles(RoleCode.ADMIN), getDeletedRows);

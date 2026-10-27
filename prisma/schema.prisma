@@ -175,3 +175,24 @@ model ProductionSeriesHistory {
   @@unique([projectShortname, stream, fontColor, seriesNumber])
   @@index([projectShortname, stream])
 }
+
+// What changed between a department's uploads (scope = its code), or in MR11 between
+// rebuilds (scope = "MR11"); created on first use by server/db/supabase.ts too
+model WorkbookChangeLog {
+  id                String   @id
+  scope             String
+  fileVersionId     String?
+  previousVersionId String?
+  originalFilename  String?
+  previousFilename  String?
+  source            String?
+  uploadedById      String?
+  uploadedByName    String?
+  isFirst           Boolean  @default(false)
+  summary           Json     @default("{}")
+  changes           Json     @default("[]")
+  truncated         Boolean  @default(false)
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([scope, createdAt(sort: Desc)])
+}
