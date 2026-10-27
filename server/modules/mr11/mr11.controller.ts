@@ -74,7 +74,7 @@ export async function getLatestMr11(req: Request, res: Response) {
 export async function triggerMr11Regenerate(req: Request, res: Response) {
   try {
     await hydrateActiveVersionsFromDb(prisma);
-    const runId = await executeMr11Pipeline(prisma);
+    const runId = await executeMr11Pipeline(prisma, { changeSource: 'MR11 synced', changedById: (req as any).user?.id ?? null });
     return res.json({ success: true, message: 'MR11 regenerated', runId });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -150,9 +150,9 @@ async function currentDeletedRows(): Promise<{ run: any; rows: DeletedMr11Row[] 
 }
 
 // Rebuild MR11 with the new list (each department's latest workbook first, as on Sync)
-async function rebuildWith(rows: DeletedMr11Row[]) {
+async function rebuildWith(rows: DeletedMr11Row[], changeSource: string, changedById: string | null) {
   await hydrateActiveVersionsFromDb(prisma);
-  await executeMr11Pipeline(prisma, { deletedRows: rows });
+  await executeMr11Pipeline(prisma, { deletedRows: rows, changeSource, changedById });
 }
 
 export async function getDeletedRows(req: Request, res: Response) {
@@ -183,7 +183,7 @@ export async function deleteMr11Row(req: Request, res: Response) {
       deletedBy: (req as any).user?.email ?? null,
     };
     const next = [...rows, entry];
-    await rebuildWith(next);
+    await rebuildWith(next, 'MR11 row deleted', (req as any).user?.id ?? null);
     return res.json({ success: true, data: next });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -195,7 +195,7 @@ export async function restoreMr11Row(req: Request, res: Response) {
     const key = String(req.body?.key || '').trim();
     const { rows } = await currentDeletedRows();
     const next = rows.filter((d) => d.key !== key);
-    if (next.length !== rows.length) await rebuildWith(next);
+    if (next.length !== rows.length) await rebuildWith(next, 'MR11 row restored', (req as any).user?.id ?? null);
     return res.json({ success: true, data: next });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });

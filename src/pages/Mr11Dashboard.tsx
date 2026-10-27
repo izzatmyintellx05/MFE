@@ -18,7 +18,9 @@ import {
   SlidersHorizontal,
   ArrowRightLeft,
   Trash2,
+  ListChecks,
 } from 'lucide-react';
+import { ChangeLogPanel } from '../components/workbook/ChangeLogPanel';
 import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice, CurrencyRate } from '../components/common/MarketRates';
 import { DeletedRowsMenu, DeletedRow } from '../components/workbook/DeletedRowsMenu';
 import { useAuthStore } from '../store/auth.store';
@@ -72,6 +74,9 @@ export const Mr11Dashboard: React.FC = () => {
   const [hiddenGroups, setHiddenGroups] = usePersistentState<string[]>('mr11.hiddenColumnGroups', []);
   const [showRates, setShowRates] = usePersistentState<boolean>('mr11.showRatesStrip', true);
   const tableRef = useRef<HTMLDivElement>(null);
+  // The MR11 table, or the Log tab: what changed in MR11 each time it was rebuilt (everyone can see it)
+  const [view, setView] = useState<'table' | 'log'>('table');
+  const [logReload, setLogReload] = useState(0);
 
   // Administrators can delete MR11 rows (and restore them from the Deleted rows list)
   const { user } = useAuthStore();
@@ -154,6 +159,7 @@ export const Mr11Dashboard: React.FC = () => {
     try {
       await api.post('/mr11/regenerate');
       await fetchMr11Data();
+      setLogReload((k) => k + 1);
     } catch (err: any) {
       setError(err.response?.data?.error?.message || err.message || 'Regeneration failed');
     } finally {
@@ -287,7 +293,29 @@ export const Mr11Dashboard: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
+            <div className="flex bg-stone-100 p-0.5 rounded-lg border border-stone-200" role="tablist">
+              {([
+                { key: 'table', label: 'MR11', icon: FileSpreadsheet },
+                { key: 'log', label: 'Log', icon: ListChecks },
+              ] as const).map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === key}
+                  onClick={() => setView(key)}
+                  title={key === 'log' ? 'What changed in MR11, by date' : 'The MR11 ledger'}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
+                    view === key ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-900'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className={`relative ${view === 'log' ? 'hidden' : ''}`}>
               <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
@@ -360,68 +388,78 @@ export const Mr11Dashboard: React.FC = () => {
           ref={tableRef}
           className="flex-1 min-h-0 bg-white border border-stone-200/90 rounded-xl shadow-sm overflow-hidden flex flex-col relative"
         >
-          {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0) && (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-amber-200/70 bg-amber-50/70 text-[11px] text-amber-900 flex-shrink-0">
-              {filterCount > 0 && (
-                <span className="flex items-center gap-2 min-w-0">
-                  <span className="truncate" title={filterSummary}>
-                    <strong className="font-semibold">Filtered</strong> · {filterSummary}
-                  </span>
-                  <button type="button" onClick={() => setFilters({})} className="font-semibold whitespace-nowrap hover:underline cursor-pointer">
-                    Clear filters
-                  </button>
-                </span>
-              )}
-              {hiddenGroups.length > 0 && (
-                <span className="flex items-center gap-2 whitespace-nowrap">
-                  {headers.length - visibleHeaders.length} of {headers.length} columns hidden
-                  <button type="button" onClick={() => setHiddenGroups([])} className="font-semibold hover:underline cursor-pointer">
-                    Show all columns
-                  </button>
-                </span>
-              )}
-            </div>
-          )}
-          {loading ? (
-            <div className="flex flex-col items-center justify-center h-full text-stone-400">
-              <RefreshCw className="w-7 h-7 animate-spin text-stone-700 mb-2" />
-              <p className="text-xs font-semibold tracking-wider uppercase text-stone-500">Loading Central MR11 Master Schedule...</p>
-            </div>
-          ) : shownRecords.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-stone-400 p-8">
-              <FileSpreadsheet className="w-10 h-10 stroke-1 mb-2 text-stone-300" />
-              {records.length > 0 ? (
-                <>
-                  <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No matching contracts</p>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Change the search or filters to see contracts again</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchTerm('');
-                      setFilters({});
-                    }}
-                    className="mt-3 px-3 py-1.5 rounded-lg bg-stone-900 text-white text-xs font-semibold hover:bg-stone-800 cursor-pointer"
-                  >
-                    Clear search &amp; filters
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No Contracts Loaded</p>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Upload the Business Development (BD) workbook to instantiate contracts</p>
-                </>
-              )}
-            </div>
-          ) : (
-            <Mr11Table
-              records={shownRecords}
-              headers={visibleHeaders}
-              headerGroups={headerGroups}
-              numberFormats={numberFormats}
-              highlightColumns={highlightColumns}
-              zoom={zoom}
-              onDeleteRow={admin && !rowBusy ? setConfirmRow : undefined}
+          {view === 'log' ? (
+            <ChangeLogPanel
+              endpoint="/mr11/changelog"
+              reloadKey={logReload}
+              emptyHint="Each time MR11 is rebuilt (after a department upload or Sync), the MR11 cells that changed are listed here."
             />
+          ) : (
+            <>
+            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0) && (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-amber-200/70 bg-amber-50/70 text-[11px] text-amber-900 flex-shrink-0">
+                {filterCount > 0 && (
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="truncate" title={filterSummary}>
+                      <strong className="font-semibold">Filtered</strong> · {filterSummary}
+                    </span>
+                    <button type="button" onClick={() => setFilters({})} className="font-semibold whitespace-nowrap hover:underline cursor-pointer">
+                      Clear filters
+                    </button>
+                  </span>
+                )}
+                {hiddenGroups.length > 0 && (
+                  <span className="flex items-center gap-2 whitespace-nowrap">
+                    {headers.length - visibleHeaders.length} of {headers.length} columns hidden
+                    <button type="button" onClick={() => setHiddenGroups([])} className="font-semibold hover:underline cursor-pointer">
+                      Show all columns
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+            {loading ? (
+              <div className="flex flex-col items-center justify-center h-full text-stone-400">
+                <RefreshCw className="w-7 h-7 animate-spin text-stone-700 mb-2" />
+                <p className="text-xs font-semibold tracking-wider uppercase text-stone-500">Loading Central MR11 Master Schedule...</p>
+              </div>
+            ) : shownRecords.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-stone-400 p-8">
+                <FileSpreadsheet className="w-10 h-10 stroke-1 mb-2 text-stone-300" />
+                {records.length > 0 ? (
+                  <>
+                    <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No matching contracts</p>
+                    <p className="text-[11px] text-stone-400 mt-0.5">Change the search or filters to see contracts again</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchTerm('');
+                        setFilters({});
+                      }}
+                      className="mt-3 px-3 py-1.5 rounded-lg bg-stone-900 text-white text-xs font-semibold hover:bg-stone-800 cursor-pointer"
+                    >
+                      Clear search &amp; filters
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No Contracts Loaded</p>
+                    <p className="text-[11px] text-stone-400 mt-0.5">Upload the Business Development (BD) workbook to instantiate contracts</p>
+                  </>
+                )}
+              </div>
+            ) : (
+              <Mr11Table
+                records={shownRecords}
+                headers={visibleHeaders}
+                headerGroups={headerGroups}
+                numberFormats={numberFormats}
+                highlightColumns={highlightColumns}
+                zoom={zoom}
+                onDeleteRow={admin && !rowBusy ? setConfirmRow : undefined}
+              />
+            )}
+            </>
           )}
         </div>
       </div>
