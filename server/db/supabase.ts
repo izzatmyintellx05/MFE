@@ -123,12 +123,13 @@ async function inTransaction(fn: (client: any) => Promise<void>): Promise<boolea
 }
 
 /** Active workbook version per department code, or null when the database is unreachable. */
-export async function fetchActiveVersionsFromDb(): Promise<Record<string, any> | null> {
+export async function fetchActiveVersionsFromDb(onlyCode?: string): Promise<Record<string, any> | null> {
   return withPool(async (pool) => {
     const result = await pool.query(
       `SELECT d.code AS "deptCode", f.*
          FROM "Department" d
-         JOIN "FileVersion" f ON f.id = d."activeVersionId";`
+         JOIN "FileVersion" f ON f.id = d."activeVersionId"${onlyCode ? ' WHERE d.code::text = $1' : ''};`,
+      onlyCode ? [onlyCode] : []
     );
     const byCode: Record<string, any> = {};
     for (const row of result.rows) {
@@ -141,8 +142,8 @@ export async function fetchActiveVersionsFromDb(): Promise<Record<string, any> |
 
 /** One department's active version (department page), or null. */
 export async function fetchActiveVersionForDepartment(code: string): Promise<any | null> {
-  const all = await fetchActiveVersionsFromDb();
-  return all?.[code] ?? null;
+  const one = await fetchActiveVersionsFromDb(code);
+  return one?.[code] ?? null;
 }
 
 /** Latest MR11 run, or null when there is none or the database is unreachable. */
@@ -422,4 +423,91 @@ export async function getLatestMr11Run(prisma: any): Promise<any | null> {
   const dbRun = await fetchLatestMr11RunFromDb();
   if (dbRun && Array.isArray(dbRun.records) && dbRun.records.length > 0) return dbRun;
   return prisma.mr11Run.findFirst({ orderBy: { generatedAt: 'desc' } });
+}
+
+let changeLogTableReady = false;
+
+/** The change log table is new, so it is created on first use instead of needing a migration. */
+async function ensureChangeLogTable(pool: any): Promise<void> {
+  if (changeLogTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "WorkbookChangeLog" (
+      "id" TEXT PRIMARY KEY,
+      "scope" TEXT NOT NULL,
+      "fileVersionId" TEXT,
+      "previousVersionId" TEXT,
+      "originalFilename" TEXT,
+      "previousFilename" TEXT,
+      "source" TEXT,
+      "uploadedById" TEXT,
+      "uploadedByName" TEXT,
+      "isFirst" BOOLEAN NOT NULL DEFAULT false,
+      "summary" JSONB NOT NULL DEFAULT '{}'::jsonb,
+      "changes" JSONB NOT NULL DEFAULT '[]'::jsonb,
+      "truncated" BOOLEAN NOT NULL DEFAULT false,
+      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );`);
+  await pool.query('CREATE INDEX IF NOT EXISTS "WorkbookChangeLog_scope_createdAt_idx" ON "WorkbookChangeLog" ("scope", "createdAt" DESC);');
+  changeLogTableReady = true;
+}
+
+/** Saves one change log entry; returns false when no database is configured. */
+export async function saveChangeLogToDb(entry: Record<string, any>): Promise<boolean> {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureChangeLogTable(pool);
+    await pool.query(
+      `INSERT INTO "WorkbookChangeLog"
+         ("id", "scope", "fileVersionId", "previousVersionId", "originalFilename", "previousFilename", "source",
+          "uploadedById", "uploadedByName", "isFirst", "summary", "changes", "truncated", "createdAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT ("id") DO NOTHING;`,
+      [
+        entry.id,
+        entry.scope,
+        entry.fileVersionId ?? null,
+        entry.previousVersionId ?? null,
+        entry.originalFilename ?? null,
+        entry.previousFilename ?? null,
+        entry.source ?? null,
+        entry.uploadedById ?? null,
+        entry.uploadedByName ?? null,
+        Boolean(entry.isFirst),
+        JSON.stringify(entry.summary ?? {}),
+        JSON.stringify(entry.changes ?? []),
+        Boolean(entry.truncated),
+        entry.createdAt ?? new Date(),
+      ]
+    );
+    return true;
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+/**
+ * Change log entries for one scope (a department code or MR11), newest first. Without
+ * `withChanges` only the summaries are read. Null when the database is unreachable.
+ */
+export async function fetchChangeLogsFromDb(
+  scope: string,
+  options: { id?: string; limit?: number; withChanges?: boolean } = {}
+): Promise<any[] | null> {
+  return withPool(async (pool) => {
+    await ensureChangeLogTable(pool);
+    const cols = `"id", "scope", "fileVersionId", "previousVersionId", "originalFilename", "previousFilename", "source",
+                  "uploadedById", "uploadedByName", "isFirst", "summary", "truncated", "createdAt"${options.withChanges ? ', "changes"' : ''}`;
+    const result = options.id
+      ? await pool.query(`SELECT ${cols} FROM "WorkbookChangeLog" WHERE "scope" = $1 AND "id" = $2;`, [scope, options.id])
+      : await pool.query(`SELECT ${cols} FROM "WorkbookChangeLog" WHERE "scope" = $1 ORDER BY "createdAt" DESC LIMIT $2;`, [
+          scope,
+          options.limit ?? 100,
+        ]);
+    return result.rows.map((r: any) => ({
+      ...r,
+      summary: parseJson(r.summary),
+      ...(options.withChanges ? { changes: parseJson(r.changes) } : {}),
+    }));
+  });
 }

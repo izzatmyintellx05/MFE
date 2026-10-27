@@ -5,9 +5,10 @@ import { HighFidelityViewer } from '../components/workbook/HighFidelityViewer';
 import { ZoomControls } from '../components/common/ZoomControls';
 import { FullscreenButton } from '../components/common/FullscreenButton';
 import { usePersistentState } from '../utils/usePersistentState';
-import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock, History, CalendarDays } from 'lucide-react';
+import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, Clock, History, CalendarDays, ListChecks } from 'lucide-react';
 import { ApprovalHistoryTable } from '../components/workbook/ApprovalHistoryTable';
 import { DispatchMonthlyTable } from '../components/workbook/DispatchMonthlyTable';
+import { ChangeLogPanel } from '../components/workbook/ChangeLogPanel';
 
 const DEPARTMENT_NAMES: Record<string, string> = {
   BD: 'Business Development',
@@ -36,6 +37,31 @@ function dispatchFileOf(parsed: any, part: DispatchPart, filename?: string): { s
   return part === 'OVERSEAS' ? { sheets, originalFilename: sheets.length ? filename ?? null : null } : { sheets: [], originalFilename: null };
 }
 
+// Sheet / Log switch in a department page's header
+export const ViewTabs: React.FC<{ view: 'sheet' | 'log'; setView: (v: 'sheet' | 'log') => void }> = ({ view, setView }) => (
+  <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200" role="tablist">
+    {([
+      { key: 'sheet', label: 'Sheet', icon: FileSpreadsheet },
+      { key: 'log', label: 'Log', icon: ListChecks },
+    ] as const).map(({ key, label, icon: Icon }) => (
+      <button
+        key={key}
+        type="button"
+        role="tab"
+        aria-selected={view === key}
+        onClick={() => setView(key)}
+        title={key === 'log' ? 'What changed between uploads, by date' : 'The active workbook'}
+        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
+          view === key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'
+        }`}
+      >
+        <Icon className="w-3.5 h-3.5" />
+        {label}
+      </button>
+    ))}
+  </div>
+);
+
 export const DepartmentPage: React.FC = () => {
   const { code } = useParams<{ code: string }>();
   // Shell Plan and Design share one workbook, kept under DESIGN
@@ -59,6 +85,8 @@ export const DepartmentPage: React.FC = () => {
   const isDispatch = deptCode === 'DISPATCH';
   const [dispatchPart, setDispatchPart] = usePersistentState<DispatchPart>('dispatch.part', 'LOCAL');
   const [showMonthly, setShowMonthly] = usePersistentState<boolean>('dispatch.showMonthly', true);
+  // The workbook itself, or the Log tab: what changed between this department's uploads
+  const [view, setView] = useState<'sheet' | 'log'>('sheet');
 
   const fetchDepartmentData = async () => {
     setLoading(true);
@@ -185,7 +213,8 @@ export const DepartmentPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          {isDispatch && (
+          <ViewTabs view={view} setView={setView} />
+          {isDispatch && view === 'sheet' && (
             <div className="flex items-center p-0.5 bg-slate-100 border border-slate-200 rounded-lg" role="group" aria-label="Dispatch file">
               {DISPATCH_PARTS.map((p) => (
                 <button
@@ -205,7 +234,7 @@ export const DepartmentPage: React.FC = () => {
           )}
           <ZoomControls zoom={zoom} setZoom={setZoom} min={20} max={135} step={5} />
           <FullscreenButton target={sheetRef} />
-          {isShellplanDesign && (
+          {view === 'sheet' && isShellplanDesign && (
             <button
               type="button"
               onClick={() => setShowHistory(!showHistory)}
@@ -220,7 +249,7 @@ export const DepartmentPage: React.FC = () => {
             </button>
           )}
 
-          {isDispatch && (
+          {view === 'sheet' && isDispatch && (
             <button
               type="button"
               onClick={() => setShowMonthly(!showMonthly)}
@@ -250,14 +279,14 @@ export const DepartmentPage: React.FC = () => {
       </div>
 
       {/* Shell Plan approval history (Shell Plan & Design page only, can be hidden) */}
-      {isShellplanDesign && showHistory && (
+      {view === 'sheet' && isShellplanDesign && showHistory && (
         <div className="luxury-deck bg-white rounded-xl mb-3 flex-shrink-0 h-64 overflow-hidden">
           <ApprovalHistoryTable reloadKey={historyReload} />
         </div>
       )}
 
       {/* Dispatch only: m2 dispatched per month (can be hidden) */}
-      {isDispatch && showMonthly && (
+      {view === 'sheet' && isDispatch && showMonthly && (
         <div className="luxury-deck bg-white rounded-xl mb-3 flex-shrink-0 h-64 overflow-hidden">
           <DispatchMonthlyTable reloadKey={historyReload} />
         </div>
@@ -273,7 +302,9 @@ export const DepartmentPage: React.FC = () => {
 
       {/* Sheet Container */}
       <div ref={sheetRef} className="luxury-deck bg-white flex-1 rounded-xl overflow-hidden flex flex-col">
-        {loading ? (
+        {view === 'log' ? (
+          <ChangeLogPanel endpoint={`/departments/${deptCode}/changelog`} reloadKey={historyReload} />
+        ) : loading ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-400">
             <Clock className="w-7 h-7 stroke-1 mb-2 animate-spin text-slate-800" />
             <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">

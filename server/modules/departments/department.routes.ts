@@ -7,6 +7,7 @@ import {
   listDepartments,
 } from './department.controller';
 import { requireAuth } from '../../middleware/auth.middleware';
+import { listDepartmentChanges, getDepartmentChange } from '../changelog/changelog.controller';
 
 const router = Router();
 
@@ -46,6 +47,10 @@ router.get('/', listDepartments);
 router.get('/:code', requireDepartmentAccess, getActiveDepartmentWorkbook);
 router.get('/:code/workbook', requireDepartmentAccess, getActiveDepartmentWorkbook);
 router.get('/:code/active', requireDepartmentAccess, getActiveDepartmentWorkbook);
+
+// What changed between uploads (the department's Log tab); before /:code/:anything else
+router.get('/:code/changelog', requireDepartmentAccess, listDepartmentChanges);
+router.get('/:code/changelog/:logId', requireDepartmentAccess, getDepartmentChange);
 
 // Upload workbook using memory buffer
 router.post('/:code/upload', requireDepartmentAccess, upload.single('file'), uploadDepartmentWorkbook);
