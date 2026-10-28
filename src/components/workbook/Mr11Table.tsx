@@ -1,8 +1,8 @@
 import React from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Pin, PinOff, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, ArrowUpToLine, EyeOff, Trash2 } from 'lucide-react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 import { formatCellNumber } from '../../utils/formatNumber';
-import { ColumnSort, nextSort } from '../../utils/mr11Filters';
+import { ColumnSort, FrozenAt, nextSort } from '../../utils/mr11Filters';
 
 const DESIGN_DATE_COLUMN = 'Actual Formwork Order Completion Date';
 
@@ -19,6 +19,32 @@ const DesignDates: React.FC<{ parts: DesignDatePart[]; today: string }> = ({ par
       </React.Fragment>
     ))}
   </>
+);
+
+// A button in the row actions shown over a row's number on hover
+const RowAction: React.FC<{
+  onClick: () => void;
+  title: string;
+  active?: boolean;
+  danger?: boolean;
+  children: React.ReactNode;
+}> = ({ onClick, title, active, danger, children }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    title={title}
+    aria-label={title}
+    aria-pressed={active}
+    className={`inline-flex items-center justify-center w-5 h-5 rounded cursor-pointer ${
+      danger
+        ? 'text-rose-500 hover:text-white hover:bg-rose-600'
+        : active
+        ? 'bg-amber-500 text-white hover:bg-amber-600'
+        : 'text-stone-500 hover:text-stone-900 hover:bg-stone-100'
+    }`}
+  >
+    {children}
+  </button>
 );
 
 const STREAM_MERGE_COLUMNS = [
@@ -60,9 +86,12 @@ interface Mr11TableProps {
   /** The column the rows are sorted by; with onSortChange, each header sorts on click */
   sort?: ColumnSort | null;
   onSortChange?: (sort: ColumnSort | null) => void;
-  /** Rows frozen at the top (by _rowKey); with onTogglePin, each row gets a pin button */
-  pinnedKeys?: string[];
-  onTogglePin?: (row: any) => void;
+  /** Rows frozen at the top or bottom, by _rowKey; with onFreezeRow, each row gets freeze buttons */
+  frozenRows?: Record<string, FrozenAt>;
+  /** Freeze a row at the top or bottom, or unfreeze it (null) */
+  onFreezeRow?: (row: any, at: FrozenAt | null) => void;
+  /** A hide button on each row */
+  onHideRow?: (row: any) => void;
 }
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
@@ -91,8 +120,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   onDeleteRow,
   sort = null,
   onSortChange,
-  pinnedKeys = [],
-  onTogglePin,
+  frozenRows = {},
+  onFreezeRow,
+  onHideRow,
 }) => {
   // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
   // decimals); identifier columns such as Project No keep their digits
@@ -217,10 +247,12 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
           </thead>
           <tbody className="divide-y divide-stone-100 text-stone-800">
             {records.map((row, rIdx) => {
-              const pinned = pinnedKeys.includes(row?._rowKey);
-              // A line under the last frozen row separates them from the rest of the table
-              const lastPinned = pinned && !pinnedKeys.includes(records[rIdx + 1]?._rowKey);
-              const rowActions = row?._rowKey && (onTogglePin || onDeleteRow);
+              const frozen: FrozenAt | undefined = frozenRows[row?._rowKey];
+              // A line separates the rows frozen at the top, and those at the bottom, from the rest
+              const lineBelow = frozen === 'top' && frozenRows[records[rIdx + 1]?._rowKey] !== 'top';
+              const lineAbove = frozen === 'bottom' && frozenRows[records[rIdx - 1]?._rowKey] !== 'bottom';
+              const rowActions = row?._rowKey && (onFreezeRow || onHideRow || onDeleteRow);
+              const FrozenIcon = frozen === 'top' ? ArrowUpToLine : ArrowDownToLine;
               const fontColor = row?._fontColor || '#000000';
               const isStreamLead = row?._isStreamLead !== false;
               const streamSpan = row?._streamSpan || 1;
@@ -230,42 +262,55 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                 <tr
                   key={rIdx}
                   className="group hover:bg-stone-50/70 transition-colors"
-                  style={{ backgroundColor: rowBg, ...(lastPinned ? { borderBottom: '2px solid #F59E0B' } : {}) }}
+                  style={{
+                    backgroundColor: rowBg,
+                    ...(lineBelow ? { borderBottom: '2px solid #F59E0B' } : {}),
+                    ...(lineAbove ? { borderTop: '2px solid #F59E0B' } : {}),
+                  }}
                 >
-                  {/* Sticky Index Column (with the freeze button, and the delete button for administrators) */}
+                  {/* Sticky Index Column (freeze and hide buttons, and delete for administrators) */}
                   <td
                     className={`p-2 border-r border-stone-200 text-center font-mono text-[11px] sticky left-0 z-10 font-medium whitespace-nowrap ${
-                      pinned ? 'bg-amber-50 text-amber-700' : 'bg-white text-stone-400'
+                      frozen ? 'bg-amber-50 text-amber-700' : 'bg-white text-stone-400'
                     }`}
                   >
                     {rowActions ? (
                       <>
-                        <span className="group-hover:hidden inline-flex items-center gap-0.5">
-                          {pinned && <Pin className="w-3 h-3" aria-label="Frozen row" />}
+                        <span className="inline-flex items-center gap-0.5">
+                          {frozen && (
+                            <FrozenIcon className="w-3 h-3" aria-label={frozen === 'top' ? 'Frozen at the top' : 'Frozen at the bottom'} />
+                          )}
                           {rIdx + 1}
                         </span>
-                        <span className="hidden group-hover:inline-flex items-center gap-0.5">
-                          {onTogglePin && (
-                            <button
-                              type="button"
-                              onClick={() => onTogglePin(row)}
-                              className="inline-flex items-center justify-center w-5 h-5 rounded text-amber-600 hover:text-white hover:bg-amber-500 cursor-pointer"
-                              title={pinned ? 'Unfreeze this row' : 'Freeze this row at the top (sorting will not move it)'}
-                              aria-label={pinned ? `Unfreeze row ${rIdx + 1}` : `Freeze row ${rIdx + 1} at the top`}
-                            >
-                              {pinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
-                            </button>
+                        {/* Row actions float over the row on hover, so the column keeps its width */}
+                        <span className="hidden group-hover:inline-flex absolute left-1 top-1/2 -translate-y-1/2 z-20 items-center gap-0.5 p-0.5 rounded-md bg-white border border-stone-200 shadow-md">
+                          {onFreezeRow && (
+                            <>
+                              <RowAction
+                                onClick={() => onFreezeRow(row, frozen === 'top' ? null : 'top')}
+                                active={frozen === 'top'}
+                                title={frozen === 'top' ? 'Unfreeze this row' : 'Freeze this row at the top (sorting will not move it)'}
+                              >
+                                <ArrowUpToLine className="w-3.5 h-3.5" />
+                              </RowAction>
+                              <RowAction
+                                onClick={() => onFreezeRow(row, frozen === 'bottom' ? null : 'bottom')}
+                                active={frozen === 'bottom'}
+                                title={frozen === 'bottom' ? 'Unfreeze this row' : 'Freeze this row at the bottom (sorting will not move it)'}
+                              >
+                                <ArrowDownToLine className="w-3.5 h-3.5" />
+                              </RowAction>
+                            </>
+                          )}
+                          {onHideRow && (
+                            <RowAction onClick={() => onHideRow(row)} title="Hide this row (bring it back from Hidden rows)">
+                              <EyeOff className="w-3.5 h-3.5" />
+                            </RowAction>
                           )}
                           {onDeleteRow && (
-                            <button
-                              type="button"
-                              onClick={() => onDeleteRow(row)}
-                              className="inline-flex items-center justify-center w-5 h-5 rounded text-rose-500 hover:text-white hover:bg-rose-600 cursor-pointer"
-                              title="Delete this row from MR11"
-                              aria-label={`Delete row ${rIdx + 1} from MR11`}
-                            >
+                            <RowAction onClick={() => onDeleteRow(row)} title="Delete this row from MR11" danger>
                               <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            </RowAction>
                           )}
                         </span>
                       </>

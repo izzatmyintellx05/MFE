@@ -13,6 +13,7 @@ import {
   remergeStreamBlocks,
   sortRows,
   ColumnSort,
+  FrozenAt,
   FILTER_FIELDS,
 } from '../utils/mr11Filters';
 import {
@@ -30,6 +31,7 @@ import {
 import { ChangeLogPanel } from '../components/workbook/ChangeLogPanel';
 import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice, CurrencyRate } from '../components/common/MarketRates';
 import { DeletedRowsMenu, DeletedRow } from '../components/workbook/DeletedRowsMenu';
+import { HiddenRowsMenu } from '../components/workbook/HiddenRowsMenu';
 import { useAuthStore } from '../store/auth.store';
 import { isAdmin } from '../utils/access';
 
@@ -76,11 +78,16 @@ export const Mr11Dashboard: React.FC = () => {
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   // Column the table is sorted by (clicking a header); none keeps the MR11 order
   const [sort, setSort] = useState<ColumnSort | null>(null);
-  // Rows frozen at the top of the table (by row key), in the order they were frozen; sorting
-  // leaves them where they are. Remembered in this browser.
-  const [pinnedKeys, setPinnedKeys] = usePersistentState<string[]>('mr11.pinnedRows', []);
-  const togglePin = (row: any) =>
-    setPinnedKeys((keys) => (keys.includes(row._rowKey) ? keys.filter((k) => k !== row._rowKey) : [...keys, row._rowKey]));
+  // Rows frozen at the top or bottom of the table (by row key), in the order they were frozen;
+  // sorting leaves them where they are. Hidden rows are left out of the table. Both are
+  // remembered in this browser.
+  const [frozenList, setFrozenList] = usePersistentState<{ key: string; at: FrozenAt }[]>('mr11.frozenRows', []);
+  const [hiddenKeys, setHiddenKeys] = usePersistentState<string[]>('mr11.hiddenRows', []);
+  const frozenRows = useMemo(() => Object.fromEntries(frozenList.map((f) => [f.key, f.at])), [frozenList]);
+  const freezeRow = (row: any, at: FrozenAt | null) =>
+    setFrozenList((list) => [...list.filter((f) => f.key !== row._rowKey), ...(at ? [{ key: row._rowKey, at }] : [])]);
+  const hideRow = (row: any) => setHiddenKeys((keys) => (keys.includes(row._rowKey) ? keys : [...keys, row._rowKey]));
+  const hiddenRows = useMemo(() => records.filter((r) => hiddenKeys.includes(r._rowKey)), [records, hiddenKeys]);
 
   // Remembered in this browser: zoom, the side panel, hidden column groups and the rates cards
   const [zoom, setZoom] = usePersistentState<number>('mr11.zoom', 100);
@@ -215,26 +222,36 @@ export const Mr11Dashboard: React.FC = () => {
     [headers, columnDepartments, hiddenGroups]
   );
 
-  // Search, filters, then the column sort; frozen rows stay on top in their own order and are not
-  // sorted. Merged Shell Plan / Design cells are redone over the rows left, frozen rows apart.
+  // Hidden rows out, search, filters, then the column sort; frozen rows stay at the top or bottom
+  // in the order they were frozen and are not sorted. Merged Shell Plan / Design cells are redone
+  // over the rows left, the frozen rows apart.
   const shownRecords = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
+    const visible = hiddenKeys.length ? records.filter((r) => !hiddenKeys.includes(r._rowKey)) : records;
     const searched = term
-      ? records.filter((r) =>
+      ? visible.filter((r) =>
           [r['Project No'] || r['Project No.'], r['Customer & Project Name'] || r['Project Name'], r['Short Name'] || r['Project Shortname']]
             .map((v) => String(v || '').toLowerCase())
             .some((v) => v.includes(term))
         )
-      : records;
+      : visible;
     const filtered = applyFilters(searched, filters);
-    const pinnedRows = pinnedKeys
-      .map((key) => filtered.find((r) => r._rowKey === key))
-      .filter((r): r is any => Boolean(r));
-    const rest = pinnedRows.length ? filtered.filter((r) => !pinnedRows.includes(r)) : filtered;
+    const frozenAt = (at: FrozenAt) =>
+      frozenList
+        .filter((f) => f.at === at)
+        .map((f) => filtered.find((r) => r._rowKey === f.key))
+        .filter((r): r is any => Boolean(r));
+    const top = frozenAt('top');
+    const bottom = frozenAt('bottom');
+    const rest = top.length || bottom.length ? filtered.filter((r) => !top.includes(r) && !bottom.includes(r)) : filtered;
     const sorted = sortRows(records, rest, sort, isStreamMergeColumn);
-    return [...remergeStreamBlocks(records, pinnedRows), ...remergeStreamBlocks(records, sorted)];
-  }, [records, searchTerm, filters, sort, pinnedKeys]);
-  const pinnedShown = shownRecords.filter((r) => pinnedKeys.includes(r._rowKey)).length;
+    return [
+      ...remergeStreamBlocks(records, top),
+      ...remergeStreamBlocks(records, sorted),
+      ...remergeStreamBlocks(records, bottom),
+    ];
+  }, [records, searchTerm, filters, sort, frozenList, hiddenKeys]);
+  const frozenShown = shownRecords.filter((r) => frozenRows[r._rowKey]).length;
 
   const filterCount = activeFilterCount(filters);
   const isNarrowed = shownRecords.length !== records.length;
@@ -362,6 +379,14 @@ export const Mr11Dashboard: React.FC = () => {
 
             <FullscreenButton target={tableRef} />
 
+            {hiddenRows.length > 0 && (
+              <HiddenRowsMenu
+                rows={hiddenRows}
+                onUnhide={(row) => setHiddenKeys((keys) => keys.filter((k) => k !== row._rowKey))}
+                onUnhideAll={() => setHiddenKeys([])}
+              />
+            )}
+
             {admin && <DeletedRowsMenu rows={deletedRows} busyKey={rowBusy} onRestore={handleRestoreRow} />}
 
             <button
@@ -418,7 +443,7 @@ export const Mr11Dashboard: React.FC = () => {
             />
           ) : (
             <>
-            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0 || sort || pinnedShown > 0) && (
+            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0 || sort || frozenShown > 0 || hiddenRows.length > 0) && (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-amber-200/70 bg-amber-50/70 text-[11px] text-amber-900 flex-shrink-0">
                 {filterCount > 0 && (
                   <span className="flex items-center gap-2 min-w-0">
@@ -440,13 +465,23 @@ export const Mr11Dashboard: React.FC = () => {
                     </button>
                   </span>
                 )}
-                {pinnedShown > 0 && (
+                {frozenShown > 0 && (
                   <span className="flex items-center gap-2 whitespace-nowrap">
                     <span>
-                      <strong className="font-semibold">Frozen</strong> · {pinnedShown} {pinnedShown === 1 ? 'row' : 'rows'} at the top
+                      <strong className="font-semibold">Frozen</strong> · {frozenShown} {frozenShown === 1 ? 'row' : 'rows'}
                     </span>
-                    <button type="button" onClick={() => setPinnedKeys([])} className="font-semibold hover:underline cursor-pointer">
+                    <button type="button" onClick={() => setFrozenList([])} className="font-semibold hover:underline cursor-pointer">
                       Unfreeze all
+                    </button>
+                  </span>
+                )}
+                {hiddenRows.length > 0 && (
+                  <span className="flex items-center gap-2 whitespace-nowrap">
+                    <span>
+                      <strong className="font-semibold">Hidden</strong> · {hiddenRows.length} {hiddenRows.length === 1 ? 'row' : 'rows'}
+                    </span>
+                    <button type="button" onClick={() => setHiddenKeys([])} className="font-semibold hover:underline cursor-pointer">
+                      Show hidden rows
                     </button>
                   </span>
                 )}
@@ -471,16 +506,17 @@ export const Mr11Dashboard: React.FC = () => {
                 {records.length > 0 ? (
                   <>
                     <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No matching contracts</p>
-                    <p className="text-[11px] text-stone-400 mt-0.5">Change the search or filters to see contracts again</p>
+                    <p className="text-[11px] text-stone-400 mt-0.5">Change the search or filters, or show hidden rows, to see contracts again</p>
                     <button
                       type="button"
                       onClick={() => {
                         setSearchTerm('');
                         setFilters({});
+                        setHiddenKeys([]);
                       }}
                       className="mt-3 px-3 py-1.5 rounded-lg bg-stone-900 text-white text-xs font-semibold hover:bg-stone-800 cursor-pointer"
                     >
-                      Clear search &amp; filters
+                      Clear search, filters &amp; hidden rows
                     </button>
                   </>
                 ) : (
@@ -500,8 +536,9 @@ export const Mr11Dashboard: React.FC = () => {
                 zoom={zoom}
                 sort={sort}
                 onSortChange={setSort}
-                pinnedKeys={pinnedKeys}
-                onTogglePin={togglePin}
+                frozenRows={frozenRows}
+                onFreezeRow={freezeRow}
+                onHideRow={hideRow}
                 onDeleteRow={admin && !rowBusy ? setConfirmRow : undefined}
               />
             )}

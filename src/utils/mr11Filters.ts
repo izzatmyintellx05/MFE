@@ -96,6 +96,9 @@ export function remergeStreamBlocks(all: Record<string, any>[], shown: Record<st
 
 export type SortDirection = 'asc' | 'desc';
 
+/** Where a frozen row stays, whatever the sort */
+export type FrozenAt = 'top' | 'bottom';
+
 export interface ColumnSort {
   column: string;
   direction: SortDirection;
