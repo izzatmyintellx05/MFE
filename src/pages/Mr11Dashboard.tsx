@@ -76,6 +76,11 @@ export const Mr11Dashboard: React.FC = () => {
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   // Column the table is sorted by (clicking a header); none keeps the MR11 order
   const [sort, setSort] = useState<ColumnSort | null>(null);
+  // Rows frozen at the top of the table (by row key), in the order they were frozen; sorting
+  // leaves them where they are. Remembered in this browser.
+  const [pinnedKeys, setPinnedKeys] = usePersistentState<string[]>('mr11.pinnedRows', []);
+  const togglePin = (row: any) =>
+    setPinnedKeys((keys) => (keys.includes(row._rowKey) ? keys.filter((k) => k !== row._rowKey) : [...keys, row._rowKey]));
 
   // Remembered in this browser: zoom, the side panel, hidden column groups and the rates cards
   const [zoom, setZoom] = usePersistentState<number>('mr11.zoom', 100);
@@ -210,7 +215,8 @@ export const Mr11Dashboard: React.FC = () => {
     [headers, columnDepartments, hiddenGroups]
   );
 
-  // Search, filters, then the column sort; merged Shell Plan / Design cells are redone over the rows left
+  // Search, filters, then the column sort; frozen rows stay on top in their own order and are not
+  // sorted. Merged Shell Plan / Design cells are redone over the rows left, frozen rows apart.
   const shownRecords = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     const searched = term
@@ -220,9 +226,15 @@ export const Mr11Dashboard: React.FC = () => {
             .some((v) => v.includes(term))
         )
       : records;
-    const sorted = sortRows(records, applyFilters(searched, filters), sort, isStreamMergeColumn);
-    return remergeStreamBlocks(records, sorted);
-  }, [records, searchTerm, filters, sort]);
+    const filtered = applyFilters(searched, filters);
+    const pinnedRows = pinnedKeys
+      .map((key) => filtered.find((r) => r._rowKey === key))
+      .filter((r): r is any => Boolean(r));
+    const rest = pinnedRows.length ? filtered.filter((r) => !pinnedRows.includes(r)) : filtered;
+    const sorted = sortRows(records, rest, sort, isStreamMergeColumn);
+    return [...remergeStreamBlocks(records, pinnedRows), ...remergeStreamBlocks(records, sorted)];
+  }, [records, searchTerm, filters, sort, pinnedKeys]);
+  const pinnedShown = shownRecords.filter((r) => pinnedKeys.includes(r._rowKey)).length;
 
   const filterCount = activeFilterCount(filters);
   const isNarrowed = shownRecords.length !== records.length;
@@ -406,7 +418,7 @@ export const Mr11Dashboard: React.FC = () => {
             />
           ) : (
             <>
-            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0 || sort) && (
+            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0 || sort || pinnedShown > 0) && (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-amber-200/70 bg-amber-50/70 text-[11px] text-amber-900 flex-shrink-0">
                 {filterCount > 0 && (
                   <span className="flex items-center gap-2 min-w-0">
@@ -425,6 +437,16 @@ export const Mr11Dashboard: React.FC = () => {
                     </span>
                     <button type="button" onClick={() => setSort(null)} className="font-semibold hover:underline cursor-pointer">
                       Reset to MR11 order
+                    </button>
+                  </span>
+                )}
+                {pinnedShown > 0 && (
+                  <span className="flex items-center gap-2 whitespace-nowrap">
+                    <span>
+                      <strong className="font-semibold">Frozen</strong> · {pinnedShown} {pinnedShown === 1 ? 'row' : 'rows'} at the top
+                    </span>
+                    <button type="button" onClick={() => setPinnedKeys([])} className="font-semibold hover:underline cursor-pointer">
+                      Unfreeze all
                     </button>
                   </span>
                 )}
@@ -478,6 +500,8 @@ export const Mr11Dashboard: React.FC = () => {
                 zoom={zoom}
                 sort={sort}
                 onSortChange={setSort}
+                pinnedKeys={pinnedKeys}
+                onTogglePin={togglePin}
                 onDeleteRow={admin && !rowBusy ? setConfirmRow : undefined}
               />
             )}

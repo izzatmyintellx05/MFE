@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Pin, PinOff, Trash2 } from 'lucide-react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 import { formatCellNumber } from '../../utils/formatNumber';
 import { ColumnSort, nextSort } from '../../utils/mr11Filters';
@@ -60,6 +60,9 @@ interface Mr11TableProps {
   /** The column the rows are sorted by; with onSortChange, each header sorts on click */
   sort?: ColumnSort | null;
   onSortChange?: (sort: ColumnSort | null) => void;
+  /** Rows frozen at the top (by _rowKey); with onTogglePin, each row gets a pin button */
+  pinnedKeys?: string[];
+  onTogglePin?: (row: any) => void;
 }
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
@@ -88,6 +91,8 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   onDeleteRow,
   sort = null,
   onSortChange,
+  pinnedKeys = [],
+  onTogglePin,
 }) => {
   // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
   // decimals); identifier columns such as Project No keep their digits
@@ -212,6 +217,10 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
           </thead>
           <tbody className="divide-y divide-stone-100 text-stone-800">
             {records.map((row, rIdx) => {
+              const pinned = pinnedKeys.includes(row?._rowKey);
+              // A line under the last frozen row separates them from the rest of the table
+              const lastPinned = pinned && !pinnedKeys.includes(records[rIdx + 1]?._rowKey);
+              const rowActions = row?._rowKey && (onTogglePin || onDeleteRow);
               const fontColor = row?._fontColor || '#000000';
               const isStreamLead = row?._isStreamLead !== false;
               const streamSpan = row?._streamSpan || 1;
@@ -221,22 +230,44 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                 <tr
                   key={rIdx}
                   className="group hover:bg-stone-50/70 transition-colors"
-                  style={{ backgroundColor: rowBg }}
+                  style={{ backgroundColor: rowBg, ...(lastPinned ? { borderBottom: '2px solid #F59E0B' } : {}) }}
                 >
-                  {/* Sticky Index Column (with the delete button for administrators) */}
-                  <td className="p-2 border-r border-stone-200 text-center text-stone-400 font-mono text-[11px] sticky left-0 z-10 bg-white font-medium">
-                    {onDeleteRow && row?._rowKey ? (
+                  {/* Sticky Index Column (with the freeze button, and the delete button for administrators) */}
+                  <td
+                    className={`p-2 border-r border-stone-200 text-center font-mono text-[11px] sticky left-0 z-10 font-medium whitespace-nowrap ${
+                      pinned ? 'bg-amber-50 text-amber-700' : 'bg-white text-stone-400'
+                    }`}
+                  >
+                    {rowActions ? (
                       <>
-                        <span className="group-hover:hidden">{rIdx + 1}</span>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteRow(row)}
-                          className="hidden group-hover:inline-flex items-center justify-center w-5 h-5 rounded text-rose-500 hover:text-white hover:bg-rose-600 cursor-pointer"
-                          title="Delete this row from MR11"
-                          aria-label={`Delete row ${rIdx + 1} from MR11`}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <span className="group-hover:hidden inline-flex items-center gap-0.5">
+                          {pinned && <Pin className="w-3 h-3" aria-label="Frozen row" />}
+                          {rIdx + 1}
+                        </span>
+                        <span className="hidden group-hover:inline-flex items-center gap-0.5">
+                          {onTogglePin && (
+                            <button
+                              type="button"
+                              onClick={() => onTogglePin(row)}
+                              className="inline-flex items-center justify-center w-5 h-5 rounded text-amber-600 hover:text-white hover:bg-amber-500 cursor-pointer"
+                              title={pinned ? 'Unfreeze this row' : 'Freeze this row at the top (sorting will not move it)'}
+                              aria-label={pinned ? `Unfreeze row ${rIdx + 1}` : `Freeze row ${rIdx + 1} at the top`}
+                            >
+                              {pinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                          {onDeleteRow && (
+                            <button
+                              type="button"
+                              onClick={() => onDeleteRow(row)}
+                              className="inline-flex items-center justify-center w-5 h-5 rounded text-rose-500 hover:text-white hover:bg-rose-600 cursor-pointer"
+                              title="Delete this row from MR11"
+                              aria-label={`Delete row ${rIdx + 1} from MR11`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </span>
                       </>
                     ) : (
                       rIdx + 1
