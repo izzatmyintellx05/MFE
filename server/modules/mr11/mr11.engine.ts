@@ -723,7 +723,8 @@ type MonthStageHistory = Record<string, Record<string, { design: number; process
  * dispatched and less those later months. So m2 forecast for a month but not dispatched moves
  * to the next month, and a change from Design or Processed lands in the current month first (a
  * cut also takes from the months after it). A row without a BD forecast gets none from Design or
- * Processed; only its ended months fill in with what was dispatched.
+ * Processed; only its ended months fill in with what was dispatched. Design and Processed count the
+ * whole project, so m2 dispatched before the first month column (Jan-26) also comes off them.
  */
 function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string, stageHistory: MonthStageHistory): void {
   const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
@@ -766,7 +767,13 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       // e.g. design-only types, what was last planned for them, else BD's value), later months
       // BD's, the current month the rest
       const history = (stageHistory[input.historyKey] ||= {});
-      const allocate = (projectM2: number | null, stage: 'design' | 'processed'): Record<string, number> => {
+      // Design and Processed are the whole project's m2, so what was dispatched before the first
+      // month column (e.g. a Local project dispatching since 2024) is already done and comes off
+      // it; BD's forecast only covers the month columns
+      const dispatchedBefore = Object.entries(dispatched)
+        .filter(([key]) => key < monthKeyOf(labels[0]))
+        .reduce((t, [, m2]) => t + (m2 || 0), 0);
+      const allocate = (projectM2: number | null, stage: 'design' | 'processed', wholeProject: boolean): Record<string, number> => {
         const v: Record<string, number> = { ...bd };
         for (const l of ended) {
           const key = monthKeyOf(l);
@@ -774,7 +781,7 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
           else if (history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
-        let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
+        let current = projectM2 - (wholeProject ? dispatchedBefore : 0) - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
         v[open[0]] = Math.max(0, current);
         for (const l of open.slice(1)) {
           if (current >= 0) break;
@@ -784,8 +791,8 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
         }
         return v;
       };
-      const designValues = allocate(designTarget, 'design');
-      const values = allocate(target, 'processed');
+      const designValues = allocate(designTarget, 'design', designApplies);
+      const values = allocate(target, 'processed', source !== 'BD');
 
       let total2026 = 0;
       let total2027 = 0;
