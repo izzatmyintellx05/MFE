@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, ArrowUpToLine, EyeOff, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, ArrowUpToLine, CheckCircle2, EyeOff, RotateCcw, Trash2 } from 'lucide-react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 import { formatCellNumber } from '../../utils/formatNumber';
 import { ColumnSort, FrozenAt, nextSort } from '../../utils/mr11Filters';
@@ -92,6 +92,12 @@ interface Mr11TableProps {
   onFreezeRow?: (row: any, at: FrozenAt | null) => void;
   /** A hide button on each row */
   onHideRow?: (row: any) => void;
+  /** A button on each row to mark its project complete, or (completedView) incomplete again */
+  onToggleComplete?: (row: any) => void;
+  /** The rows are completed projects: the button marks a project incomplete */
+  completedView?: boolean;
+  /** Tooltip for a row's complete / incomplete button, e.g. who marked it complete */
+  completeTitle?: (row: any) => string;
 }
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
@@ -123,6 +129,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   frozenRows = {},
   onFreezeRow,
   onHideRow,
+  onToggleComplete,
+  completedView = false,
+  completeTitle,
 }) => {
   // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
   // decimals); identifier columns such as Project No keep their digits
@@ -251,7 +260,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
               // A line separates the rows frozen at the top, and those at the bottom, from the rest
               const lineBelow = frozen === 'top' && frozenRows[records[rIdx + 1]?._rowKey] !== 'top';
               const lineAbove = frozen === 'bottom' && frozenRows[records[rIdx - 1]?._rowKey] !== 'bottom';
-              const rowActions = row?._rowKey && (onFreezeRow || onHideRow || onDeleteRow);
+              const rowActions = row?._rowKey && (onFreezeRow || onHideRow || onDeleteRow || onToggleComplete);
               const FrozenIcon = frozen === 'top' ? ArrowUpToLine : ArrowDownToLine;
               const fontColor = row?._fontColor || '#000000';
               const isStreamLead = row?._isStreamLead !== false;
@@ -301,6 +310,17 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                                 <ArrowDownToLine className="w-3.5 h-3.5" />
                               </RowAction>
                             </>
+                          )}
+                          {onToggleComplete && (
+                            <RowAction
+                              onClick={() => onToggleComplete(row)}
+                              title={
+                                completeTitle?.(row) ||
+                                (completedView ? 'Mark this project incomplete (back to MR11)' : 'Mark this project complete (moves to Completed)')
+                              }
+                            >
+                              {completedView ? <RotateCcw className="w-3.5 h-3.5" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                            </RowAction>
                           )}
                           {onHideRow && (
                             <RowAction onClick={() => onHideRow(row)} title="Hide this row (bring it back from Hidden rows)">

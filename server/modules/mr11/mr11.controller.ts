@@ -13,6 +13,7 @@ import {
 } from '../../config/mr11.config';
 import { getUsdToMyrRate, getUsdRates, getUsdRatesInfo } from '../../utils/fx';
 import { applyLivePricing, currencyCode } from './mr11.pricing';
+import { listCompletedProjects, markProjectComplete, markProjectIncomplete } from './mr11.completed';
 
 // Currencies shown with the exchange rate on the MR11 page, besides any BD prices in
 const SHOWN_CURRENCIES = ['MYR', 'SGD', 'AUD', 'INR', 'CNY', 'EUR', 'GBP', 'AED'];
@@ -197,6 +198,59 @@ export async function restoreMr11Row(req: Request, res: Response) {
     const next = rows.filter((d) => d.key !== key);
     if (next.length !== rows.length) await rebuildWith(next, 'MR11 row restored', (req as any).user?.id ?? null);
     return res.json({ success: true, data: next });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Completed projects (every signed-in user): shown in the Completed table instead of MR11
+// ---------------------------------------------------------------------------------------------
+
+// The same key as projectKeyOf in src/utils/mr11Completed.ts
+function projectKeyOf(row: Record<string, any>): string {
+  const no = String(row['Project No'] ?? row['Project No.'] ?? '').trim().toUpperCase();
+  if (no) return `NO:${no}`;
+  const short = String(row['Short Name'] ?? row['Project Shortname'] ?? '').trim().toUpperCase();
+  return short ? `SHORT:${short}` : '';
+}
+
+export async function getCompletedProjects(req: Request, res: Response) {
+  try {
+    return res.json({ success: true, data: await listCompletedProjects() });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
+export async function completeMr11Project(req: Request, res: Response) {
+  try {
+    const key = String(req.body?.key || '').trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: 'No project given' } });
+    const run: any = await getLatestMr11Run(prisma);
+    const record = ((run?.records as any[]) || []).find((r) => r && projectKeyOf(r) === key);
+    if (!record) return res.status(404).json({ success: false, error: { message: 'That project is no longer in MR11' } });
+    const user = (req as any).user;
+    const data = await markProjectComplete({
+      id: key,
+      projectNo: record['Project No'] ?? record['Project No.'] ?? null,
+      shortName: record['Short Name'] ?? null,
+      projectName: record['Customer & Project Name'] ?? null,
+      completedById: user?.id ?? null,
+      completedBy: user?.fullName || user?.email || null,
+      completedAt: new Date(),
+    });
+    return res.json({ success: true, data });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+
+export async function reopenMr11Project(req: Request, res: Response) {
+  try {
+    const key = String(req.body?.key || '').trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: 'No project given' } });
+    return res.json({ success: true, data: await markProjectIncomplete(key) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }

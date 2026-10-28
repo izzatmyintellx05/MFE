@@ -27,6 +27,7 @@ import {
   ArrowRightLeft,
   Trash2,
   ListChecks,
+  CheckCircle2,
 } from 'lucide-react';
 import { ChangeLogPanel } from '../components/workbook/ChangeLogPanel';
 import { ExchangeRateCard, LmePriceCard, FxRate, LmePrice, CurrencyRate } from '../components/common/MarketRates';
@@ -34,6 +35,7 @@ import { DeletedRowsMenu, DeletedRow } from '../components/workbook/DeletedRowsM
 import { HiddenRowsMenu } from '../components/workbook/HiddenRowsMenu';
 import { useAuthStore } from '../store/auth.store';
 import { isAdmin } from '../utils/access';
+import { projectKeyOf, CompletedProject } from '../utils/mr11Completed';
 
 // A symbol on the right-hand icon bar; dark when what it opens is showing
 const RailButton: React.FC<{
@@ -95,8 +97,9 @@ export const Mr11Dashboard: React.FC = () => {
   const [hiddenGroups, setHiddenGroups] = usePersistentState<string[]>('mr11.hiddenColumnGroups', []);
   const [showRates, setShowRates] = usePersistentState<boolean>('mr11.showRatesStrip', true);
   const tableRef = useRef<HTMLDivElement>(null);
-  // The MR11 table, or the Log tab: what changed in MR11 each time it was rebuilt (everyone can see it)
-  const [view, setView] = useState<'table' | 'log'>('table');
+  // The MR11 table, the Completed table (projects marked complete), or the Log tab: what changed
+  // in MR11 each time it was rebuilt (everyone can see it)
+  const [view, setView] = useState<'table' | 'completed' | 'log'>('table');
   const [logReload, setLogReload] = useState(0);
 
   // Administrators can delete MR11 rows (and restore them from the Deleted rows list)
@@ -106,6 +109,47 @@ export const Mr11Dashboard: React.FC = () => {
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   // The row waiting for the administrator to confirm its deletion
   const [confirmRow, setConfirmRow] = useState<any | null>(null);
+
+  // Projects marked complete, shared by every user: their rows show in the Completed table only
+  const [completedProjects, setCompletedProjects] = useState<CompletedProject[]>([]);
+  const [completeBusy, setCompleteBusy] = useState(false);
+  const completedByKey = useMemo(() => new Map(completedProjects.map((p) => [p.id, p])), [completedProjects]);
+  const completedRecords = useMemo(() => records.filter((r) => completedByKey.has(projectKeyOf(r))), [records, completedByKey]);
+  const mainRecords = useMemo(
+    () => (completedRecords.length ? records.filter((r) => !completedByKey.has(projectKeyOf(r))) : records),
+    [records, completedRecords, completedByKey]
+  );
+  const completedCount = useMemo(() => new Set(completedRecords.map(projectKeyOf)).size, [completedRecords]);
+
+  const fetchCompletedProjects = () =>
+    api
+      .get('/mr11/completed-projects')
+      .then((res) => setCompletedProjects(res.data?.data || []))
+      .catch(() => {});
+
+  const handleToggleComplete = async (row: any) => {
+    const key = projectKeyOf(row);
+    if (!key || completeBusy) return;
+    setCompleteBusy(true);
+    setError(null);
+    try {
+      const res = await api.post(completedByKey.has(key) ? '/mr11/projects/incomplete' : '/mr11/projects/complete', { key });
+      setCompletedProjects(res.data?.data || []);
+    } catch (err: any) {
+      setError(err.response?.data?.error?.message || err.message || 'Could not update the project');
+    } finally {
+      setCompleteBusy(false);
+    }
+  };
+
+  const completeTitle = (row: any) => {
+    const done = completedByKey.get(projectKeyOf(row));
+    const name = row['Short Name'] || row['Project No'] || 'this project';
+    if (!done) return `Mark ${name} complete (all its streams move to Completed)`;
+    const when = done.completedAt ? new Date(done.completedAt).toLocaleDateString('en-GB') : '';
+    const by = [done.completedBy && `by ${done.completedBy}`, when && `on ${when}`].filter(Boolean).join(' ');
+    return `Mark ${name} incomplete (back to MR11)${by ? ` · completed ${by}` : ''}`;
+  };
 
   const fetchMr11Data = async () => {
     setLoading(true);
@@ -131,6 +175,7 @@ export const Mr11Dashboard: React.FC = () => {
 
   useEffect(() => {
     fetchMr11Data();
+    fetchCompletedProjects();
   }, []);
 
   useEffect(() => {
@@ -179,7 +224,7 @@ export const Mr11Dashboard: React.FC = () => {
     setRegenerating(true);
     try {
       await api.post('/mr11/regenerate');
-      await fetchMr11Data();
+      await Promise.all([fetchMr11Data(), fetchCompletedProjects()]);
       setLogReload((k) => k + 1);
     } catch (err: any) {
       setError(err.response?.data?.error?.message || err.message || 'Regeneration failed');
@@ -222,12 +267,15 @@ export const Mr11Dashboard: React.FC = () => {
     [headers, columnDepartments, hiddenGroups]
   );
 
+  // The MR11 table leaves completed projects out; the Completed table shows only them
+  const baseRecords = view === 'completed' ? completedRecords : mainRecords;
+
   // Hidden rows out, search, filters, then the column sort; frozen rows stay at the top or bottom
   // in the order they were frozen and are not sorted. Merged Shell Plan / Design cells are redone
   // over the rows left, the frozen rows apart.
   const shownRecords = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    const visible = hiddenKeys.length ? records.filter((r) => !hiddenKeys.includes(r._rowKey)) : records;
+    const visible = hiddenKeys.length ? baseRecords.filter((r) => !hiddenKeys.includes(r._rowKey)) : baseRecords;
     const searched = term
       ? visible.filter((r) =>
           [r['Project No'] || r['Project No.'], r['Customer & Project Name'] || r['Project Name'], r['Short Name'] || r['Project Shortname']]
@@ -250,11 +298,11 @@ export const Mr11Dashboard: React.FC = () => {
       ...remergeStreamBlocks(records, sorted),
       ...remergeStreamBlocks(records, bottom),
     ];
-  }, [records, searchTerm, filters, sort, frozenList, hiddenKeys]);
+  }, [records, baseRecords, searchTerm, filters, sort, frozenList, hiddenKeys]);
   const frozenShown = shownRecords.filter((r) => frozenRows[r._rowKey]).length;
 
   const filterCount = activeFilterCount(filters);
-  const isNarrowed = shownRecords.length !== records.length;
+  const isNarrowed = shownRecords.length !== baseRecords.length;
   const filterSummary = FILTER_FIELDS.filter((f) => (filters[f.key] || []).length > 0)
     .map((f) => `${f.label}: ${filters[f.key].join(', ')}`)
     .join(' · ');
@@ -324,7 +372,8 @@ export const Mr11Dashboard: React.FC = () => {
               <div className="flex items-center gap-2.5">
                 <h1 className="text-sm font-extrabold text-stone-900 tracking-tight uppercase truncate">MR11 Master Operations Ledger</h1>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-stone-100 text-stone-700 whitespace-nowrap">
-                  {isNarrowed ? `${shownRecords.length} of ${records.length}` : records.length} Contracts
+                  {isNarrowed ? `${shownRecords.length} of ${baseRecords.length}` : baseRecords.length}{' '}
+                  {view === 'completed' ? 'Completed' : 'Contracts'}
                 </span>
               </div>
               <p className="text-[11px] text-stone-400 mt-0.5 truncate">Production, dispatch milestones & fulfillment schedule</p>
@@ -335,6 +384,7 @@ export const Mr11Dashboard: React.FC = () => {
             <div className="flex bg-stone-100 p-0.5 rounded-lg border border-stone-200" role="tablist">
               {([
                 { key: 'table', label: 'MR11', icon: FileSpreadsheet },
+                { key: 'completed', label: 'Completed', icon: CheckCircle2 },
                 { key: 'log', label: 'Log', icon: ListChecks },
               ] as const).map(({ key, label, icon: Icon }) => (
                 <button
@@ -343,13 +393,22 @@ export const Mr11Dashboard: React.FC = () => {
                   role="tab"
                   aria-selected={view === key}
                   onClick={() => setView(key)}
-                  title={key === 'log' ? 'What changed in MR11, by date' : 'The MR11 ledger'}
+                  title={
+                    key === 'log'
+                      ? 'What changed in MR11, by date'
+                      : key === 'completed'
+                      ? 'Projects marked complete (mark one incomplete to return it to MR11)'
+                      : 'The MR11 ledger'
+                  }
                   className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
                     view === key ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-900'
                   }`}
                 >
                   <Icon className="w-3.5 h-3.5" />
                   {label}
+                  {key === 'completed' && completedCount > 0 && (
+                    <span className="px-1.5 rounded-full text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800">{completedCount}</span>
+                  )}
                 </button>
               ))}
             </div>
@@ -503,7 +562,14 @@ export const Mr11Dashboard: React.FC = () => {
             ) : shownRecords.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-stone-400 p-8">
                 <FileSpreadsheet className="w-10 h-10 stroke-1 mb-2 text-stone-300" />
-                {records.length > 0 ? (
+                {view === 'completed' && completedRecords.length === 0 ? (
+                  <>
+                    <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No completed projects</p>
+                    <p className="text-[11px] text-stone-400 mt-0.5">
+                      Hover over a row number in the MR11 table and click the tick to mark its project complete
+                    </p>
+                  </>
+                ) : baseRecords.length > 0 ? (
                   <>
                     <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No matching contracts</p>
                     <p className="text-[11px] text-stone-400 mt-0.5">Change the search or filters, or show hidden rows, to see contracts again</p>
@@ -539,6 +605,9 @@ export const Mr11Dashboard: React.FC = () => {
                 frozenRows={frozenRows}
                 onFreezeRow={freezeRow}
                 onHideRow={hideRow}
+                onToggleComplete={completeBusy ? undefined : handleToggleComplete}
+                completedView={view === 'completed'}
+                completeTitle={completeTitle}
                 onDeleteRow={admin && !rowBusy ? setConfirmRow : undefined}
               />
             )}

@@ -740,12 +740,14 @@ var init_database_config = __esm({
 // server/db/supabase.ts
 var supabase_exports = {};
 __export(supabase_exports, {
+  deleteCompletedProjectFromDb: () => deleteCompletedProjectFromDb,
   deleteUserFromDb: () => deleteUserFromDb,
   describeDatabase: () => describeDatabase,
   fetchActiveFileSummariesFromDb: () => fetchActiveFileSummariesFromDb,
   fetchActiveVersionForDepartment: () => fetchActiveVersionForDepartment,
   fetchActiveVersionsFromDb: () => fetchActiveVersionsFromDb,
   fetchChangeLogsFromDb: () => fetchChangeLogsFromDb,
+  fetchCompletedProjectsFromDb: () => fetchCompletedProjectsFromDb,
   fetchLatestMr11RunFromDb: () => fetchLatestMr11RunFromDb,
   getLatestMr11Run: () => getLatestMr11Run,
   hydrateActiveVersionsFromDb: () => hydrateActiveVersionsFromDb,
@@ -753,6 +755,7 @@ __export(supabase_exports, {
   isDatabaseConfigured: () => isDatabaseConfigured,
   restoreEngineHistory: () => restoreEngineHistory,
   saveChangeLogToDb: () => saveChangeLogToDb,
+  saveCompletedProjectToDb: () => saveCompletedProjectToDb,
   saveFileVersionToDb: () => saveFileVersionToDb,
   saveMr11RunToDb: () => saveMr11RunToDb,
   saveUserToDb: () => saveUserToDb
@@ -1165,7 +1168,66 @@ async function fetchChangeLogsFromDb(scope, options = {}) {
     }));
   });
 }
-var NOW, columnCache, changeLogTableReady;
+async function ensureCompletedTable(pool) {
+  if (completedTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "Mr11CompletedProject" (
+      "id" TEXT PRIMARY KEY,
+      "projectNo" TEXT,
+      "shortName" TEXT,
+      "projectName" TEXT,
+      "completedById" TEXT,
+      "completedBy" TEXT,
+      "completedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );`);
+  completedTableReady = true;
+}
+async function fetchCompletedProjectsFromDb() {
+  return withPool(async (pool) => {
+    await ensureCompletedTable(pool);
+    const result = await pool.query('SELECT * FROM "Mr11CompletedProject" ORDER BY "completedAt" ASC;');
+    return result.rows;
+  });
+}
+async function saveCompletedProjectToDb(entry) {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureCompletedTable(pool);
+    await pool.query(
+      `INSERT INTO "Mr11CompletedProject"
+         ("id", "projectNo", "shortName", "projectName", "completedById", "completedBy", "completedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT ("id") DO NOTHING;`,
+      [
+        entry.id,
+        entry.projectNo ?? null,
+        entry.shortName ?? null,
+        entry.projectName ?? null,
+        entry.completedById ?? null,
+        entry.completedBy ?? null,
+        entry.completedAt ?? /* @__PURE__ */ new Date()
+      ]
+    );
+    return true;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+async function deleteCompletedProjectFromDb(id) {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureCompletedTable(pool);
+    await pool.query('DELETE FROM "Mr11CompletedProject" WHERE "id" = $1;', [id]);
+    return true;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+var NOW, columnCache, changeLogTableReady, completedTableReady;
 var init_supabase = __esm({
   "server/db/supabase.ts"() {
     init_database_config();
@@ -1173,6 +1235,7 @@ var init_supabase = __esm({
     NOW = Symbol("now");
     columnCache = {};
     changeLogTableReady = false;
+    completedTableReady = false;
   }
 });
 
@@ -4111,14 +4174,14 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   }
   applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7), monthStageHistory);
   const designStatesByProject = /* @__PURE__ */ new Map();
-  const projectKeyOf = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
+  const projectKeyOf2 = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
   for (const r of derivedMr11Rows) {
-    const streams = designStatesByProject.get(projectKeyOf(r)) || /* @__PURE__ */ new Map();
+    const streams = designStatesByProject.get(projectKeyOf2(r)) || /* @__PURE__ */ new Map();
     streams.set(normalizeStream(r["Stream"]), r["_designState"] || "none");
-    designStatesByProject.set(projectKeyOf(r), streams);
+    designStatesByProject.set(projectKeyOf2(r), streams);
   }
   for (const r of derivedMr11Rows) {
-    const states = [...designStatesByProject.get(projectKeyOf(r))?.values() || []];
+    const states = [...designStatesByProject.get(projectKeyOf2(r))?.values() || []];
     const completed = states.filter((s) => s === "completed").length;
     const status = states.length > 0 && completed === states.length ? "Fully Complete" : completed > 0 ? "Partially Complete" : states.includes("ongoing") ? "Ongoing" : "To Start";
     r["Formwork Design Status"] = status;
@@ -4638,6 +4701,27 @@ import { Router as Router3 } from "express";
 init_prisma();
 import ExcelJS2 from "exceljs";
 init_supabase();
+
+// server/modules/mr11/mr11.completed.ts
+init_supabase();
+var memoryCompleted = /* @__PURE__ */ new Map();
+async function listCompletedProjects() {
+  if (isDatabaseConfigured()) {
+    const rows = await fetchCompletedProjectsFromDb();
+    if (rows) return rows;
+  }
+  return [...memoryCompleted.values()];
+}
+async function markProjectComplete(entry) {
+  if (!await saveCompletedProjectToDb(entry)) memoryCompleted.set(entry.id, entry);
+  return listCompletedProjects();
+}
+async function markProjectIncomplete(id) {
+  if (!await deleteCompletedProjectFromDb(id)) memoryCompleted.delete(id);
+  return listCompletedProjects();
+}
+
+// server/modules/mr11/mr11.controller.ts
 var SHOWN_CURRENCIES = ["MYR", "SGD", "AUD", "INR", "CNY", "EUR", "GBP", "AED"];
 var prisma5 = new PrismaClient();
 var ID_COLUMN = /project\s*no|^po$|^nca$|nca\s*no|stream|series|revision|^rev\b|code|year|phone|^tel|^no\.?$|^#$/i;
@@ -4774,6 +4858,50 @@ async function restoreMr11Row(req, res) {
     const next = rows.filter((d) => d.key !== key);
     if (next.length !== rows.length) await rebuildWith(next, "MR11 row restored", req.user?.id ?? null);
     return res.json({ success: true, data: next });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+function projectKeyOf(row) {
+  const no = String(row["Project No"] ?? row["Project No."] ?? "").trim().toUpperCase();
+  if (no) return `NO:${no}`;
+  const short = String(row["Short Name"] ?? row["Project Shortname"] ?? "").trim().toUpperCase();
+  return short ? `SHORT:${short}` : "";
+}
+async function getCompletedProjects(req, res) {
+  try {
+    return res.json({ success: true, data: await listCompletedProjects() });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function completeMr11Project(req, res) {
+  try {
+    const key = String(req.body?.key || "").trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: "No project given" } });
+    const run = await getLatestMr11Run(prisma5);
+    const record = (run?.records || []).find((r) => r && projectKeyOf(r) === key);
+    if (!record) return res.status(404).json({ success: false, error: { message: "That project is no longer in MR11" } });
+    const user = req.user;
+    const data = await markProjectComplete({
+      id: key,
+      projectNo: record["Project No"] ?? record["Project No."] ?? null,
+      shortName: record["Short Name"] ?? null,
+      projectName: record["Customer & Project Name"] ?? null,
+      completedById: user?.id ?? null,
+      completedBy: user?.fullName || user?.email || null,
+      completedAt: /* @__PURE__ */ new Date()
+    });
+    return res.json({ success: true, data });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function reopenMr11Project(req, res) {
+  try {
+    const key = String(req.body?.key || "").trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: "No project given" } });
+    return res.json({ success: true, data: await markProjectIncomplete(key) });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
@@ -4980,6 +5108,9 @@ router3.get("/shellplan-history", getShellplanApprovalHistory);
 router3.get("/dispatch-monthly", getDispatchMonthly);
 router3.get("/changelog", listMr11Changes);
 router3.get("/changelog/:logId", getMr11Change);
+router3.get("/completed-projects", getCompletedProjects);
+router3.post("/projects/complete", completeMr11Project);
+router3.post("/projects/incomplete", reopenMr11Project);
 router3.get("/deleted-rows", requireRoles("ADMIN" /* ADMIN */), getDeletedRows);
 router3.post("/rows/delete", requireRoles("ADMIN" /* ADMIN */), deleteMr11Row);
 router3.post("/rows/restore", requireRoles("ADMIN" /* ADMIN */), restoreMr11Row);

@@ -196,3 +196,15 @@ model WorkbookChangeLog {
 
   @@index([scope, createdAt(sort: Desc)])
 }
+
+// MR11 projects marked complete (shown in the Completed table instead of MR11); id is the
+// project key (Project No, or Short Name); created on first use by server/db/supabase.ts too
+model Mr11CompletedProject {
+  id            String   @id
+  projectNo     String?
+  shortName     String?
+  projectName   String?
+  completedById String?
+  completedBy   String?
+  completedAt   DateTime @default(now()) @db.Timestamptz(6)
+}
