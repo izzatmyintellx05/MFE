@@ -511,3 +511,70 @@ export async function fetchChangeLogsFromDb(
     }));
   });
 }
+
+let completedTableReady = false;
+
+/** MR11 rows marked complete (id is the row's _rowKey); created on first use like the change log table. */
+async function ensureCompletedTable(pool: any): Promise<void> {
+  if (completedTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "Mr11CompletedProject" (
+      "id" TEXT PRIMARY KEY,
+      "projectNo" TEXT,
+      "shortName" TEXT,
+      "projectName" TEXT,
+      "completedById" TEXT,
+      "completedBy" TEXT,
+      "completedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );`);
+  completedTableReady = true;
+}
+
+/** Every MR11 row marked complete, oldest first. Null when the database is unreachable. */
+export async function fetchCompletedProjectsFromDb(): Promise<any[] | null> {
+  return withPool(async (pool) => {
+    await ensureCompletedTable(pool);
+    const result = await pool.query('SELECT * FROM "Mr11CompletedProject" ORDER BY "completedAt" ASC;');
+    return result.rows;
+  });
+}
+
+/** Marks a row complete; returns false when no database is configured. */
+export async function saveCompletedProjectToDb(entry: Record<string, any>): Promise<boolean> {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureCompletedTable(pool);
+    await pool.query(
+      `INSERT INTO "Mr11CompletedProject"
+         ("id", "projectNo", "shortName", "projectName", "completedById", "completedBy", "completedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT ("id") DO NOTHING;`,
+      [
+        entry.id,
+        entry.projectNo ?? null,
+        entry.shortName ?? null,
+        entry.projectName ?? null,
+        entry.completedById ?? null,
+        entry.completedBy ?? null,
+        entry.completedAt ?? new Date(),
+      ]
+    );
+    return true;
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+/** Marks a row incomplete again; returns false when no database is configured. */
+export async function deleteCompletedProjectFromDb(id: string): Promise<boolean> {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureCompletedTable(pool);
+    await pool.query('DELETE FROM "Mr11CompletedProject" WHERE "id" = $1;', [id]);
+    return true;
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
