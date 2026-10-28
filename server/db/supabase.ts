@@ -514,7 +514,7 @@ export async function fetchChangeLogsFromDb(
 
 let completedTableReady = false;
 
-/** MR11 projects marked complete; created on first use like the change log table. */
+/** MR11 rows marked complete (id is the row's _rowKey); created on first use like the change log table. */
 async function ensureCompletedTable(pool: any): Promise<void> {
   if (completedTableReady) return;
   await pool.query(`
@@ -530,7 +530,7 @@ async function ensureCompletedTable(pool: any): Promise<void> {
   completedTableReady = true;
 }
 
-/** Every MR11 project marked complete, oldest first. Null when the database is unreachable. */
+/** Every MR11 row marked complete, oldest first. Null when the database is unreachable. */
 export async function fetchCompletedProjectsFromDb(): Promise<any[] | null> {
   return withPool(async (pool) => {
     await ensureCompletedTable(pool);
@@ -539,7 +539,7 @@ export async function fetchCompletedProjectsFromDb(): Promise<any[] | null> {
   });
 }
 
-/** Marks a project complete (or updates who did); returns false when no database is configured. */
+/** Marks a row complete; returns false when no database is configured. */
 export async function saveCompletedProjectToDb(entry: Record<string, any>): Promise<boolean> {
   const pool = await openPool();
   if (!pool) return false;
@@ -566,7 +566,7 @@ export async function saveCompletedProjectToDb(entry: Record<string, any>): Prom
   }
 }
 
-/** Marks a project incomplete again; returns false when no database is configured. */
+/** Marks a row incomplete again; returns false when no database is configured. */
 export async function deleteCompletedProjectFromDb(id: string): Promise<boolean> {
   const pool = await openPool();
   if (!pool) return false;

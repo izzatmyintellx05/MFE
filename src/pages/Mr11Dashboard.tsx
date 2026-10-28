@@ -35,7 +35,7 @@ import { DeletedRowsMenu, DeletedRow } from '../components/workbook/DeletedRowsM
 import { HiddenRowsMenu } from '../components/workbook/HiddenRowsMenu';
 import { useAuthStore } from '../store/auth.store';
 import { isAdmin } from '../utils/access';
-import { projectKeyOf, CompletedProject } from '../utils/mr11Completed';
+import { CompletedProject } from '../utils/mr11Completed';
 
 // A symbol on the right-hand icon bar; dark when what it opens is showing
 const RailButton: React.FC<{
@@ -97,7 +97,7 @@ export const Mr11Dashboard: React.FC = () => {
   const [hiddenGroups, setHiddenGroups] = usePersistentState<string[]>('mr11.hiddenColumnGroups', []);
   const [showRates, setShowRates] = usePersistentState<boolean>('mr11.showRatesStrip', true);
   const tableRef = useRef<HTMLDivElement>(null);
-  // The MR11 table, the Completed table (projects marked complete), or the Log tab: what changed
+  // The MR11 table, the Completed table (rows marked complete), or the Log tab: what changed
   // in MR11 each time it was rebuilt (everyone can see it)
   const [view, setView] = useState<'table' | 'completed' | 'log'>('table');
   const [logReload, setLogReload] = useState(0);
@@ -110,42 +110,44 @@ export const Mr11Dashboard: React.FC = () => {
   // The row waiting for the administrator to confirm its deletion
   const [confirmRow, setConfirmRow] = useState<any | null>(null);
 
-  // Projects marked complete, shared by every user: their rows show in the Completed table only
+  // Rows marked complete, shared by every user: they show in the Completed table only (MR11's
+  // own data, its export and the CEO dashboard still count them)
   const [completedProjects, setCompletedProjects] = useState<CompletedProject[]>([]);
   const [completeBusy, setCompleteBusy] = useState(false);
   const completedByKey = useMemo(() => new Map(completedProjects.map((p) => [p.id, p])), [completedProjects]);
-  const completedRecords = useMemo(() => records.filter((r) => completedByKey.has(projectKeyOf(r))), [records, completedByKey]);
+  const completedRecords = useMemo(() => records.filter((r) => completedByKey.has(r._rowKey)), [records, completedByKey]);
   const mainRecords = useMemo(
-    () => (completedRecords.length ? records.filter((r) => !completedByKey.has(projectKeyOf(r))) : records),
+    () => (completedRecords.length ? records.filter((r) => !completedByKey.has(r._rowKey)) : records),
     [records, completedRecords, completedByKey]
   );
-  const completedCount = useMemo(() => new Set(completedRecords.map(projectKeyOf)).size, [completedRecords]);
+  const completedCount = completedRecords.length;
 
   const fetchCompletedProjects = () =>
     api
-      .get('/mr11/completed-projects')
+      .get('/mr11/completed-rows')
       .then((res) => setCompletedProjects(res.data?.data || []))
       .catch(() => {});
 
   const handleToggleComplete = async (row: any) => {
-    const key = projectKeyOf(row);
+    const key = row?._rowKey;
     if (!key || completeBusy) return;
     setCompleteBusy(true);
     setError(null);
     try {
-      const res = await api.post(completedByKey.has(key) ? '/mr11/projects/incomplete' : '/mr11/projects/complete', { key });
+      const res = await api.post(completedByKey.has(key) ? '/mr11/rows/incomplete' : '/mr11/rows/complete', { key });
       setCompletedProjects(res.data?.data || []);
+      setLogReload((k) => k + 1);
     } catch (err: any) {
-      setError(err.response?.data?.error?.message || err.message || 'Could not update the project');
+      setError(err.response?.data?.error?.message || err.message || 'Could not update the row');
     } finally {
       setCompleteBusy(false);
     }
   };
 
   const completeTitle = (row: any) => {
-    const done = completedByKey.get(projectKeyOf(row));
-    const name = row['Short Name'] || row['Project No'] || 'this project';
-    if (!done) return `Mark ${name} complete (all its streams move to Completed)`;
+    const done = completedByKey.get(row._rowKey);
+    const name = `${row['Short Name'] || row['Project No'] || 'this row'}, stream ${row['Stream'] ?? '—'}`;
+    if (!done) return `Mark ${name} complete (moves to Completed)`;
     const when = done.completedAt ? new Date(done.completedAt).toLocaleDateString('en-GB') : '';
     const by = [done.completedBy && `by ${done.completedBy}`, when && `on ${when}`].filter(Boolean).join(' ');
     return `Mark ${name} incomplete (back to MR11)${by ? ` · completed ${by}` : ''}`;
@@ -267,7 +269,7 @@ export const Mr11Dashboard: React.FC = () => {
     [headers, columnDepartments, hiddenGroups]
   );
 
-  // The MR11 table leaves completed projects out; the Completed table shows only them
+  // The MR11 table leaves completed rows out; the Completed table shows only them
   const baseRecords = view === 'completed' ? completedRecords : mainRecords;
 
   // Hidden rows out, search, filters, then the column sort; frozen rows stay at the top or bottom
@@ -397,7 +399,7 @@ export const Mr11Dashboard: React.FC = () => {
                     key === 'log'
                       ? 'What changed in MR11, by date'
                       : key === 'completed'
-                      ? 'Projects marked complete (mark one incomplete to return it to MR11)'
+                      ? 'Rows marked complete (mark one incomplete to return it to MR11)'
                       : 'The MR11 ledger'
                   }
                   className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
@@ -564,9 +566,9 @@ export const Mr11Dashboard: React.FC = () => {
                 <FileSpreadsheet className="w-10 h-10 stroke-1 mb-2 text-stone-300" />
                 {view === 'completed' && completedRecords.length === 0 ? (
                   <>
-                    <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No completed projects</p>
+                    <p className="text-xs font-bold text-stone-700 uppercase tracking-wider">No completed rows</p>
                     <p className="text-[11px] text-stone-400 mt-0.5">
-                      Hover over a row number in the MR11 table and click the tick to mark its project complete
+                      Hover over a row number in the MR11 table and click the tick to mark that row complete
                     </p>
                   </>
                 ) : baseRecords.length > 0 ? (

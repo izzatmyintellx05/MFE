@@ -92,9 +92,9 @@ interface Mr11TableProps {
   onFreezeRow?: (row: any, at: FrozenAt | null) => void;
   /** A hide button on each row */
   onHideRow?: (row: any) => void;
-  /** A button on each row to mark its project complete, or (completedView) incomplete again */
+  /** A button on each row to mark it complete, or (completedView) incomplete again */
   onToggleComplete?: (row: any) => void;
-  /** The rows are completed projects: the button marks a project incomplete */
+  /** The rows are completed rows: the button marks a row incomplete */
   completedView?: boolean;
   /** Tooltip for a row's complete / incomplete button, e.g. who marked it complete */
   completeTitle?: (row: any) => string;
@@ -316,7 +316,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                               onClick={() => onToggleComplete(row)}
                               title={
                                 completeTitle?.(row) ||
-                                (completedView ? 'Mark this project incomplete (back to MR11)' : 'Mark this project complete (moves to Completed)')
+                                (completedView ? 'Mark this row incomplete (back to MR11)' : 'Mark this row complete (moves to Completed)')
                               }
                             >
                               {completedView ? <RotateCcw className="w-3.5 h-3.5" /> : <CheckCircle2 className="w-3.5 h-3.5" />}

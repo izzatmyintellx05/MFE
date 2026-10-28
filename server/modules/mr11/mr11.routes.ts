@@ -34,10 +34,10 @@ router.get('/dispatch-monthly', getDispatchMonthly);
 router.get('/changelog', listMr11Changes);
 router.get('/changelog/:logId', getMr11Change);
 
-// Marking projects complete (they move to the Completed table) and incomplete again
-router.get('/completed-projects', getCompletedProjects);
-router.post('/projects/complete', completeMr11Project);
-router.post('/projects/incomplete', reopenMr11Project);
+// Marking rows complete (they move to the Completed table) and incomplete again
+router.get('/completed-rows', getCompletedProjects);
+router.post('/rows/complete', completeMr11Project);
+router.post('/rows/incomplete', reopenMr11Project);
 
 // Deleting and restoring MR11 rows: administrators only
 router.get('/deleted-rows', requireRoles(RoleCode.ADMIN), getDeletedRows);

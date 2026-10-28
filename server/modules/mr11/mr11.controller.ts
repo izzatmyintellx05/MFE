@@ -14,6 +14,7 @@ import {
 import { getUsdToMyrRate, getUsdRates, getUsdRatesInfo } from '../../utils/fx';
 import { applyLivePricing, currencyCode } from './mr11.pricing';
 import { listCompletedProjects, markProjectComplete, markProjectIncomplete } from './mr11.completed';
+import { recordChange, MR11_SCOPE } from '../changelog/changelog.service';
 
 // Currencies shown with the exchange rate on the MR11 page, besides any BD prices in
 const SHOWN_CURRENCIES = ['MYR', 'SGD', 'AUD', 'INR', 'CNY', 'EUR', 'GBP', 'AED'];
@@ -204,15 +205,62 @@ export async function restoreMr11Row(req: Request, res: Response) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Completed projects (every signed-in user): shown in the Completed table instead of MR11
+// Completed rows (every signed-in user): shown in the Completed table instead of MR11, by
+// _rowKey; each change is logged in the MR11 change log
 // ---------------------------------------------------------------------------------------------
 
-// The same key as projectKeyOf in src/utils/mr11Completed.ts
-function projectKeyOf(row: Record<string, any>): string {
-  const no = String(row['Project No'] ?? row['Project No.'] ?? '').trim().toUpperCase();
-  if (no) return `NO:${no}`;
-  const short = String(row['Short Name'] ?? row['Project Shortname'] ?? '').trim().toUpperCase();
-  return short ? `SHORT:${short}` : '';
+// One MR11 change log entry for a row moved between the MR11 and Completed tables
+async function logCompletion(req: Request, run: any, key: string, completed: boolean) {
+  const records: any[] = (run?.records as any[]) || [];
+  const index = records.findIndex((r) => r?._rowKey === key);
+  if (index < 0) return;
+  const r = records[index];
+  const label = [r['Project No'], r['Short Name'], r['Stream'] != null && r['Stream'] !== '' ? `Stream ${r['Stream']}` : null]
+    .filter((v) => v != null && String(v).trim() !== '')
+    .join(' · ');
+  const user = (req as any).user;
+  try {
+    await recordChange(
+      MR11_SCOPE,
+      {
+        summary: { cellsChanged: 1, rowsAdded: 0, rowsRemoved: 0, rowsModified: 1, sheetsAdded: 0, sheetsRemoved: 0 },
+        sheets: [
+          {
+            sheet: 'MR11',
+            status: 'changed',
+            columnsAdded: [],
+            columnsRemoved: [],
+            rows: [
+              {
+                type: 'modified',
+                row: index + 1,
+                previousRow: index + 1,
+                label: label || String(r['Customer & Project Name'] ?? ''),
+                cells: [
+                  {
+                    column: '',
+                    header: 'Completion',
+                    before: completed ? 'In MR11' : 'Completed',
+                    after: completed ? 'Completed' : 'In MR11',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        truncated: false,
+      },
+      {
+        fileVersionId: run?.id ?? null,
+        previousVersionId: run?.id ?? null,
+        source: completed ? 'MR11 row marked complete' : 'MR11 row marked incomplete',
+        uploadedById: user?.id ?? null,
+        uploadedByName: user?.fullName || user?.email || null,
+      }
+    );
+  } catch (err: any) {
+    console.warn('[MR11] completion change log skipped:', err?.message || err);
+  }
 }
 
 export async function getCompletedProjects(req: Request, res: Response) {
@@ -226,11 +274,12 @@ export async function getCompletedProjects(req: Request, res: Response) {
 export async function completeMr11Project(req: Request, res: Response) {
   try {
     const key = String(req.body?.key || '').trim();
-    if (!key) return res.status(400).json({ success: false, error: { message: 'No project given' } });
+    if (!key) return res.status(400).json({ success: false, error: { message: 'No row given' } });
     const run: any = await getLatestMr11Run(prisma);
-    const record = ((run?.records as any[]) || []).find((r) => r && projectKeyOf(r) === key);
-    if (!record) return res.status(404).json({ success: false, error: { message: 'That project is no longer in MR11' } });
+    const record = ((run?.records as any[]) || []).find((r) => r?._rowKey === key);
+    if (!record) return res.status(404).json({ success: false, error: { message: 'That row is no longer in MR11' } });
     const user = (req as any).user;
+    const before = await listCompletedProjects();
     const data = await markProjectComplete({
       id: key,
       projectNo: record['Project No'] ?? record['Project No.'] ?? null,
@@ -240,6 +289,7 @@ export async function completeMr11Project(req: Request, res: Response) {
       completedBy: user?.fullName || user?.email || null,
       completedAt: new Date(),
     });
+    if (!before.some((c) => c.id === key)) await logCompletion(req, run, key, true);
     return res.json({ success: true, data });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -249,8 +299,11 @@ export async function completeMr11Project(req: Request, res: Response) {
 export async function reopenMr11Project(req: Request, res: Response) {
   try {
     const key = String(req.body?.key || '').trim();
-    if (!key) return res.status(400).json({ success: false, error: { message: 'No project given' } });
-    return res.json({ success: true, data: await markProjectIncomplete(key) });
+    if (!key) return res.status(400).json({ success: false, error: { message: 'No row given' } });
+    const before = await listCompletedProjects();
+    const data = await markProjectIncomplete(key);
+    if (before.some((c) => c.id === key)) await logCompletion(req, await getLatestMr11Run(prisma), key, false);
+    return res.json({ success: true, data });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }

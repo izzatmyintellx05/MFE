@@ -4174,14 +4174,14 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   }
   applyMonthlyForecast(derivedMr11Rows, uploadDateStr.slice(0, 7), monthStageHistory);
   const designStatesByProject = /* @__PURE__ */ new Map();
-  const projectKeyOf2 = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
+  const projectKeyOf = (r) => `${splitProjectCode(r["Project No"]).project || cleanStr(r["Short Name"])}|${normalizeFillColor(r["_fillColor"])}`;
   for (const r of derivedMr11Rows) {
-    const streams = designStatesByProject.get(projectKeyOf2(r)) || /* @__PURE__ */ new Map();
+    const streams = designStatesByProject.get(projectKeyOf(r)) || /* @__PURE__ */ new Map();
     streams.set(normalizeStream(r["Stream"]), r["_designState"] || "none");
-    designStatesByProject.set(projectKeyOf2(r), streams);
+    designStatesByProject.set(projectKeyOf(r), streams);
   }
   for (const r of derivedMr11Rows) {
-    const states = [...designStatesByProject.get(projectKeyOf2(r))?.values() || []];
+    const states = [...designStatesByProject.get(projectKeyOf(r))?.values() || []];
     const completed = states.filter((s) => s === "completed").length;
     const status = states.length > 0 && completed === states.length ? "Fully Complete" : completed > 0 ? "Partially Complete" : states.includes("ongoing") ? "Ongoing" : "To Start";
     r["Formwork Design Status"] = status;
@@ -4862,11 +4862,55 @@ async function restoreMr11Row(req, res) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
 }
-function projectKeyOf(row) {
-  const no = String(row["Project No"] ?? row["Project No."] ?? "").trim().toUpperCase();
-  if (no) return `NO:${no}`;
-  const short = String(row["Short Name"] ?? row["Project Shortname"] ?? "").trim().toUpperCase();
-  return short ? `SHORT:${short}` : "";
+async function logCompletion(req, run, key, completed) {
+  const records = run?.records || [];
+  const index = records.findIndex((r2) => r2?._rowKey === key);
+  if (index < 0) return;
+  const r = records[index];
+  const label = [r["Project No"], r["Short Name"], r["Stream"] != null && r["Stream"] !== "" ? `Stream ${r["Stream"]}` : null].filter((v) => v != null && String(v).trim() !== "").join(" \xB7 ");
+  const user = req.user;
+  try {
+    await recordChange(
+      MR11_SCOPE,
+      {
+        summary: { cellsChanged: 1, rowsAdded: 0, rowsRemoved: 0, rowsModified: 1, sheetsAdded: 0, sheetsRemoved: 0 },
+        sheets: [
+          {
+            sheet: "MR11",
+            status: "changed",
+            columnsAdded: [],
+            columnsRemoved: [],
+            rows: [
+              {
+                type: "modified",
+                row: index + 1,
+                previousRow: index + 1,
+                label: label || String(r["Customer & Project Name"] ?? ""),
+                cells: [
+                  {
+                    column: "",
+                    header: "Completion",
+                    before: completed ? "In MR11" : "Completed",
+                    after: completed ? "Completed" : "In MR11"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        truncated: false
+      },
+      {
+        fileVersionId: run?.id ?? null,
+        previousVersionId: run?.id ?? null,
+        source: completed ? "MR11 row marked complete" : "MR11 row marked incomplete",
+        uploadedById: user?.id ?? null,
+        uploadedByName: user?.fullName || user?.email || null
+      }
+    );
+  } catch (err) {
+    console.warn("[MR11] completion change log skipped:", err?.message || err);
+  }
 }
 async function getCompletedProjects(req, res) {
   try {
@@ -4878,11 +4922,12 @@ async function getCompletedProjects(req, res) {
 async function completeMr11Project(req, res) {
   try {
     const key = String(req.body?.key || "").trim();
-    if (!key) return res.status(400).json({ success: false, error: { message: "No project given" } });
+    if (!key) return res.status(400).json({ success: false, error: { message: "No row given" } });
     const run = await getLatestMr11Run(prisma5);
-    const record = (run?.records || []).find((r) => r && projectKeyOf(r) === key);
-    if (!record) return res.status(404).json({ success: false, error: { message: "That project is no longer in MR11" } });
+    const record = (run?.records || []).find((r) => r?._rowKey === key);
+    if (!record) return res.status(404).json({ success: false, error: { message: "That row is no longer in MR11" } });
     const user = req.user;
+    const before = await listCompletedProjects();
     const data = await markProjectComplete({
       id: key,
       projectNo: record["Project No"] ?? record["Project No."] ?? null,
@@ -4892,6 +4937,7 @@ async function completeMr11Project(req, res) {
       completedBy: user?.fullName || user?.email || null,
       completedAt: /* @__PURE__ */ new Date()
     });
+    if (!before.some((c) => c.id === key)) await logCompletion(req, run, key, true);
     return res.json({ success: true, data });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -4900,8 +4946,11 @@ async function completeMr11Project(req, res) {
 async function reopenMr11Project(req, res) {
   try {
     const key = String(req.body?.key || "").trim();
-    if (!key) return res.status(400).json({ success: false, error: { message: "No project given" } });
-    return res.json({ success: true, data: await markProjectIncomplete(key) });
+    if (!key) return res.status(400).json({ success: false, error: { message: "No row given" } });
+    const before = await listCompletedProjects();
+    const data = await markProjectIncomplete(key);
+    if (before.some((c) => c.id === key)) await logCompletion(req, await getLatestMr11Run(prisma5), key, false);
+    return res.json({ success: true, data });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
@@ -5108,9 +5157,9 @@ router3.get("/shellplan-history", getShellplanApprovalHistory);
 router3.get("/dispatch-monthly", getDispatchMonthly);
 router3.get("/changelog", listMr11Changes);
 router3.get("/changelog/:logId", getMr11Change);
-router3.get("/completed-projects", getCompletedProjects);
-router3.post("/projects/complete", completeMr11Project);
-router3.post("/projects/incomplete", reopenMr11Project);
+router3.get("/completed-rows", getCompletedProjects);
+router3.post("/rows/complete", completeMr11Project);
+router3.post("/rows/incomplete", reopenMr11Project);
 router3.get("/deleted-rows", requireRoles("ADMIN" /* ADMIN */), getDeletedRows);
 router3.post("/rows/delete", requireRoles("ADMIN" /* ADMIN */), deleteMr11Row);
 router3.post("/rows/restore", requireRoles("ADMIN" /* ADMIN */), restoreMr11Row);

@@ -197,8 +197,8 @@ model WorkbookChangeLog {
   @@index([scope, createdAt(sort: Desc)])
 }
 
-// MR11 projects marked complete (shown in the Completed table instead of MR11); id is the
-// project key (Project No, or Short Name); created on first use by server/db/supabase.ts too
+// MR11 rows marked complete (shown in the Completed table instead of MR11); id is the row's
+// _rowKey; created on first use by server/db/supabase.ts too
 model Mr11CompletedProject {
   id            String   @id
   projectNo     String?
