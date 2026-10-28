@@ -69,10 +69,10 @@ export function activeFilterCount(selected: Record<string, string[]>): number {
 
 /**
  * Shell Plan / Design cells are merged down a block of rows (_streamSpan on its first row).
- * When search or filters hide some rows of a block, the merge is redone over the rows still shown.
+ * When search, filters or a column sort hide or move some rows of a block, the merge is redone over the rows still shown.
  */
 export function remergeStreamBlocks(all: Record<string, any>[], shown: Record<string, any>[]): Record<string, any>[] {
-  if (shown.length === all.length) return shown;
+  if (shown.length === all.length && shown.every((row, i) => row === all[i])) return shown;
   const blockOf = new Map<Record<string, any>, number>();
   let block = -1;
   for (const row of all) {
@@ -89,4 +89,73 @@ export function remergeStreamBlocks(all: Record<string, any>[], shown: Record<st
     i += span;
   }
   return result;
+}
+
+// Sorting the MR11 table by a column header: ascending, then descending, then back to the
+// MR11 order (India, Malaysia, then every other country A-Z).
+
+export type SortDirection = 'asc' | 'desc';
+
+export interface ColumnSort {
+  column: string;
+  direction: SortDirection;
+}
+
+/** Next sort when a header is clicked: ascending, descending, then none */
+export function nextSort(current: ColumnSort | null, column: string): ColumnSort | null {
+  if (!current || current.column !== column) return { column, direction: 'asc' };
+  return current.direction === 'asc' ? { column, direction: 'desc' } : null;
+}
+
+const isBlankValue = (v: any) => {
+  const text = String(v ?? '').trim();
+  return text === '' || text === '-' || text === '—';
+};
+
+// "1,600", "$12.5", "40%" -> number; anything else -> null
+const numberOf = (v: any): number | null => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const text = String(v ?? '').trim().replace(/[,$%\s]/g, '');
+  return /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : null;
+};
+
+/**
+ * The rows ordered by one column. A column whose values are all numbers sorts by amount,
+ * any other column A-Z (dates are YYYY-MM-DD, so they sort in date order). Blank cells go
+ * last either way, and rows with the same value keep their MR11 order. Shell Plan / Design
+ * cells merged down a block take the block's value for every row of it.
+ */
+export function sortRows(
+  all: Record<string, any>[],
+  rows: Record<string, any>[],
+  sort: ColumnSort | null,
+  isMergedColumn: (column: string) => boolean
+): Record<string, any>[] {
+  if (!sort) return rows;
+  const { column, direction } = sort;
+  const leadOf = new Map<Record<string, any>, Record<string, any>>();
+  if (isMergedColumn(column)) {
+    let lead = all[0];
+    for (const row of all) {
+      if (row._isStreamLead !== false) lead = row;
+      leadOf.set(row, lead);
+    }
+  }
+  const valueOf = (row: Record<string, any>) => (leadOf.get(row) ?? row)[column];
+  const values = rows.map(valueOf);
+  const numeric = values.every((v) => isBlankValue(v) || numberOf(v) !== null);
+  const sign = direction === 'asc' ? 1 : -1;
+
+  return rows
+    .map((row, i) => ({ row, i, v: values[i] }))
+    .sort((a, b) => {
+      const aBlank = isBlankValue(a.v);
+      const bBlank = isBlankValue(b.v);
+      if (aBlank || bBlank) return aBlank === bBlank ? a.i - b.i : aBlank ? 1 : -1;
+      const diff = numeric
+        ? (numberOf(a.v) as number) - (numberOf(b.v) as number)
+        : String(a.v).trim().localeCompare(String(b.v).trim(), undefined, { numeric: true, sensitivity: 'base' });
+      return diff !== 0 ? diff * sign : a.i - b.i;
+    })
+    .map((x) => x.row);
 }

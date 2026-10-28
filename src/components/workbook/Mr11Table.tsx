@@ -1,7 +1,8 @@
 import React from 'react';
-import { Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Trash2 } from 'lucide-react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 import { formatCellNumber } from '../../utils/formatNumber';
+import { ColumnSort, nextSort } from '../../utils/mr11Filters';
 
 const DESIGN_DATE_COLUMN = 'Actual Formwork Order Completion Date';
 
@@ -28,7 +29,7 @@ const STREAM_MERGE_COLUMNS = [
   'Total Quantity Ordered m2',
 ];
 
-const isStreamMergeColumn = (colHeader: string) => {
+export const isStreamMergeColumn = (colHeader: string) => {
   return STREAM_MERGE_COLUMNS.some(
     (c) => c === colHeader || colHeader.toLowerCase().startsWith(c.toLowerCase())
   );
@@ -56,6 +57,9 @@ interface Mr11TableProps {
   zoom: number;
   /** Administrators: a delete button on each row */
   onDeleteRow?: (row: any) => void;
+  /** The column the rows are sorted by; with onSortChange, each header sorts on click */
+  sort?: ColumnSort | null;
+  onSortChange?: (sort: ColumnSort | null) => void;
 }
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
@@ -82,6 +86,8 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   highlightColumns = {},
   zoom,
   onDeleteRow,
+  sort = null,
+  onSortChange,
 }) => {
   // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
   // decimals); identifier columns such as Project No keep their digits
@@ -94,6 +100,35 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   const today = todayInMalaysia();
   const groupOf = (h: string) => headerGroups.find((g) => g.columns.some((c) => c.key === h));
   const subLabelOf = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
+  // A header's label, with a click to sort by it: ascending, descending, then the MR11 order
+  const sortLabel = (h: string, label: string) => {
+    if (!onSortChange) return label;
+    const direction = sort?.column === h ? sort.direction : null;
+    const Icon = direction === 'asc' ? ArrowUp : direction === 'desc' ? ArrowDown : ArrowUpDown;
+    return (
+      <button
+        type="button"
+        onClick={() => onSortChange(nextSort(sort, h))}
+        title={
+          direction === 'asc'
+            ? `Sorted ascending by ${label}: click to sort descending`
+            : direction === 'desc'
+            ? `Sorted descending by ${label}: click for the MR11 order`
+            : `Sort by ${label}`
+        }
+        className="group/sort inline-flex items-center gap-1 uppercase font-extrabold tracking-wider cursor-pointer hover:text-stone-900"
+      >
+        {label}
+        <Icon
+          className={`w-3 h-3 flex-shrink-0 ${
+            direction ? 'text-amber-600' : 'text-stone-300 group-hover/sort:text-stone-500'
+          }`}
+        />
+      </button>
+    );
+  };
+  const ariaSort = (h: string) =>
+    !onSortChange ? undefined : sort?.column !== h ? 'none' : sort.direction === 'asc' ? 'ascending' : 'descending';
   const groupSpan = (idx: number) => {
     const group = groupOf(headers[idx]);
     let span = 1;
@@ -129,8 +164,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                       rowSpan={2}
                       className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
                       style={highlightColumns[h] ? headerGlow(highlightColumns[h]) : undefined}
+                      aria-sort={ariaSort(h)}
                     >
-                      {h}
+                      {sortLabel(h, h)}
                       {/* Month columns: ACTUAL once the month has ended, F'CAST until then */}
                       {monthColumnKind(h, today) && (
                         <div
@@ -166,8 +202,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                     key={idx}
                     className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
                     style={highlightColumns[h] ? headerGlow(highlightColumns[h]) : undefined}
+                    aria-sort={ariaSort(h)}
                   >
-                    {subLabelOf(h)}
+                    {sortLabel(h, subLabelOf(h))}
                   </th>
                 ) : null
               )}

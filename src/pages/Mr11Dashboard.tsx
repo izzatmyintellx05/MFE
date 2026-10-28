@@ -2,12 +2,19 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { api } from '../api/client';
 import { ZoomControls } from '../components/common/ZoomControls';
 import { FullscreenButton } from '../components/common/FullscreenButton';
-import { Mr11Table, HeaderGroup } from '../components/workbook/Mr11Table';
+import { Mr11Table, HeaderGroup, isStreamMergeColumn } from '../components/workbook/Mr11Table';
 import { useDepartmentHighlight } from '../components/workbook/DepartmentHighlight';
 import { columnGroupOf, columnGroups } from '../components/workbook/ColumnGroupsMenu';
 import { Mr11SidePanel } from '../components/workbook/Mr11SidePanel';
 import { usePersistentState } from '../utils/usePersistentState';
-import { applyFilters, activeFilterCount, remergeStreamBlocks, FILTER_FIELDS } from '../utils/mr11Filters';
+import {
+  applyFilters,
+  activeFilterCount,
+  remergeStreamBlocks,
+  sortRows,
+  ColumnSort,
+  FILTER_FIELDS,
+} from '../utils/mr11Filters';
 import {
   FileSpreadsheet,
   Download,
@@ -67,6 +74,8 @@ export const Mr11Dashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filters, setFilters] = useState<Record<string, string[]>>({});
+  // Column the table is sorted by (clicking a header); none keeps the MR11 order
+  const [sort, setSort] = useState<ColumnSort | null>(null);
 
   // Remembered in this browser: zoom, the side panel, hidden column groups and the rates cards
   const [zoom, setZoom] = usePersistentState<number>('mr11.zoom', 100);
@@ -201,7 +210,7 @@ export const Mr11Dashboard: React.FC = () => {
     [headers, columnDepartments, hiddenGroups]
   );
 
-  // Search, then filters; merged Shell Plan / Design cells are redone over the rows left
+  // Search, filters, then the column sort; merged Shell Plan / Design cells are redone over the rows left
   const shownRecords = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     const searched = term
@@ -211,8 +220,9 @@ export const Mr11Dashboard: React.FC = () => {
             .some((v) => v.includes(term))
         )
       : records;
-    return remergeStreamBlocks(records, applyFilters(searched, filters));
-  }, [records, searchTerm, filters]);
+    const sorted = sortRows(records, applyFilters(searched, filters), sort, isStreamMergeColumn);
+    return remergeStreamBlocks(records, sorted);
+  }, [records, searchTerm, filters, sort]);
 
   const filterCount = activeFilterCount(filters);
   const isNarrowed = shownRecords.length !== records.length;
@@ -396,7 +406,7 @@ export const Mr11Dashboard: React.FC = () => {
             />
           ) : (
             <>
-            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0) && (
+            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0 || sort) && (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-amber-200/70 bg-amber-50/70 text-[11px] text-amber-900 flex-shrink-0">
                 {filterCount > 0 && (
                   <span className="flex items-center gap-2 min-w-0">
@@ -405,6 +415,16 @@ export const Mr11Dashboard: React.FC = () => {
                     </span>
                     <button type="button" onClick={() => setFilters({})} className="font-semibold whitespace-nowrap hover:underline cursor-pointer">
                       Clear filters
+                    </button>
+                  </span>
+                )}
+                {sort && (
+                  <span className="flex items-center gap-2 whitespace-nowrap">
+                    <span>
+                      <strong className="font-semibold">Sorted</strong> · {sort.column} ({sort.direction === 'asc' ? 'ascending' : 'descending'})
+                    </span>
+                    <button type="button" onClick={() => setSort(null)} className="font-semibold hover:underline cursor-pointer">
+                      Reset to MR11 order
                     </button>
                   </span>
                 )}
@@ -456,6 +476,8 @@ export const Mr11Dashboard: React.FC = () => {
                 numberFormats={numberFormats}
                 highlightColumns={highlightColumns}
                 zoom={zoom}
+                sort={sort}
+                onSortChange={setSort}
                 onDeleteRow={admin && !rowBusy ? setConfirmRow : undefined}
               />
             )}
