@@ -3212,15 +3212,22 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       };
       const designValues = allocate(designTarget, "design");
       const values = allocate(target, "processed");
-      let total2026 = 0;
-      let total2027 = 0;
-      for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
-        if (l.endsWith("-26")) total2026 += values[l];
-        else total2027 += values[l];
+      for (const year of ["26", "27"]) {
+        let total = 0;
+        for (const m of MONTH_LABELS) {
+          const l = `${m}-${year}`;
+          const key = monthKeyOf(l);
+          const v = ended.includes(l) && dispatched[key] !== void 0 ? dispatched[key] : bd[l] || 0;
+          row[l] = v > 0 ? Number(v.toFixed(3)) : null;
+          total += v;
+        }
+        row[`Total 20${year} m2`] = total > 0 ? Number(total.toFixed(3)) : null;
       }
-      row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
-      row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
+      const ceoMonths = {};
+      for (const l of labels) {
+        if (values[l] > 0) ceoMonths[l] = Number(values[l].toFixed(3));
+      }
+      row["_ceoMonths"] = ceoMonths;
       row["_forecastSource"] = target === null ? null : source;
       const stages = {};
       const round = (n) => n === void 0 || n === null ? null : Number(n.toFixed(3));
