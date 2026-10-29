@@ -3197,7 +3197,7 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
         for (const l of ended) {
           const key = monthKeyOf(l);
           if (dispatched[key] !== void 0) v[l] = dispatched[key];
-          else if (history[key]) v[l] = history[key][stage];
+          else if (stage && history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
         let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
@@ -3212,16 +3212,19 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       };
       const designValues = allocate(designTarget, "design");
       const values = allocate(target, "processed");
+      const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
+      const columnValues = allocate(bdForecast, null);
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
-        if (l.endsWith("-26")) total2026 += values[l];
-        else total2027 += values[l];
+        row[l] = columnValues[l] > 0 ? Number(columnValues[l].toFixed(3)) : null;
+        if (l.endsWith("-26")) total2026 += columnValues[l];
+        else total2027 += columnValues[l];
       }
       row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
       row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
-      row["_forecastSource"] = target === null ? null : source;
+      row["_forecastSource"] = bdForecast === null ? null : "BD";
+      row["_pipelineSource"] = target === null ? null : source;
       const stages = {};
       const round = (n) => n === void 0 || n === null ? null : Number(n.toFixed(3));
       for (const l of labels) {

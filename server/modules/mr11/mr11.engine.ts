@@ -713,17 +713,17 @@ type MonthStageHistory = Record<string, Record<string, { design: number; process
  * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2), and each
  * row's month-by-month pipeline for the CEO dashboard (row._monthStages).
  *
- * A row's project m2 starts as BD's forecast. Design's Total Quantity Ordered (one value for every
- * BD row of the same project, stream and fill colour, shared by their BD forecasts) replaces it
- * when higher, or when lower once every level is completed. Total Processed then replaces that
- * when higher, or when lower once every Planning row's Order Status is Completed.
+ * The month columns follow BD's forecast. A month that has ended shows the m2 dispatched in it
+ * (actual). The months after the current one keep BD's forecast, and the current month takes the
+ * rest of BD's total: so m2 forecast for a month but not dispatched moves to the next month. A row
+ * without a BD forecast gets no forecast; only its ended months fill in with what was dispatched.
  *
- * A month that has ended shows the m2 dispatched in it (actual). The months after the current
- * one keep BD's forecast, and the current month takes the rest: the project m2 less what was
- * dispatched and less those later months. So m2 forecast for a month but not dispatched moves
- * to the next month, and a change from Design or Processed lands in the current month first (a
- * cut also takes from the months after it). A row without a BD forecast gets none from Design or
- * Processed; only its ended months fill in with what was dispatched.
+ * The CEO dashboard pipeline (row._monthStages) also tracks a Design and a Processed forecast.
+ * Design's Total Quantity Ordered (one value for every BD row of the same project, stream and fill
+ * colour, shared by their BD forecasts) replaces BD's total when higher, or when lower once every
+ * level is completed. Total Processed then replaces that when higher, or when lower once every
+ * Planning row's Order Status is Completed. Those changes land in the current month first (a cut
+ * also takes from the months after it); they never change the MR11 month columns.
  */
 function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string, stageHistory: MonthStageHistory): void {
   const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
@@ -766,12 +766,12 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       // e.g. design-only types, what was last planned for them, else BD's value), later months
       // BD's, the current month the rest
       const history = (stageHistory[input.historyKey] ||= {});
-      const allocate = (projectM2: number | null, stage: 'design' | 'processed'): Record<string, number> => {
+      const allocate = (projectM2: number | null, stage: 'design' | 'processed' | null): Record<string, number> => {
         const v: Record<string, number> = { ...bd };
         for (const l of ended) {
           const key = monthKeyOf(l);
           if (dispatched[key] !== undefined) v[l] = dispatched[key];
-          else if (history[key]) v[l] = history[key][stage];
+          else if (stage && history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
         let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
@@ -786,17 +786,21 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       };
       const designValues = allocate(designTarget, 'design');
       const values = allocate(target, 'processed');
+      // MR11's month columns: BD's forecast only
+      const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
+      const columnValues = allocate(bdForecast, null);
 
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
-        if (l.endsWith('-26')) total2026 += values[l];
-        else total2027 += values[l];
+        row[l] = columnValues[l] > 0 ? Number(columnValues[l].toFixed(3)) : null;
+        if (l.endsWith('-26')) total2026 += columnValues[l];
+        else total2027 += columnValues[l];
       }
       row['Total 2026 m2'] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
       row['Total 2027 m2'] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
-      row['_forecastSource'] = target === null ? null : source;
+      row['_forecastSource'] = bdForecast === null ? null : 'BD';
+      row['_pipelineSource'] = target === null ? null : source;
 
       // Pipeline per month. A month still open records its Design and Processed forecast; once
       // it has ended, the last record stands (what was planned for it, against what was dispatched)
