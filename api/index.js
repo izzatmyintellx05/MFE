@@ -3239,6 +3239,17 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       };
       const designValues = allocate(designTarget, "design");
       const values = allocate(target, "processed");
+      for (const year of MR11_YEARS) {
+        let total = 0;
+        for (const m of MONTH_LABELS) {
+          const l = `${m}-${String(year).slice(-2)}`;
+          const key = monthKeyOf(l);
+          const v = ended.includes(l) && dispatched[key] !== void 0 ? dispatched[key] : bd[l] || 0;
+          row[l] = v > 0 ? Number(v.toFixed(3)) : null;
+          total += v;
+        }
+        row[`Total ${year} m2`] = total > 0 ? Number(total.toFixed(3)) : null;
+      }
       const ceoMonths = {};
       for (const l of labels) {
         if (values[l] > 0) ceoMonths[l] = Number(values[l].toFixed(3));
