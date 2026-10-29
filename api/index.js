@@ -3212,15 +3212,11 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       };
       const designValues = allocate(designTarget, "design");
       const values = allocate(target, "processed");
-      let total2026 = 0;
-      let total2027 = 0;
+      const ceoMonths = {};
       for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
-        if (l.endsWith("-26")) total2026 += values[l];
-        else total2027 += values[l];
+        if (values[l] > 0) ceoMonths[l] = Number(values[l].toFixed(3));
       }
-      row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
-      row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
+      row["_ceoMonths"] = ceoMonths;
       row["_forecastSource"] = target === null ? null : source;
       const stages = {};
       const round = (n) => n === void 0 || n === null ? null : Number(n.toFixed(3));
