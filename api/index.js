@@ -2016,7 +2016,22 @@ var ORDERED_HEADER_LIST = [
   "Dispatch Date",
   "Formwork Quantity Sailed (m2)",
   "ETD/ATD",
-  // --- 2026 Monthly Breakdown & Total (BD ACTUAL / F'CAST month columns) ---
+  // --- Monthly Breakdown & Total per year, 2025 to 2028 (BD ACTUAL / F'CAST month columns) ---
+  // --- 2025 ---
+  "Jan-25",
+  "Feb-25",
+  "Mar-25",
+  "Apr-25",
+  "May-25",
+  "Jun-25",
+  "Jul-25",
+  "Aug-25",
+  "Sep-25",
+  "Oct-25",
+  "Nov-25",
+  "Dec-25",
+  "Total 2025 m2",
+  // --- 2026 ---
   "Jan-26",
   "Feb-26",
   "Mar-26",
@@ -2030,7 +2045,7 @@ var ORDERED_HEADER_LIST = [
   "Nov-26",
   "Dec-26",
   "Total 2026 m2",
-  // --- 2027 Monthly Breakdown & Total ---
+  // --- 2027 ---
   "Jan-27",
   "Feb-27",
   "Mar-27",
@@ -2043,7 +2058,21 @@ var ORDERED_HEADER_LIST = [
   "Oct-27",
   "Nov-27",
   "Dec-27",
-  "Total 2027 m2"
+  "Total 2027 m2",
+  // --- 2028 ---
+  "Jan-28",
+  "Feb-28",
+  "Mar-28",
+  "Apr-28",
+  "May-28",
+  "Jun-28",
+  "Jul-28",
+  "Aug-28",
+  "Sep-28",
+  "Oct-28",
+  "Nov-28",
+  "Dec-28",
+  "Total 2028 m2"
 ];
 var MR11_ORDERED_COLUMNS = [
   // BD columns A..AF, by the header names in the BD workbook. Each is matched by its whole
@@ -3098,6 +3127,8 @@ function sheetToRecordsWithStyles(sheet) {
   return { rows, detectedSeries, headers };
 }
 var MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var MR11_YEARS = [2025, 2026, 2027, 2028];
+var MR11_MONTH_COLUMNS = MR11_YEARS.flatMap((y) => MONTH_LABELS.map((m) => `${m}-${String(y).slice(-2)}`));
 var MONTH_NAME_INDEX = {
   jan: 0,
   feb: 1,
@@ -3162,7 +3193,7 @@ function findCellValue(row, candidateHeader) {
   return null;
 }
 function applyMonthlyForecast(rows, currentMonth, stageHistory) {
-  const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
+  const labels = MR11_MONTH_COLUMNS;
   const monthKeyOf = (label) => `20${label.slice(-2)}-${String(MONTH_LABELS.indexOf(label.slice(0, 3)) + 1).padStart(2, "0")}`;
   const sum = (v) => labels.reduce((t, l) => t + (v[l] || 0), 0);
   const ended = labels.filter((l) => monthKeyOf(l) < currentMonth);
@@ -3200,14 +3231,10 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
           else if (history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
-        let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
-        v[open[0]] = Math.max(0, current);
-        for (const l of open.slice(1)) {
-          if (current >= 0) break;
-          const cut = Math.min(v[l], -current);
-          v[l] -= cut;
-          current += cut;
-        }
+        const remaining = Math.max(0, projectM2 - ended.reduce((t, l) => t + v[l], 0));
+        const bdOpen = open.reduce((t, l) => t + (bd[l] || 0), 0);
+        for (const l of open) v[l] = bdOpen > 0 ? remaining * (bd[l] || 0) / bdOpen : 0;
+        if (bdOpen <= 0) v[open[0]] = remaining;
         return v;
       };
       const designValues = allocate(designTarget, "design");
@@ -3749,27 +3776,21 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     outRow["_atdDate"] = latestOf(atdByDate);
     outRow["_atdColor"] = null;
     outRow["_cellColors"] = cellColors;
-    const MONTH_COLUMNS_26 = MONTH_LABELS.map((m) => `${m}-26`);
-    const MONTH_COLUMNS_27 = MONTH_LABELS.map((m) => `${m}-27`);
     const monthValues = {};
     for (const { header, label } of bdMonthColumns) {
       const v = parseNumeric(bdData[header]);
       if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
     }
-    let sum2026 = 0;
-    let sum2027 = 0;
-    MONTH_COLUMNS_26.forEach((mCol) => {
-      const val = monthValues[mCol] || 0;
-      outRow[mCol] = val > 0 ? val : null;
-      sum2026 += val;
-    });
-    outRow["Total 2026 m2"] = sum2026 > 0 ? sum2026 : null;
-    MONTH_COLUMNS_27.forEach((mCol) => {
-      const val = monthValues[mCol] || 0;
-      outRow[mCol] = val > 0 ? val : null;
-      sum2027 += val;
-    });
-    outRow["Total 2027 m2"] = sum2027 > 0 ? sum2027 : null;
+    for (const year of MR11_YEARS) {
+      let sum = 0;
+      for (const m of MONTH_LABELS) {
+        const mCol = `${m}-${String(year).slice(-2)}`;
+        const val = monthValues[mCol] || 0;
+        outRow[mCol] = val > 0 ? val : null;
+        sum += val;
+      }
+      outRow[`Total ${year} m2`] = sum > 0 ? sum : null;
+    }
     const designCandidates = designRows.filter((dRow) => {
       const dProjNo = cleanStr(findCellValue(dRow.data, "Project No") || findCellValue(dRow.data, "Project No.") || dRow.rawCells?.[0]);
       const dProjName = cleanStr(findCellValue(dRow.data, "Project Name") || findCellValue(dRow.data, "Customer & Project Name") || dRow.rawCells?.[1]);
@@ -4058,7 +4079,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       outRow["_atdColor"] = null;
     }
     const bdMonthValues = {};
-    for (const label of [...MONTH_COLUMNS_26, ...MONTH_COLUMNS_27]) bdMonthValues[label] = monthValues[label] || 0;
+    for (const label of MR11_MONTH_COLUMNS) bdMonthValues[label] = monthValues[label] || 0;
     const orderStatuses = planningMatches.map((p) => findCellValue(p.data, "Order Status")).filter((v) => v !== null && v !== void 0 && String(v).trim() !== "");
     const currentMonth = uploadDateStr.slice(0, 7);
     const dispatchedInMonth = {};
