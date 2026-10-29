@@ -159,9 +159,15 @@ export function stageTotals(rows: any[], monthKey: string | null): StageTotals {
   return totals;
 }
 
-// Sum of a month column across all MR11 rows
+// A row's m2 for a month on the CEO dashboard: the forecast / actual worked out with the other
+// departments (row._ceoMonths); MR11 runs built before it fall back to the BD month column
+export function ceoMonthM2(row: any, monthKey: string): number {
+  return row?._ceoMonths ? toNumber(row._ceoMonths[monthKey]) : toNumber(row?.[monthKey]);
+}
+
+// Sum of a month across all MR11 rows
 export function monthValue(rows: any[], monthKey: string): number {
-  return rows.reduce((acc, r) => acc + toNumber(r?.[monthKey]), 0);
+  return rows.reduce((acc, r) => acc + ceoMonthM2(r, monthKey), 0);
 }
 
 export function monthlySeries(rows: any[], months: MonthColumn[], today: Date): MonthPoint[] {
@@ -258,7 +264,7 @@ export function averageSellingPrice(
   for (const r of rows) {
     const price = toNumber(r?.[column]);
     if (price <= 0) continue;
-    const m2 = monthKey ? toNumber(r?.[monthKey]) : months.reduce((a, m) => a + toNumber(r?.[m.key]), 0);
+    const m2 = monthKey ? ceoMonthM2(r, monthKey) : months.reduce((a, m) => a + ceoMonthM2(r, m.key), 0);
     plain.push(price);
     if (m2 > 0) {
       weighted += price * m2;

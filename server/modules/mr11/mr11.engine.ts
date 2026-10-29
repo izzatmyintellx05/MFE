@@ -710,8 +710,9 @@ function findCellValue(row: Record<string, any>, candidateHeader: string): any {
 type MonthStageHistory = Record<string, Record<string, { design: number; processed: number }>>;
 
 /**
- * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2), and each
- * row's month-by-month pipeline for the CEO dashboard (row._monthStages).
+ * The CEO dashboard's monthly forecast / actual (row._ceoMonths, Jan-26 .. Dec-27), and each
+ * row's month-by-month pipeline for it (row._monthStages). MR11's own month columns and Total
+ * 2026 / 2027 m2 stay as BD's file has them; only the CEO dashboard works them out as below.
  *
  * A row's project m2 starts as BD's forecast. Design's Total Quantity Ordered (one value for every
  * BD row of the same project, stream and fill colour, shared by their BD forecasts) replaces it
@@ -787,15 +788,12 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       const designValues = allocate(designTarget, 'design');
       const values = allocate(target, 'processed');
 
-      let total2026 = 0;
-      let total2027 = 0;
+      // CEO dashboard only; the MR11 month columns keep BD's values
+      const ceoMonths: Record<string, number> = {};
       for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
-        if (l.endsWith('-26')) total2026 += values[l];
-        else total2027 += values[l];
+        if (values[l] > 0) ceoMonths[l] = Number(values[l].toFixed(3));
       }
-      row['Total 2026 m2'] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
-      row['Total 2027 m2'] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
+      row['_ceoMonths'] = ceoMonths;
       row['_forecastSource'] = target === null ? null : source;
 
       // Pipeline per month. A month still open records its Design and Processed forecast; once
