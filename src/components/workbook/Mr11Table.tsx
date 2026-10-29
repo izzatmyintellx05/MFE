@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, ArrowUpToLine, EyeOff, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, ArrowUpToLine, ChevronLeft, ChevronRight, EyeOff, Trash2 } from 'lucide-react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 import { formatCellNumber } from '../../utils/formatNumber';
 import { ColumnSort, FrozenAt, nextSort } from '../../utils/mr11Filters';
@@ -92,6 +92,9 @@ interface Mr11TableProps {
   onFreezeRow?: (row: any, at: FrozenAt | null) => void;
   /** A hide button on each row */
   onHideRow?: (row: any) => void;
+  /** Years whose month columns are open; with onToggleYear, each "Total 2026 m2" header opens or closes its year */
+  expandedYears?: number[];
+  onToggleYear?: (year: number) => void;
 }
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
@@ -123,6 +126,8 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   frozenRows = {},
   onFreezeRow,
   onHideRow,
+  expandedYears = [],
+  onToggleYear,
 }) => {
   // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
   // decimals); identifier columns such as Project No keep their digits
@@ -159,6 +164,26 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
             direction ? 'text-amber-600' : 'text-stone-300 group-hover/sort:text-stone-500'
           }`}
         />
+      </button>
+    );
+  };
+  // A year's Total header: a button that shows or hides that year's month columns
+  const yearToggle = (h: string) => {
+    const m = /^Total (\d{4}) m2$/.exec(h);
+    if (!m || !onToggleYear) return null;
+    const year = parseInt(m[1], 10);
+    const open = expandedYears.includes(year);
+    const Icon = open ? ChevronRight : ChevronLeft;
+    return (
+      <button
+        type="button"
+        onClick={() => onToggleYear(year)}
+        aria-expanded={open}
+        title={open ? `Hide the ${year} months` : `Show the ${year} months`}
+        className="mt-1 flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-stone-200 bg-white text-[9px] font-mono font-bold normal-case tracking-normal text-stone-500 hover:text-stone-900 hover:border-stone-400 cursor-pointer"
+      >
+        <Icon className="w-3 h-3" />
+        {open ? 'Hide months' : 'Show months'}
       </button>
     );
   };
@@ -202,6 +227,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                       aria-sort={ariaSort(h)}
                     >
                       {sortLabel(h, h)}
+                      {yearToggle(h)}
                       {/* Month columns: ACTUAL once the month has ended, F'CAST until then */}
                       {monthColumnKind(h, today) && (
                         <div

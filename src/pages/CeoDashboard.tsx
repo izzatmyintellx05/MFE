@@ -47,6 +47,7 @@ import {
   filterByRegion,
   firstRowPerProject,
   monthColumns,
+  monthsInUse,
   monthlySeries,
   regionOf,
   stageTotals,
@@ -255,7 +256,7 @@ export const CeoDashboard: React.FC = () => {
   }, [showRawData]);
 
   const today = useMemo(() => new Date(), []);
-  const months = useMemo(() => monthColumns(headers), [headers]);
+  const months = useMemo(() => monthsInUse(records, monthColumns(headers), today), [records, headers, today]);
   const selectedMonth = month === 'ALL' ? null : months.find((m) => m.key === month) || null;
   const monthKey = selectedMonth?.key ?? null;
 

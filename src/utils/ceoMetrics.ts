@@ -77,7 +77,7 @@ export function projectKey(row: any): string {
   ).trim();
 }
 
-// Month columns present in the MR11 headers ("Jan-26" ... "Dec-27"), in header order
+// Month columns present in the MR11 headers ("Jan-25" ... "Dec-28"), in header order
 export function monthColumns(headers: string[]): MonthColumn[] {
   const result: MonthColumn[] = [];
   for (const h of headers) {
@@ -168,6 +168,16 @@ export function ceoMonthM2(row: any, monthKey: string): number {
 // Sum of a month across all MR11 rows
 export function monthValue(rows: any[], monthKey: string): number {
   return rows.reduce((acc, r) => acc + ceoMonthM2(r, monthKey), 0);
+}
+
+// The month columns of the years that hold some m2 in any row, and always the current year, so
+// a year nobody delivers in does not fill the chart with default forecasts
+export function monthsInUse(rows: any[], months: MonthColumn[], today: Date): MonthColumn[] {
+  const years = new Set<number>([today.getFullYear()]);
+  for (const col of months) {
+    if (!years.has(col.year) && rows.some((r) => ceoMonthM2(r, col.key) > 0)) years.add(col.year);
+  }
+  return months.filter((col) => years.has(col.year));
 }
 
 export function monthlySeries(rows: any[], months: MonthColumn[], today: Date): MonthPoint[] {

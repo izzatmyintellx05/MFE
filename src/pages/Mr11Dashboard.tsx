@@ -93,6 +93,10 @@ export const Mr11Dashboard: React.FC = () => {
   const [zoom, setZoom] = usePersistentState<number>('mr11.zoom', 100);
   const [panelOpen, setPanelOpen] = usePersistentState<boolean>('mr11.sidePanelOpen', true);
   const [hiddenGroups, setHiddenGroups] = usePersistentState<string[]>('mr11.hiddenColumnGroups', []);
+  // Years whose month columns are open; a closed year shows just its Total column (current year opens first)
+  const [expandedYears, setExpandedYears] = usePersistentState<number[]>('mr11.expandedYears', [new Date().getFullYear()]);
+  const toggleYear = (year: number) =>
+    setExpandedYears((years) => (years.includes(year) ? years.filter((y) => y !== year) : [...years, year]));
   const [showRates, setShowRates] = usePersistentState<boolean>('mr11.showRatesStrip', true);
   const tableRef = useRef<HTMLDivElement>(null);
   // The MR11 table, or the Log tab: what changed in MR11 each time it was rebuilt (everyone can see it)
@@ -217,9 +221,11 @@ export const Mr11Dashboard: React.FC = () => {
     () =>
       headers.filter((h) => {
         const group = columnGroupOf(h, columnDepartments);
-        return !group || !hiddenGroups.includes(group);
+        if (group && hiddenGroups.includes(group)) return false;
+        const month = /^[A-Z][a-z]{2}-(\d{2})$/.exec(h);
+        return !month || expandedYears.includes(2000 + parseInt(month[1], 10));
       }),
-    [headers, columnDepartments, hiddenGroups]
+    [headers, columnDepartments, hiddenGroups, expandedYears]
   );
 
   // Hidden rows out, search, filters, then the column sort; frozen rows stay at the top or bottom
@@ -536,6 +542,8 @@ export const Mr11Dashboard: React.FC = () => {
                 zoom={zoom}
                 sort={sort}
                 onSortChange={setSort}
+                expandedYears={expandedYears}
+                onToggleYear={toggleYear}
                 frozenRows={frozenRows}
                 onFreezeRow={freezeRow}
                 onHideRow={hideRow}

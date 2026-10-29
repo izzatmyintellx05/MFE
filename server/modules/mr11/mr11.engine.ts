@@ -640,6 +640,9 @@ export function sheetToRecordsWithStyles(sheet: FortuneSheet): {
 }
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// The years MR11 has month columns for ("Jan-25" .. "Dec-28", with a Total per year)
+const MR11_YEARS = [2025, 2026, 2027, 2028];
+const MR11_MONTH_COLUMNS = MR11_YEARS.flatMap((y) => MONTH_LABELS.map((m) => `${m}-${String(y).slice(-2)}`));
 // English and Malay month abbreviations (Mac = March, Mei = May, Ogo = August, Okt = October, Dis = December)
 const MONTH_NAME_INDEX: Record<string, number> = {
   jan: 0, feb: 1, mar: 2, mac: 2, apr: 3, may: 4, mei: 4, jun: 5, jul: 6,
@@ -710,24 +713,24 @@ function findCellValue(row: Record<string, any>, candidateHeader: string): any {
 type MonthStageHistory = Record<string, Record<string, { design: number; processed: number }>>;
 
 /**
- * The CEO dashboard's monthly forecast / actual (row._ceoMonths, Jan-26 .. Dec-27), and each
- * row's month-by-month pipeline for it (row._monthStages). MR11's own month columns and Total
- * 2026 / 2027 m2 stay as BD's file has them; only the CEO dashboard works them out as below.
+ * The CEO dashboard's monthly forecast / actual (row._ceoMonths, Jan-25 .. Dec-28), and each
+ * row's month-by-month pipeline for it (row._monthStages). MR11's own month columns and yearly
+ * totals stay as BD's file has them; only the CEO dashboard works them out as below.
  *
  * A row's project m2 starts as BD's forecast. Design's Total Quantity Ordered (one value for every
  * BD row of the same project, stream and fill colour, shared by their BD forecasts) replaces it
  * when higher, or when lower once every level is completed. Total Processed then replaces that
  * when higher, or when lower once every Planning row's Order Status is Completed.
  *
- * A month that has ended shows the m2 dispatched in it (actual). The months after the current
- * one keep BD's forecast, and the current month takes the rest: the project m2 less what was
- * dispatched and less those later months. So m2 forecast for a month but not dispatched moves
- * to the next month, and a change from Design or Processed lands in the current month first (a
- * cut also takes from the months after it). A row without a BD forecast gets none from Design or
- * Processed; only its ended months fill in with what was dispatched.
+ * A month that has ended shows the m2 dispatched in it (actual). What is left of the project m2
+ * after the ended months is spread over the current and later months in proportion to BD's
+ * forecast for them, whichever year they fall in; when BD forecasts none of them, the current
+ * month takes it all. So m2 forecast for a month but not dispatched, and a change from Design
+ * or Processed, follow BD's own delivery profile. A row without a BD forecast gets none from
+ * Design or Processed; only its ended months fill in with what was dispatched.
  */
 function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string, stageHistory: MonthStageHistory): void {
-  const labels = [...MONTH_LABELS.map((m) => `${m}-26`), ...MONTH_LABELS.map((m) => `${m}-27`)];
+  const labels = MR11_MONTH_COLUMNS;
   const monthKeyOf = (label: string) => `20${label.slice(-2)}-${String(MONTH_LABELS.indexOf(label.slice(0, 3)) + 1).padStart(2, '0')}`;
   const sum = (v: Record<string, number>) => labels.reduce((t, l) => t + (v[l] || 0), 0);
   const ended = labels.filter((l) => monthKeyOf(l) < currentMonth);
@@ -764,8 +767,8 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       }
 
       // Months for a project m2: ended months are what was dispatched (without a dispatch record,
-      // e.g. design-only types, what was last planned for them, else BD's value), later months
-      // BD's, the current month the rest
+      // e.g. design-only types, what was last planned for them, else BD's value); the rest is
+      // spread over the open months as BD forecasts them
       const history = (stageHistory[input.historyKey] ||= {});
       const allocate = (projectM2: number | null, stage: 'design' | 'processed'): Record<string, number> => {
         const v: Record<string, number> = { ...bd };
@@ -775,14 +778,10 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
           else if (history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
-        let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
-        v[open[0]] = Math.max(0, current);
-        for (const l of open.slice(1)) {
-          if (current >= 0) break;
-          const cut = Math.min(v[l], -current);
-          v[l] -= cut;
-          current += cut;
-        }
+        const remaining = Math.max(0, projectM2 - ended.reduce((t, l) => t + v[l], 0));
+        const bdOpen = open.reduce((t, l) => t + (bd[l] || 0), 0);
+        for (const l of open) v[l] = bdOpen > 0 ? (remaining * (bd[l] || 0)) / bdOpen : 0;
+        if (bdOpen <= 0) v[open[0]] = remaining;
         return v;
       };
       const designValues = allocate(designTarget, 'design');
@@ -1552,32 +1551,23 @@ export async function executeMr11Pipeline(
 
     outRow['_cellColors'] = cellColors;
 
-    // Monthly breakdown (from the BD row's own ACTUAL / F'CAST month columns)
-    const MONTH_COLUMNS_26 = MONTH_LABELS.map((m) => `${m}-26`);
-    const MONTH_COLUMNS_27 = MONTH_LABELS.map((m) => `${m}-27`);
-
+    // Monthly breakdown (from the BD row's own ACTUAL / F'CAST month columns), with a total per year
     const monthValues: Record<string, number> = {};
     for (const { header, label } of bdMonthColumns) {
       const v = parseNumeric(bdData[header]);
       if (v > 0) monthValues[label] = (monthValues[label] || 0) + v;
     }
 
-    let sum2026 = 0;
-    let sum2027 = 0;
-
-    MONTH_COLUMNS_26.forEach((mCol) => {
-      const val = monthValues[mCol] || 0;
-      outRow[mCol] = val > 0 ? val : null;
-      sum2026 += val;
-    });
-    outRow['Total 2026 m2'] = sum2026 > 0 ? sum2026 : null;
-
-    MONTH_COLUMNS_27.forEach((mCol) => {
-      const val = monthValues[mCol] || 0;
-      outRow[mCol] = val > 0 ? val : null;
-      sum2027 += val;
-    });
-    outRow['Total 2027 m2'] = sum2027 > 0 ? sum2027 : null;
+    for (const year of MR11_YEARS) {
+      let sum = 0;
+      for (const m of MONTH_LABELS) {
+        const mCol = `${m}-${String(year).slice(-2)}`;
+        const val = monthValues[mCol] || 0;
+        outRow[mCol] = val > 0 ? val : null;
+        sum += val;
+      }
+      outRow[`Total ${year} m2`] = sum > 0 ? sum : null;
+    }
 
     // ------------------------------------------------------------------------
     // DESIGN MAPPINGS (same project & stream, then the BD row's fill colour block)
@@ -2021,7 +2011,7 @@ export async function executeMr11Pipeline(
     // MONTHLY FORECAST / ACTUAL: what each row brings; worked out once every row is built
     // ------------------------------------------------------------------------
     const bdMonthValues: Record<string, number> = {};
-    for (const label of [...MONTH_COLUMNS_26, ...MONTH_COLUMNS_27]) bdMonthValues[label] = monthValues[label] || 0;
+    for (const label of MR11_MONTH_COLUMNS) bdMonthValues[label] = monthValues[label] || 0;
     const orderStatuses = planningMatches
       .map((p) => findCellValue(p.data, 'Order Status'))
       .filter((v) => v !== null && v !== undefined && String(v).trim() !== '');
