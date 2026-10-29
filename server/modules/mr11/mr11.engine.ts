@@ -710,9 +710,12 @@ function findCellValue(row: Record<string, any>, candidateHeader: string): any {
 type MonthStageHistory = Record<string, Record<string, { design: number; processed: number }>>;
 
 /**
- * The CEO dashboard's monthly forecast / actual (row._ceoMonths, Jan-26 .. Dec-27), and each
- * row's month-by-month pipeline for it (row._monthStages). MR11's own month columns and Total
- * 2026 / 2027 m2 stay as BD's file has them; only the CEO dashboard works them out as below.
+ * MR11's month columns (Jan-26 .. Dec-27) and Total 2026 / 2027 m2: a month still to come keeps
+ * BD's forecast; once it has ended it is actual, the m2 dispatched in it (BD's value when Dispatch
+ * has no record for the month, e.g. design-only types). Design and Processed never change them.
+ *
+ * The CEO dashboard's monthly forecast / actual (row._ceoMonths), and each row's month-by-month
+ * pipeline for it (row._monthStages), are worked out as below.
  *
  * A row's project m2 starts as BD's forecast. Design's Total Quantity Ordered (one value for every
  * BD row of the same project, stream and fill colour, shared by their BD forecasts) replaces it
@@ -788,7 +791,20 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       const designValues = allocate(designTarget, 'design');
       const values = allocate(target, 'processed');
 
-      // CEO dashboard only; the MR11 month columns keep BD's values
+      // MR11: BD's forecast, and what was dispatched once a month has ended
+      for (const year of ['26', '27']) {
+        let total = 0;
+        for (const m of MONTH_LABELS) {
+          const l = `${m}-${year}`;
+          const key = monthKeyOf(l);
+          const v = ended.includes(l) && dispatched[key] !== undefined ? dispatched[key] : bd[l] || 0;
+          row[l] = v > 0 ? Number(v.toFixed(3)) : null;
+          total += v;
+        }
+        row[`Total 20${year} m2`] = total > 0 ? Number(total.toFixed(3)) : null;
+      }
+
+      // CEO dashboard only
       const ceoMonths: Record<string, number> = {};
       for (const l of labels) {
         if (values[l] > 0) ceoMonths[l] = Number(values[l].toFixed(3));
