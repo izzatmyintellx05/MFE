@@ -435,15 +435,14 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
       }
     });
 
-    // Completion dates coloured by status (dark green done, yellow done but ahead, red not done)
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+    // Completion dates coloured by status (dark green done, red not done)
     const designDateCol = headers.indexOf('Actual Formwork Order Completion Date') + 1;
     if (designDateCol > 0) {
       records.forEach((row, i) => {
         const parts: { level: string | null; date: string; completed: boolean }[] = row['_designDateParts'] || [];
         if (parts.length === 0) return;
         const color = (p: { date: string; completed: boolean }) =>
-          !p.completed ? 'FFDC2626' : p.date <= today ? 'FF166534' : 'FFA16207';
+          p.completed ? 'FF166534' : 'FFDC2626';
         const cell = worksheet.getCell(i + 3, designDateCol);
         cell.value = {
           richText: parts.flatMap((p, j) => [

@@ -5069,13 +5069,12 @@ ${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
         });
       }
     });
-    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(/* @__PURE__ */ new Date());
     const designDateCol = headers.indexOf("Actual Formwork Order Completion Date") + 1;
     if (designDateCol > 0) {
       records.forEach((row, i) => {
         const parts = row["_designDateParts"] || [];
         if (parts.length === 0) return;
-        const color = (p) => !p.completed ? "FFDC2626" : p.date <= today ? "FF166534" : "FFA16207";
+        const color = (p) => p.completed ? "FF166534" : "FFDC2626";
         const cell = worksheet.getCell(i + 3, designDateCol);
         cell.value = {
           richText: parts.flatMap((p, j) => [

@@ -1,7 +1,6 @@
-// Colour of an Actual Formwork Order Completion Date, by its level's status and today:
-//   completed and the date has passed   -> dark green
-//   completed and the date is still ahead -> yellow
-//   not completed                        -> red
+// Colour of an Actual Formwork Order Completion Date, by its level's status:
+//   completed     -> dark green (whether the date has passed or is still ahead)
+//   not completed -> red
 export interface DesignDatePart {
   level: string | null;
   date: string;
@@ -10,7 +9,6 @@ export interface DesignDatePart {
 
 export const DESIGN_DATE_COLORS = {
   done: '#166534',
-  doneAhead: '#A16207',
   notDone: '#DC2626',
 };
 
@@ -30,7 +28,6 @@ export function monthColumnKind(header: string, today = todayInMalaysia()): 'ACT
   return key < today.slice(0, 7) ? 'ACTUAL' : "F'CAST";
 }
 
-export function designDateColor(part: DesignDatePart, today = todayInMalaysia()): string {
-  if (!part.completed) return DESIGN_DATE_COLORS.notDone;
-  return part.date <= today ? DESIGN_DATE_COLORS.done : DESIGN_DATE_COLORS.doneAhead;
+export function designDateColor(part: DesignDatePart, _today = todayInMalaysia()): string {
+  return part.completed ? DESIGN_DATE_COLORS.done : DESIGN_DATE_COLORS.notDone;
 }
