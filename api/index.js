@@ -3262,7 +3262,7 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
         for (const l of ended) {
           const key = monthKeyOf(l);
           if (dispatched[key] !== void 0) v[l] = dispatched[key];
-          else if (stage && history[key]) v[l] = history[key][stage];
+          else if (history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
         let current = projectM2 - (wholeProject ? dispatchedBefore : 0) - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
@@ -3278,7 +3278,7 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       const designValues = allocate(designTarget, "design", designApplies);
       const values = allocate(target, "processed", source !== "BD");
       const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
-      const columnValues = allocate(null, null, false);
+      const columnValues = { ...bd };
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
