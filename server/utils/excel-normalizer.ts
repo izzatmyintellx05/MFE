@@ -16,6 +16,12 @@ export interface FortuneCell {
     tb?: number;
     rowspan?: number;
     colspan?: number;
+    // Colours from the sheet's conditional formatting (e.g. a status cell green when
+    // "Approved"); shown over the cell's own colours, kept apart so they never change how
+    // MR11 reads a row's fill colour
+    cbg?: string;
+    cfc?: string;
+    cbl?: number;
   };
 }
 
@@ -109,6 +115,79 @@ function colorHex(color: any, theme: string[]): string | undefined {
   return undefined;
 }
 
+interface ConditionalColour {
+  ranges: { r1: number; c1: number; r2: number; c2: number }[];
+  text: string;
+  priority: number;
+  bg?: string;
+  fc?: string;
+  bold?: boolean;
+}
+
+// "F2:F35 Q2:Q35" -> 0-based cell ranges
+function parseRanges(ref: string): ConditionalColour['ranges'] {
+  const toCell = (a: string) => {
+    const m = /^\$?([A-Z]+)\$?(\d+)$/i.exec(a.trim());
+    if (!m) return null;
+    const c = m[1].toUpperCase().split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+    return { r: Number(m[2]) - 1, c };
+  };
+  return String(ref || '')
+    .split(/\s+/)
+    .map((part) => {
+      const [a, b] = part.split(':');
+      const start = toCell(a);
+      const end = toCell(b || a);
+      return start && end ? { r1: start.r, c1: start.c, r2: end.r, c2: end.c } : null;
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+}
+
+// The sheet's "cell equals <text>" and "cell contains <text>" colour rules, such as a status
+// column coloured by its value; rules built on formulas are left out
+function readConditionalColours(worksheet: ExcelJS.Worksheet, theme: string[]): ConditionalColour[] {
+  const rules: ConditionalColour[] = [];
+  for (const cf of ((worksheet as any).conditionalFormattings || []) as any[]) {
+    const ranges = parseRanges(cf?.ref);
+    if (ranges.length === 0) continue;
+    for (const rule of cf.rules || []) {
+      let text: string | null = null;
+      if (rule.type === 'cellIs' && rule.operator === 'equal') {
+        const m = /^"(.*)"$/s.exec(String(rule.formulae?.[0] ?? '').trim());
+        if (m) text = m[1].replace(/""/g, '"');
+      } else if (rule.type === 'containsText' && rule.operator === 'containsText' && rule.text) {
+        text = String(rule.text);
+      }
+      if (text === null) continue;
+      const style = rule.style || {};
+      const fill = style.fill;
+      const bg = fill ? colorHex(fill.bgColor, theme) || colorHex(fill.fgColor, theme) : undefined;
+      const fc = colorHex(style.font?.color, theme);
+      if (!bg && !fc) continue;
+      rules.push({
+        ranges,
+        text: (rule.type === 'containsText' ? '*' : '') + text.trim().toLowerCase(),
+        priority: Number(rule.priority) || 0,
+        bg,
+        fc,
+        bold: style.font?.bold === true,
+      });
+    }
+  }
+  return rules.sort((a, b) => a.priority - b.priority);
+}
+
+function conditionalColourFor(rules: ConditionalColour[], r: number, c: number, value: string): ConditionalColour | null {
+  const v = value.trim().toLowerCase();
+  if (!v) return null;
+  for (const rule of rules) {
+    if (!rule.ranges.some((x) => r >= x.r1 && r <= x.r2 && c >= x.c1 && c <= x.c2)) continue;
+    const matches = rule.text.startsWith('*') ? v.includes(rule.text.slice(1)) : v === rule.text;
+    if (matches) return rule;
+  }
+  return null;
+}
+
 export async function parseAndNormalizeWorkbook(input: string | Buffer): Promise<FortuneSheet[]> {
   const workbook = new ExcelJS.Workbook();
   if (Buffer.isBuffer(input)) {
@@ -132,6 +211,7 @@ export async function parseAndNormalizeWorkbook(input: string | Buffer): Promise
       }
     });
 
+    const conditionalColours = readConditionalColours(worksheet, theme);
     const model: any = worksheet.model || {};
     const mergeMap = new Map<string, { r: number; c: number; rs: number; cs: number }>();
 
@@ -190,6 +270,7 @@ export async function parseAndNormalizeWorkbook(input: string | Buffer): Promise
 
         const textStr = safeString(rawVal);
         const rootMerge = mergeConfig[`${r}_${c}`];
+        const conditional = conditionalColours.length > 0 ? conditionalColourFor(conditionalColours, r, c, textStr) : null;
 
         celldata.push({
           r,
@@ -207,6 +288,9 @@ export async function parseAndNormalizeWorkbook(input: string | Buffer): Promise
             tb: cell.alignment?.wrapText ? 2 : 0,
             rowspan: rootMerge ? rootMerge.rs : undefined,
             colspan: rootMerge ? rootMerge.cs : undefined,
+            cbg: conditional?.bg,
+            cfc: conditional?.fc,
+            cbl: conditional?.bold ? 1 : undefined,
           },
         });
       });
