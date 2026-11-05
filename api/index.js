@@ -5571,7 +5571,8 @@ init_supabase();
 var deptKeywords = {
   ["BD" /* BD */]: "bd.xlsx",
   ["FINANCE" /* FINANCE */]: "finance.xlsx",
-  ["SHELLPLAN" /* SHELLPLAN */]: "shellplan.xlsx",
+  ["SHELLPLAN" /* SHELLPLAN */]: "",
+  // shares the Shell Plan & Design workbook with DESIGN
   ["DESIGN" /* DESIGN */]: "design.xlsx",
   ["PLANNING" /* PLANNING */]: "planning.xlsx",
   ["PRODUCTION" /* PRODUCTION */]: "production.xlsx",
