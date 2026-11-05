@@ -112,10 +112,13 @@ const tintOver = (base: string, tint: string): React.CSSProperties => ({
   backgroundImage: `linear-gradient(${tint}, ${tint})`,
 });
 // Sticky-left style for a frozen cell; the last frozen column draws an amber edge
+// It has no border of its own: a table border stays where the column was and would let scrolled
+// cells show through, so the lines between frozen columns are drawn as shadows
 const frozenCell = (left: number, last: boolean, extraShadow?: string): React.CSSProperties => ({
   position: 'sticky',
   left,
-  boxShadow: [extraShadow, last ? `inset -2px 0 0 ${FROZEN_EDGE}` : 'inset -1px 0 0 #E7E5E4'].filter(Boolean).join(', '),
+  borderRightWidth: 0,
+  boxShadow: [extraShadow, 'inset 1px 0 0 #E7E5E4', last ? `inset -2px 0 0 ${FROZEN_EDGE}` : undefined].filter(Boolean).join(', '),
 });
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
@@ -132,6 +135,12 @@ const columnGlow = (color: string, last: boolean): React.CSSProperties => ({
   }`,
   backgroundColor: `${color}12`,
 });
+
+// A filled row's colour painted on each of its cells (under any column glow tint), not only on the
+// row: Chrome can leave a cell blank after it stops being a sticky frozen column if the colour is
+// only on the row
+const rowFill = (rowBg: string | undefined, glowColor?: string): React.CSSProperties =>
+  !rowBg ? {} : glowColor ? tintOver(rowBg, `${glowColor}12`) : { backgroundColor: rowBg };
 
 // MR11 master ledger grid, shared by the MR11 page and the CEO dashboard's raw data view
 export const Mr11Table: React.FC<Mr11TableProps> = ({
@@ -175,12 +184,18 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   React.useLayoutEffect(() => {
     if (!frozenKey) return;
     const measure = () => {
-      let left = numberHeaderRef.current?.offsetWidth ?? 0;
+      // Exact (fractional) widths in the table's own pixels: offsetWidth rounds, and the rounding
+      // adds up to gaps between frozen columns
+      const table = tableRef.current;
+      const scale = table && table.offsetWidth ? table.getBoundingClientRect().width / table.offsetWidth : 1;
+      const widthOf = (el?: HTMLElement | null) => (el ? el.getBoundingClientRect().width / (scale || 1) : 0);
+      let left = widthOf(numberHeaderRef.current);
       const next: Record<string, number> = {};
       for (const h of frozenKey.split('\u0000')) {
-        // 1px overlap so the shared cell border leaves no gap for scrolled cells to show through
-        next[h] = Math.max(0, left - 1);
-        left += headerRefs.current.get(h)?.offsetWidth ?? 0;
+        // Each frozen column overlaps the one before by a pixel, so the shared cell border leaves
+        // no gap for scrolled cells to show through
+        next[h] = Math.max(0, Math.floor(left) - 1);
+        left += widthOf(headerRefs.current.get(h)) - 1;
       }
       setLefts((prev) =>
         Object.keys(next).length === Object.keys(prev).length && Object.keys(next).every((k) => prev[k] === next[k])
@@ -479,6 +494,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                           } ${rowBg ? '' : 'bg-stone-50/80'}`}
                           style={{
                             ...(glowColor ? columnGlow(glowColor, rIdx + streamSpan >= records.length) : {}),
+                            ...rowFill(rowBg, glowColor),
                             // An unmerged cell keeps its BD row's font colour
                             ...(streamSpan === 1 && fontColor !== '#000000' ? { color: fontColor } : {}),
                             ...(frozenSet.has(h)
@@ -521,6 +537,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                           ...(glowColor ? columnGlow(glowColor, rIdx === records.length - 1) : {}),
                           // keep the yellow ATD fill visible under the outline
                           ...(glowColor && isYellowAtd ? { backgroundColor: undefined } : {}),
+                          ...(isYellowAtd ? {} : rowFill(rowBg, glowColor)),
                           // The BD row's font colour runs across the whole row, as in the BD file
                           color: isYellowAtd ? '#78350F' : fontColor !== '#000000' ? fontColor : undefined,
                           fontWeight: fontColor !== '#000000' && allHeaders.indexOf(h) < 4 ? 'bold' : 'normal',
