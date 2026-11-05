@@ -851,6 +851,56 @@ export interface DeletedMr11Row {
   deletedBy: string | null;
 }
 
+// A status column's colour per value, as the cells show it in the Shell Plan & Design file:
+// { "shell plan status": { "approved": { bg: "#00FF00", fc: "#000000" } } }
+type StatusColour = { bg?: string; fc?: string };
+type StatusColours = Record<string, Record<string, StatusColour>>;
+const STATUS_COLOUR_HEADERS = ['shell plan status', 'formwork design status', 'holing status', 'accessories status'];
+
+function readStatusColours(sheet: FortuneSheet): StatusColours {
+  const out: StatusColours = {};
+  const celldata: any[] = Array.isArray((sheet as any)?.celldata) ? (sheet as any).celldata : [];
+  const headerOf: Record<number, string> = {};
+  for (const cell of celldata) {
+    if (cell?.r !== 0) continue;
+    const h = String(cell.v?.m ?? cell.v?.v ?? '').trim().toLowerCase();
+    const key = STATUS_COLOUR_HEADERS.find((k) => h.startsWith(k));
+    if (key) headerOf[cell.c] = key;
+  }
+  const plain = (c?: string) => !c || /^#?(FFFFFF|000000)$/i.test(String(c)) || /^(white|transparent)$/i.test(String(c));
+  for (const cell of celldata) {
+    const key = headerOf[cell?.c];
+    if (!key || cell.r === 0) continue;
+    const value = String(cell.v?.m ?? cell.v?.v ?? '').trim().toLowerCase();
+    if (!value) continue;
+    // Conditional formatting colour first (what Excel shows), else the cell's own fill
+    const bg = cell.v?.cbg || (plain(cell.v?.bg) ? undefined : cell.v?.bg);
+    if (!bg) continue;
+    const fc = cell.v?.cfc || (cell.v?.cbg ? undefined : cell.v?.fc);
+    out[key] = out[key] || {};
+    if (!out[key][value]) out[key][value] = { bg: String(bg).toUpperCase(), fc: fc ? String(fc).toUpperCase() : undefined };
+  }
+  return out;
+}
+
+// MR11's own labels for a project's design (Fully / Partially Complete) take the colour of the
+// design file's matching status
+const MR11_STATUS_ALIASES: Record<string, string[]> = {
+  'fully complete': ['completed', 'complete'],
+  'partially complete': ['ongoing', 'in progress'],
+  'not started': ['to start', 'pending drawings'],
+};
+
+function statusColourFor(colours: StatusColours, key: string, value: any): StatusColour | null {
+  const byValue = colours[key];
+  const v = String(value ?? '').trim().toLowerCase();
+  if (!byValue || !v) return null;
+  for (const candidate of [v, ...(MR11_STATUS_ALIASES[v] || [])]) {
+    if (byValue[candidate]) return byValue[candidate];
+  }
+  return null;
+}
+
 export async function executeMr11Pipeline(
   prisma: PrismaClient,
   options: { persist?: boolean; deletedRows?: DeletedMr11Row[]; changeSource?: string; changedById?: string | null } = {}
@@ -879,6 +929,8 @@ export async function executeMr11Pipeline(
   const dispatchHeadersByPart: Partial<Record<DispatchPart, Record<number, string>>> = {};
   let bdMonthColumns: { header: string; label: string }[] = [];
   let detectedProdSeries = 0;
+  // The Shell Plan & Design file's colour for each status value (e.g. Approved -> green)
+  let designStatusColours: StatusColours = {};
 
   for (const dept of activeDepartments) {
     if (dept.activeVersion?.parsedWorkbook) {
@@ -908,6 +960,7 @@ export async function executeMr11Pipeline(
       if (sheets.length > 0) {
         const { rows, detectedSeries, headers } = sheetToRecordsWithStyles(sheets[0]);
         datasetMap[dept.code as RoleCode] = rows;
+        if (dept.code === RoleCode.DESIGN) designStatusColours = readStatusColours(sheets[0]);
         if (dept.code === RoleCode.PRODUCTION) {
           productionHeaders = headers;
           if (detectedSeries > 0) {
@@ -2225,6 +2278,21 @@ export async function executeMr11Pipeline(
     }
 
     i += span;
+  }
+
+  // Shell Plan and Formwork Design status cells take the colours their status has in the
+  // Shell Plan & Design file
+  const MR11_STATUS_COLUMNS: Record<string, string> = {
+    'Shell Plan Status - Pending Consultant Drawings': 'shell plan status',
+    'Formwork Design Status': 'formwork design status',
+  };
+  for (const r of derivedMr11Rows) {
+    const statusColors: Record<string, StatusColour> = {};
+    for (const [column, key] of Object.entries(MR11_STATUS_COLUMNS)) {
+      const colour = statusColourFor(designStatusColours, key, r[column]);
+      if (colour) statusColors[column] = colour;
+    }
+    r['_statusColors'] = statusColors;
   }
 
   const run = await prisma.mr11Run.create({

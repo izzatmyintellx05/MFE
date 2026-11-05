@@ -423,15 +423,25 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
         });
       }
 
+      // The BD row's fill colour (its formwork type) on the front column only
       if (row['_fillColor']) {
         const hex = String(row['_fillColor']).replace('#', '');
-        addedRow.eachCell({ includeEmpty: true }, (cell) => {
-          cell.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: `FF${hex}` },
-          };
-        });
+        addedRow.getCell(1).fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: `FF${hex}` },
+        };
+      }
+    });
+
+    // Shell Plan and Formwork Design statuses in the colours of the Shell Plan & Design file
+    records.forEach((row, i) => {
+      for (const [column, colour] of Object.entries((row['_statusColors'] || {}) as Record<string, { bg?: string; fc?: string }>)) {
+        const col = headers.indexOf(column) + 1;
+        if (col <= 0 || !colour?.bg) continue;
+        const cell = worksheet.getCell(i + 3, col);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colour.bg.replace('#', '')}` } };
+        if (colour.fc) cell.font = { ...(cell.font || {}), bold: true, color: { argb: `FF${colour.fc.replace('#', '')}` } };
       }
     });
 

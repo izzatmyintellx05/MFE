@@ -402,14 +402,13 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
               const fontColor = row?._fontColor || '#000000';
               const isStreamLead = row?._isStreamLead !== false;
               const streamSpan = row?._streamSpan || 1;
-              const rowBg = row?._fillColor || undefined;
+              const rowFillColor = row?._fillColor || undefined;
 
               return (
                 <tr
                   key={rIdx}
                   className="group hover:bg-stone-50/70 transition-colors"
                   style={{
-                    backgroundColor: rowBg,
                     ...(lineBelow ? { borderBottom: '2px solid #F59E0B' } : {}),
                     ...(lineAbove ? { borderTop: '2px solid #F59E0B' } : {}),
                   }}
@@ -480,6 +479,8 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                   {headers.map((h, cIdx) => {
                     const isMergeTarget = isStreamMergeColumn(h);
                     const glowColor = highlightColumns[h];
+                    // The BD row's fill colour (its formwork type) is shown on the front column only
+                    const rowBg = cIdx === 0 ? rowFillColor : undefined;
 
                     // Stream merged columns (Shellplan & Design)
                     if (isMergeTarget) {
@@ -499,6 +500,13 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                             ...(streamSpan === 1 && fontColor !== '#000000' ? { color: fontColor } : {}),
                             ...(frozenSet.has(h)
                               ? frozenBody(h, rIdx + streamSpan >= records.length, rowBg || '#FAFAF9', glowColor)
+                              : {}),
+                            // A status shows the colour it has in the Shell Plan & Design file
+                            ...(row?._statusColors?.[h]
+                              ? {
+                                  backgroundColor: row._statusColors[h].bg,
+                                  ...(row._statusColors[h].fc ? { color: row._statusColors[h].fc } : {}),
+                                }
                               : {}),
                           }}
                         >
