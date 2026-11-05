@@ -75,46 +75,34 @@ sequenceDiagram
 
 ---
 
-## 4. Shellplan Department - Architectural & Consultant Sign-offs
+## 4 & 5. Shell Plan & Design - One Combined Workbook
 
-Shellplan manages pre-design architectural review, site elevations, and consultant drawing submittals.
-
-```mermaid
-flowchart LR
-    Submittal[Consultant Drawing Submittal] --> RevHistory[Track Revision Code & Date]
-    RevHistory --> ApprovalCheck{Approved by Consultant?}
-    ApprovalCheck -- Yes --> SetApprovedDate[Record Shellplan Approval Date]
-    ApprovalCheck -- Under Review --> SetPending[Record In-Review Date & Alert Design]
-    SetApprovedDate --> MR11_Sync[Sync with MR11 Master Row]
-    SetPending --> MR11_Sync
-```
-
-### Shellplan Key Columns:
-- `Consultant Approval Date`: Official date consultant authorized architectural layouts.
-- `Revision Index`: Current revision tag (`Rev A`, `Rev B`, etc.).
-- `Submission Status`: `Approved`, `Pending Comments`, `Resubmitted`.
-
----
-
-## 5. Design Department - Engineering Release
-
-The Design department translates approved shellplans into fabrication shop drawings and final bill of materials (BOM).
+Shell Plan and Design fill in one shared workbook (the "Shell Plan & Design" template). Either role can upload it, and it is stored under DESIGN. Its rows feed both the Shell Plan and the Design columns of MR11.
 
 ```mermaid
 flowchart TD
-    DesignUpload[Upload Design.xlsx] --> DesignParse[Extract Design Rows]
-    DesignParse --> CheckRelease[Verify Design Release Date & Engineered Area]
-    CheckRelease --> DeltaCheck{Compare Engineered m2 with BD Contract m2}
-    DeltaCheck -- Exact Match --> GreenStatus[Variance: 0%]
-    DeltaCheck -- Variance Detected --> YellowStatus[Highlight Area Deviation in MR11]
-    GreenStatus --> MapToMaster[Populate Design Release Date in MR11]
-    YellowStatus --> MapToMaster
+    Upload[Upload Shell Plan & Design workbook] --> Parse[Extract rows: merged cells filled down, fill colour per block]
+    Parse --> Match{Match BD row: project no., stream, fill colour}
+    Match --> SP[Shell Plan status, revision, submission & approval dates]
+    Match --> DES[Formwork design status, order completion date per level, m2 ordered]
+    Match --> HA[Holing & accessories status and completion dates]
+    SP --> MR11[MR11 master row]
+    DES --> MR11
+    HA --> MR11
 ```
 
-### Design Key Columns:
-- `Design Release Date`: Factory engineering drawing release milestone.
-- `Engineered Area (m2)`: Total formwork area modeled in 3D.
-- `Design Status`: `Released`, `In Progress`, `Hold`.
+### Layout
+- One header row, one row per **Level** (Typical, Upper lv.10 ...). The project, building and Shell Plan columns are merged down across a building's levels.
+- `Project No.` may carry the stream as an extra last digit (`251242` = project `25124`, stream 2). A `Stream` column is also read.
+- A project that appears more than once is told apart by the **fill colour of its Project Name cell**, matched to the BD row's fill colour.
+- Blank columns between the sections (Shell Plan | Design | Holing | Accessories) are ignored.
+
+### Key Columns
+- Shell Plan: `Project Name`, `BD`, `Project No.`, `Building Name`, `DCF`, `Shell Plan Status` (`Approved`, `In Progress`, `Reapprove`, `Pending Drawings`), `Shell Plan Start Date`, `Latest Revision`, `Latest Submission Date`, `Shell Plan Approved Date`, `Remarks (...)`.
+- `NCA`, `NCA Date`: for reference on the sheet; MR11 takes NCA from BD.
+- Design: `Stream`, `Level`, `Formwork Design Status` (`To Start`, `Ongoing`, `Completed`, `Pending Shell Approval`, `On Hold`), `Estimated Design Completion Date` (date or TBC), `Actual Formwork Order Completion Date`, `Total Quantity Ordered M2`, `Design Remarks`.
+- Holing: `Holing Status` (`Completed` / `Not Completed`), `Holing Start Date`, `Holing Completion Date`, `Remarks`.
+- Accessories: `Accessories Status`, `Accessories Start Date`, `Accessories Completion Date`, `Remarks`.
 
 ---
 

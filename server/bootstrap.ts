@@ -14,7 +14,7 @@ import {
 const deptKeywords: Record<RoleCode, string> = {
   [RoleCode.BD]: 'bd.xlsx',
   [RoleCode.FINANCE]: 'finance.xlsx',
-  [RoleCode.SHELLPLAN]: 'shellplan.xlsx',
+  [RoleCode.SHELLPLAN]: '', // shares the Shell Plan & Design workbook with DESIGN
   [RoleCode.DESIGN]: 'design.xlsx',
   [RoleCode.PLANNING]: 'planning.xlsx',
   [RoleCode.PRODUCTION]: 'production.xlsx',
