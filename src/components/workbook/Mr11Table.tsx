@@ -6,7 +6,7 @@ import { ColumnSort, FrozenAt, nextSort } from '../../utils/mr11Filters';
 
 const DESIGN_DATE_COLUMN = 'Actual Formwork Order Completion Date';
 
-// Completion dates coloured by status: dark green done, yellow done but ahead, red not done
+// Completion dates coloured by status: dark green done, red not done
 const DesignDates: React.FC<{ parts: DesignDatePart[]; today: string }> = ({ parts, today }) => (
   <>
     {parts.map((p, i) => (
