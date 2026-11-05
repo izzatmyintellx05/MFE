@@ -740,12 +740,14 @@ var init_database_config = __esm({
 // server/db/supabase.ts
 var supabase_exports = {};
 __export(supabase_exports, {
+  deleteCompletedProjectFromDb: () => deleteCompletedProjectFromDb,
   deleteUserFromDb: () => deleteUserFromDb,
   describeDatabase: () => describeDatabase,
   fetchActiveFileSummariesFromDb: () => fetchActiveFileSummariesFromDb,
   fetchActiveVersionForDepartment: () => fetchActiveVersionForDepartment,
   fetchActiveVersionsFromDb: () => fetchActiveVersionsFromDb,
   fetchChangeLogsFromDb: () => fetchChangeLogsFromDb,
+  fetchCompletedProjectsFromDb: () => fetchCompletedProjectsFromDb,
   fetchLatestMr11RunFromDb: () => fetchLatestMr11RunFromDb,
   getLatestMr11Run: () => getLatestMr11Run,
   hydrateActiveVersionsFromDb: () => hydrateActiveVersionsFromDb,
@@ -753,6 +755,7 @@ __export(supabase_exports, {
   isDatabaseConfigured: () => isDatabaseConfigured,
   restoreEngineHistory: () => restoreEngineHistory,
   saveChangeLogToDb: () => saveChangeLogToDb,
+  saveCompletedProjectToDb: () => saveCompletedProjectToDb,
   saveFileVersionToDb: () => saveFileVersionToDb,
   saveMr11RunToDb: () => saveMr11RunToDb,
   saveUserToDb: () => saveUserToDb
@@ -1165,7 +1168,66 @@ async function fetchChangeLogsFromDb(scope, options = {}) {
     }));
   });
 }
-var NOW, columnCache, changeLogTableReady;
+async function ensureCompletedTable(pool) {
+  if (completedTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "Mr11CompletedProject" (
+      "id" TEXT PRIMARY KEY,
+      "projectNo" TEXT,
+      "shortName" TEXT,
+      "projectName" TEXT,
+      "completedById" TEXT,
+      "completedBy" TEXT,
+      "completedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );`);
+  completedTableReady = true;
+}
+async function fetchCompletedProjectsFromDb() {
+  return withPool(async (pool) => {
+    await ensureCompletedTable(pool);
+    const result = await pool.query('SELECT * FROM "Mr11CompletedProject" ORDER BY "completedAt" ASC;');
+    return result.rows;
+  });
+}
+async function saveCompletedProjectToDb(entry) {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureCompletedTable(pool);
+    await pool.query(
+      `INSERT INTO "Mr11CompletedProject"
+         ("id", "projectNo", "shortName", "projectName", "completedById", "completedBy", "completedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT ("id") DO NOTHING;`,
+      [
+        entry.id,
+        entry.projectNo ?? null,
+        entry.shortName ?? null,
+        entry.projectName ?? null,
+        entry.completedById ?? null,
+        entry.completedBy ?? null,
+        entry.completedAt ?? /* @__PURE__ */ new Date()
+      ]
+    );
+    return true;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+async function deleteCompletedProjectFromDb(id) {
+  const pool = await openPool();
+  if (!pool) return false;
+  try {
+    await ensureCompletedTable(pool);
+    await pool.query('DELETE FROM "Mr11CompletedProject" WHERE "id" = $1;', [id]);
+    return true;
+  } finally {
+    await pool.end().catch(() => {
+    });
+  }
+}
+var NOW, columnCache, changeLogTableReady, completedTableReady;
 var init_supabase = __esm({
   "server/db/supabase.ts"() {
     init_database_config();
@@ -1173,6 +1235,7 @@ var init_supabase = __esm({
     NOW = Symbol("now");
     columnCache = {};
     changeLogTableReady = false;
+    completedTableReady = false;
   }
 });
 
@@ -2043,7 +2106,8 @@ var ORDERED_HEADER_LIST = [
   "Oct-27",
   "Nov-27",
   "Dec-27",
-  "Total 2027 m2"
+  "Total 2027 m2",
+  "Unutilized m2"
 ];
 var MR11_ORDERED_COLUMNS = [
   // BD columns A..AF, by the header names in the BD workbook. Each is matched by its whole
@@ -3192,15 +3256,16 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
         source = "Processed";
       }
       const history = stageHistory[input.historyKey] ||= {};
-      const allocate = (projectM2, stage) => {
+      const dispatchedBefore = Object.entries(dispatched).filter(([key]) => key < monthKeyOf(labels[0])).reduce((t, [, m2]) => t + (m2 || 0), 0);
+      const allocate = (projectM2, stage, wholeProject) => {
         const v = { ...bd };
         for (const l of ended) {
           const key = monthKeyOf(l);
           if (dispatched[key] !== void 0) v[l] = dispatched[key];
-          else if (history[key]) v[l] = history[key][stage];
+          else if (stage && history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
-        let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
+        let current = projectM2 - (wholeProject ? dispatchedBefore : 0) - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
         v[open[0]] = Math.max(0, current);
         for (const l of open.slice(1)) {
           if (current >= 0) break;
@@ -3210,18 +3275,24 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
         }
         return v;
       };
-      const designValues = allocate(designTarget, "design");
-      const values = allocate(target, "processed");
+      const designValues = allocate(designTarget, "design", designApplies);
+      const values = allocate(target, "processed", source !== "BD");
+      const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
+      const columnValues = allocate(null, null, false);
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
-        row[l] = values[l] > 0 ? Number(values[l].toFixed(3)) : null;
-        if (l.endsWith("-26")) total2026 += values[l];
-        else total2027 += values[l];
+        row[l] = columnValues[l] > 0 ? Number(columnValues[l].toFixed(3)) : null;
+        if (l.endsWith("-26")) total2026 += columnValues[l];
+        else total2027 += columnValues[l];
       }
       row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
       row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
-      row["_forecastSource"] = target === null ? null : source;
+      const orderedShare = designQty === null ? null : groupBd > 0 ? designQty * bdTotals[idx] / groupBd : designQty / group.length;
+      const unutilized = orderedShare === null ? 0 : orderedShare - dispatchedBefore - total2026 - total2027;
+      row["Unutilized m2"] = unutilized > 5e-4 ? Number(unutilized.toFixed(3)) : null;
+      row["_forecastSource"] = bdForecast === null ? null : "BD";
+      row["_pipelineSource"] = target === null ? null : source;
       const stages = {};
       const round = (n) => n === void 0 || n === null ? null : Number(n.toFixed(3));
       for (const l of labels) {
@@ -4638,6 +4709,27 @@ import { Router as Router3 } from "express";
 init_prisma();
 import ExcelJS2 from "exceljs";
 init_supabase();
+
+// server/modules/mr11/mr11.completed.ts
+init_supabase();
+var memoryCompleted = /* @__PURE__ */ new Map();
+async function listCompletedProjects() {
+  if (isDatabaseConfigured()) {
+    const rows = await fetchCompletedProjectsFromDb();
+    if (rows) return rows;
+  }
+  return [...memoryCompleted.values()];
+}
+async function markProjectComplete(entry) {
+  if (!await saveCompletedProjectToDb(entry)) memoryCompleted.set(entry.id, entry);
+  return listCompletedProjects();
+}
+async function markProjectIncomplete(id) {
+  if (!await deleteCompletedProjectFromDb(id)) memoryCompleted.delete(id);
+  return listCompletedProjects();
+}
+
+// server/modules/mr11/mr11.controller.ts
 var SHOWN_CURRENCIES = ["MYR", "SGD", "AUD", "INR", "CNY", "EUR", "GBP", "AED"];
 var prisma5 = new PrismaClient();
 var ID_COLUMN = /project\s*no|^po$|^nca$|nca\s*no|stream|series|revision|^rev\b|code|year|phone|^tel|^no\.?$|^#$/i;
@@ -4774,6 +4866,99 @@ async function restoreMr11Row(req, res) {
     const next = rows.filter((d) => d.key !== key);
     if (next.length !== rows.length) await rebuildWith(next, "MR11 row restored", req.user?.id ?? null);
     return res.json({ success: true, data: next });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function logCompletion(req, run, key, completed) {
+  const records = run?.records || [];
+  const index = records.findIndex((r2) => r2?._rowKey === key);
+  if (index < 0) return;
+  const r = records[index];
+  const label = [r["Project No"], r["Short Name"], r["Stream"] != null && r["Stream"] !== "" ? `Stream ${r["Stream"]}` : null].filter((v) => v != null && String(v).trim() !== "").join(" \xB7 ");
+  const user = req.user;
+  try {
+    await recordChange(
+      MR11_SCOPE,
+      {
+        summary: { cellsChanged: 1, rowsAdded: 0, rowsRemoved: 0, rowsModified: 1, sheetsAdded: 0, sheetsRemoved: 0 },
+        sheets: [
+          {
+            sheet: "MR11",
+            status: "changed",
+            columnsAdded: [],
+            columnsRemoved: [],
+            rows: [
+              {
+                type: "modified",
+                row: index + 1,
+                previousRow: index + 1,
+                label: label || String(r["Customer & Project Name"] ?? ""),
+                cells: [
+                  {
+                    column: "",
+                    header: "Completion",
+                    before: completed ? "In MR11" : "Completed",
+                    after: completed ? "Completed" : "In MR11"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        truncated: false
+      },
+      {
+        fileVersionId: run?.id ?? null,
+        previousVersionId: run?.id ?? null,
+        source: completed ? "MR11 row marked complete" : "MR11 row marked incomplete",
+        uploadedById: user?.id ?? null,
+        uploadedByName: user?.fullName || user?.email || null
+      }
+    );
+  } catch (err) {
+    console.warn("[MR11] completion change log skipped:", err?.message || err);
+  }
+}
+async function getCompletedProjects(req, res) {
+  try {
+    return res.json({ success: true, data: await listCompletedProjects() });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function completeMr11Project(req, res) {
+  try {
+    const key = String(req.body?.key || "").trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: "No row given" } });
+    const run = await getLatestMr11Run(prisma5);
+    const record = (run?.records || []).find((r) => r?._rowKey === key);
+    if (!record) return res.status(404).json({ success: false, error: { message: "That row is no longer in MR11" } });
+    const user = req.user;
+    const before = await listCompletedProjects();
+    const data = await markProjectComplete({
+      id: key,
+      projectNo: record["Project No"] ?? record["Project No."] ?? null,
+      shortName: record["Short Name"] ?? null,
+      projectName: record["Customer & Project Name"] ?? null,
+      completedById: user?.id ?? null,
+      completedBy: user?.fullName || user?.email || null,
+      completedAt: /* @__PURE__ */ new Date()
+    });
+    if (!before.some((c) => c.id === key)) await logCompletion(req, run, key, true);
+    return res.json({ success: true, data });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
+async function reopenMr11Project(req, res) {
+  try {
+    const key = String(req.body?.key || "").trim();
+    if (!key) return res.status(400).json({ success: false, error: { message: "No row given" } });
+    const before = await listCompletedProjects();
+    const data = await markProjectIncomplete(key);
+    if (before.some((c) => c.id === key)) await logCompletion(req, await getLatestMr11Run(prisma5), key, false);
+    return res.json({ success: true, data });
   } catch (err) {
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
@@ -4980,6 +5165,9 @@ router3.get("/shellplan-history", getShellplanApprovalHistory);
 router3.get("/dispatch-monthly", getDispatchMonthly);
 router3.get("/changelog", listMr11Changes);
 router3.get("/changelog/:logId", getMr11Change);
+router3.get("/completed-rows", getCompletedProjects);
+router3.post("/rows/complete", completeMr11Project);
+router3.post("/rows/incomplete", reopenMr11Project);
 router3.get("/deleted-rows", requireRoles("ADMIN" /* ADMIN */), getDeletedRows);
 router3.post("/rows/delete", requireRoles("ADMIN" /* ADMIN */), deleteMr11Row);
 router3.post("/rows/restore", requireRoles("ADMIN" /* ADMIN */), restoreMr11Row);

@@ -10,6 +10,9 @@ import {
   getDeletedRows,
   deleteMr11Row,
   restoreMr11Row,
+  getCompletedProjects,
+  completeMr11Project,
+  reopenMr11Project,
 } from './mr11.controller';
 import { requireAuth } from '../../middleware/auth.middleware';
 import { listMr11Changes, getMr11Change } from '../changelog/changelog.controller';
@@ -30,6 +33,11 @@ router.get('/shellplan-history', getShellplanApprovalHistory);
 router.get('/dispatch-monthly', getDispatchMonthly);
 router.get('/changelog', listMr11Changes);
 router.get('/changelog/:logId', getMr11Change);
+
+// Marking rows complete (they move to the Completed table) and incomplete again
+router.get('/completed-rows', getCompletedProjects);
+router.post('/rows/complete', completeMr11Project);
+router.post('/rows/incomplete', reopenMr11Project);
 
 // Deleting and restoring MR11 rows: administrators only
 router.get('/deleted-rows', requireRoles(RoleCode.ADMIN), getDeletedRows);
