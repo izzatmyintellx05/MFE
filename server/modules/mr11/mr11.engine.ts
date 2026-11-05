@@ -710,13 +710,14 @@ function findCellValue(row: Record<string, any>, candidateHeader: string): any {
 type MonthStageHistory = Record<string, Record<string, { design: number; processed: number }>>;
 
 /**
- * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2), and each
- * row's month-by-month pipeline for the CEO dashboard (row._monthStages).
+ * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2, Unutilized m2),
+ * and each row's month-by-month pipeline for the CEO dashboard (row._monthStages).
  *
  * The month columns follow BD's forecast. A month that has ended shows the m2 dispatched in it
- * (actual). The months after the current one keep BD's forecast, and the current month takes the
- * rest of BD's total: so m2 forecast for a month but not dispatched moves to the next month. A row
- * without a BD forecast gets no forecast; only its ended months fill in with what was dispatched.
+ * (actual); the current month and the months after it show BD's forecast. A row without a BD
+ * forecast gets no forecast; only its ended months fill in with what was dispatched. m2 forecast
+ * for a month but not dispatched is not carried forward: Unutilized m2 is the row's share of
+ * Design's Total Quantity Ordered less everything dispatched (before Jan-26 too) and forecast.
  *
  * The CEO dashboard pipeline (row._monthStages) also tracks a Design and a Processed forecast.
  * Design's Total Quantity Ordered (one value for every BD row of the same project, stream and fill
@@ -794,9 +795,9 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       };
       const designValues = allocate(designTarget, 'design', designApplies);
       const values = allocate(target, 'processed', source !== 'BD');
-      // MR11's month columns: BD's forecast only
+      // MR11's month columns: dispatched in ended months, BD's forecast in the others
       const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
-      const columnValues = allocate(bdForecast, null, false);
+      const columnValues = allocate(null, null, false);
 
       let total2026 = 0;
       let total2027 = 0;
@@ -807,6 +808,12 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       }
       row['Total 2026 m2'] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
       row['Total 2027 m2'] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
+
+      // Total Quantity Ordered not yet dispatched or forecast, shared like Design's forecast
+      // (equally when no row of the block has a BD forecast)
+      const orderedShare = designQty === null ? null : groupBd > 0 ? (designQty * bdTotals[idx]) / groupBd : designQty / group.length;
+      const unutilized = orderedShare === null ? 0 : orderedShare - dispatchedBefore - total2026 - total2027;
+      row['Unutilized m2'] = unutilized > 0.0005 ? Number(unutilized.toFixed(3)) : null;
       row['_forecastSource'] = bdForecast === null ? null : 'BD';
       row['_pipelineSource'] = target === null ? null : source;
 

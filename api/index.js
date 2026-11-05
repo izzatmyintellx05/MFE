@@ -2106,7 +2106,8 @@ var ORDERED_HEADER_LIST = [
   "Oct-27",
   "Nov-27",
   "Dec-27",
-  "Total 2027 m2"
+  "Total 2027 m2",
+  "Unutilized m2"
 ];
 var MR11_ORDERED_COLUMNS = [
   // BD columns A..AF, by the header names in the BD workbook. Each is matched by its whole
@@ -3277,7 +3278,7 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       const designValues = allocate(designTarget, "design", designApplies);
       const values = allocate(target, "processed", source !== "BD");
       const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
-      const columnValues = allocate(bdForecast, null, false);
+      const columnValues = allocate(null, null, false);
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
@@ -3287,6 +3288,9 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       }
       row["Total 2026 m2"] = total2026 > 0 ? Number(total2026.toFixed(3)) : null;
       row["Total 2027 m2"] = total2027 > 0 ? Number(total2027.toFixed(3)) : null;
+      const orderedShare = designQty === null ? null : groupBd > 0 ? designQty * bdTotals[idx] / groupBd : designQty / group.length;
+      const unutilized = orderedShare === null ? 0 : orderedShare - dispatchedBefore - total2026 - total2027;
+      row["Unutilized m2"] = unutilized > 5e-4 ? Number(unutilized.toFixed(3)) : null;
       row["_forecastSource"] = bdForecast === null ? null : "BD";
       row["_pipelineSource"] = target === null ? null : source;
       const stages = {};

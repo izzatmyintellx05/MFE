@@ -214,6 +214,7 @@ export const ORDERED_HEADER_LIST = [
   'Nov-27',
   'Dec-27',
   'Total 2027 m2',
+  'Unutilized m2',
 ];
 
 export const MR11_ORDERED_COLUMNS: ColumnMapping[] = [
