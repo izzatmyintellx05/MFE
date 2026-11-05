@@ -90,6 +90,10 @@ export const Mr11Dashboard: React.FC = () => {
     setFrozenList((list) => [...list.filter((f) => f.key !== row._rowKey), ...(at ? [{ key: row._rowKey, at }] : [])]);
   const hideRow = (row: any) => setHiddenKeys((keys) => (keys.includes(row._rowKey) ? keys : [...keys, row._rowKey]));
   const hiddenRows = useMemo(() => records.filter((r) => hiddenKeys.includes(r._rowKey)), [records, hiddenKeys]);
+  // Columns frozen at the left (pin on a header), remembered in this browser
+  const [frozenColumns, setFrozenColumns] = usePersistentState<string[]>('mr11.frozenColumns', []);
+  const freezeColumn = (column: string) =>
+    setFrozenColumns((cols) => (cols.includes(column) ? cols.filter((c) => c !== column) : [...cols, column]));
 
   // Remembered in this browser: zoom, the side panel, hidden column groups and the rates cards
   const [zoom, setZoom] = usePersistentState<number>('mr11.zoom', 100);
@@ -302,6 +306,7 @@ export const Mr11Dashboard: React.FC = () => {
     ];
   }, [records, baseRecords, searchTerm, filters, sort, frozenList, hiddenKeys]);
   const frozenShown = shownRecords.filter((r) => frozenRows[r._rowKey]).length;
+  const frozenColumnsShown = frozenColumns.filter((c) => visibleHeaders.includes(c)).length;
 
   const filterCount = activeFilterCount(filters);
   const isNarrowed = shownRecords.length !== baseRecords.length;
@@ -504,7 +509,7 @@ export const Mr11Dashboard: React.FC = () => {
             />
           ) : (
             <>
-            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0 || sort || frozenShown > 0 || hiddenRows.length > 0) && (
+            {!loading && records.length > 0 && (filterCount > 0 || hiddenGroups.length > 0 || sort || frozenShown > 0 || frozenColumnsShown > 0 || hiddenRows.length > 0) && (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-amber-200/70 bg-amber-50/70 text-[11px] text-amber-900 flex-shrink-0">
                 {filterCount > 0 && (
                   <span className="flex items-center gap-2 min-w-0">
@@ -533,6 +538,17 @@ export const Mr11Dashboard: React.FC = () => {
                     </span>
                     <button type="button" onClick={() => setFrozenList([])} className="font-semibold hover:underline cursor-pointer">
                       Unfreeze all
+                    </button>
+                  </span>
+                )}
+                {frozenColumnsShown > 0 && (
+                  <span className="flex items-center gap-2 whitespace-nowrap">
+                    <span>
+                      <strong className="font-semibold">Frozen</strong> · {frozenColumnsShown}{' '}
+                      {frozenColumnsShown === 1 ? 'column' : 'columns'}
+                    </span>
+                    <button type="button" onClick={() => setFrozenColumns([])} className="font-semibold hover:underline cursor-pointer">
+                      Unfreeze columns
                     </button>
                   </span>
                 )}
@@ -606,6 +622,8 @@ export const Mr11Dashboard: React.FC = () => {
                 onSortChange={setSort}
                 frozenRows={frozenRows}
                 onFreezeRow={freezeRow}
+                frozenColumns={frozenColumns}
+                onFreezeColumn={freezeColumn}
                 onHideRow={hideRow}
                 onToggleComplete={completeBusy ? undefined : handleToggleComplete}
                 completedView={view === 'completed'}
