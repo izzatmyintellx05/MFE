@@ -1631,6 +1631,61 @@ function colorHex(color, theme) {
   if (typeof color.theme === "number" && theme[color.theme]) return applyTint(theme[color.theme], Number(color.tint) || 0);
   return void 0;
 }
+function parseRanges(ref) {
+  const toCell = (a) => {
+    const m = /^\$?([A-Z]+)\$?(\d+)$/i.exec(a.trim());
+    if (!m) return null;
+    const c = m[1].toUpperCase().split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+    return { r: Number(m[2]) - 1, c };
+  };
+  return String(ref || "").split(/\s+/).map((part) => {
+    const [a, b] = part.split(":");
+    const start = toCell(a);
+    const end = toCell(b || a);
+    return start && end ? { r1: start.r, c1: start.c, r2: end.r, c2: end.c } : null;
+  }).filter((x) => x !== null);
+}
+function readConditionalColours(worksheet, theme) {
+  const rules = [];
+  for (const cf of worksheet.conditionalFormattings || []) {
+    const ranges = parseRanges(cf?.ref);
+    if (ranges.length === 0) continue;
+    for (const rule of cf.rules || []) {
+      let text = null;
+      if (rule.type === "cellIs" && rule.operator === "equal") {
+        const m = /^"(.*)"$/s.exec(String(rule.formulae?.[0] ?? "").trim());
+        if (m) text = m[1].replace(/""/g, '"');
+      } else if (rule.type === "containsText" && rule.operator === "containsText" && rule.text) {
+        text = String(rule.text);
+      }
+      if (text === null) continue;
+      const style = rule.style || {};
+      const fill = style.fill;
+      const bg = fill ? colorHex(fill.bgColor, theme) || colorHex(fill.fgColor, theme) : void 0;
+      const fc = colorHex(style.font?.color, theme);
+      if (!bg && !fc) continue;
+      rules.push({
+        ranges,
+        text: (rule.type === "containsText" ? "*" : "") + text.trim().toLowerCase(),
+        priority: Number(rule.priority) || 0,
+        bg,
+        fc,
+        bold: style.font?.bold === true
+      });
+    }
+  }
+  return rules.sort((a, b) => a.priority - b.priority);
+}
+function conditionalColourFor(rules, r, c, value) {
+  const v = value.trim().toLowerCase();
+  if (!v) return null;
+  for (const rule of rules) {
+    if (!rule.ranges.some((x) => r >= x.r1 && r <= x.r2 && c >= x.c1 && c <= x.c2)) continue;
+    const matches = rule.text.startsWith("*") ? v.includes(rule.text.slice(1)) : v === rule.text;
+    if (matches) return rule;
+  }
+  return null;
+}
 async function parseAndNormalizeWorkbook(input) {
   const workbook = new ExcelJS.Workbook();
   if (Buffer.isBuffer(input)) {
@@ -1650,6 +1705,7 @@ async function parseAndNormalizeWorkbook(input) {
         columnlen[String(idx)] = Math.round(col.width * 8);
       }
     });
+    const conditionalColours = readConditionalColours(worksheet, theme);
     const model = worksheet.model || {};
     const mergeMap = /* @__PURE__ */ new Map();
     if (Array.isArray(model.merges)) {
@@ -1697,6 +1753,7 @@ async function parseAndNormalizeWorkbook(input) {
         }
         const textStr = safeString(rawVal);
         const rootMerge = mergeConfig[`${r}_${c}`];
+        const conditional = conditionalColours.length > 0 ? conditionalColourFor(conditionalColours, r, c, textStr) : null;
         celldata.push({
           r,
           c,
@@ -1712,7 +1769,10 @@ async function parseAndNormalizeWorkbook(input) {
             vt: cell.alignment?.vertical === "middle" ? 0 : cell.alignment?.vertical === "top" ? 1 : 2,
             tb: cell.alignment?.wrapText ? 2 : 0,
             rowspan: rootMerge ? rootMerge.rs : void 0,
-            colspan: rootMerge ? rootMerge.cs : void 0
+            colspan: rootMerge ? rootMerge.cs : void 0,
+            cbg: conditional?.bg,
+            cfc: conditional?.fc,
+            cbl: conditional?.bold ? 1 : void 0
           }
         });
       });

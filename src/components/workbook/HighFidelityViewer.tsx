@@ -110,9 +110,10 @@ export const HighFidelityViewer: React.FC<HighFidelityViewerProps> = ({ data }) 
                   const cell = gridMap[coordKey];
                   const mergeInfo = merges[coordKey];
                   const value = cell?.m || cell?.v;
-                  const bg = cell?.bg;
-                  const fc = cell?.fc;
-                  const isBold = cell?.bl === 1;
+                  // Conditional formatting colours (e.g. a status coloured by its value) win, as in Excel
+                  const bg = cell?.cbg || cell?.bg;
+                  const fc = cell?.cfc || cell?.fc;
+                  const isBold = cell?.bl === 1 || cell?.cbl === 1;
 
                   return (
                     <td
