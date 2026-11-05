@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, ArrowUpToLine, CheckCircle2, EyeOff, RotateCcw, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, ArrowUpToLine, CheckCircle2, EyeOff, Pin, PinOff, RotateCcw, Trash2 } from 'lucide-react';
 import { DesignDatePart, designDateColor, monthColumnKind, todayInMalaysia } from '../../utils/designDates';
 import { formatCellNumber } from '../../utils/formatNumber';
 import { ColumnSort, FrozenAt, nextSort } from '../../utils/mr11Filters';
@@ -98,7 +98,25 @@ interface Mr11TableProps {
   completedView?: boolean;
   /** Tooltip for a row's complete / incomplete button, e.g. who marked it complete */
   completeTitle?: (row: any) => string;
+  /** Columns frozen at the left: they move next to the row numbers and stay on screen when scrolling sideways */
+  frozenColumns?: string[];
+  /** Freeze or unfreeze a column; with it, each header gets a pin button */
+  onFreezeColumn?: (column: string) => void;
 }
+
+const HEADER_BG = '#FAF9F6';
+const FROZEN_EDGE = '#F59E0B';
+// A see-through tint laid over an opaque background, so a frozen cell hides what scrolls under it
+const tintOver = (base: string, tint: string): React.CSSProperties => ({
+  backgroundColor: base,
+  backgroundImage: `linear-gradient(${tint}, ${tint})`,
+});
+// Sticky-left style for a frozen cell; the last frozen column draws an amber edge
+const frozenCell = (left: number, last: boolean, extraShadow?: string): React.CSSProperties => ({
+  position: 'sticky',
+  left,
+  boxShadow: [extraShadow, last ? `inset -2px 0 0 ${FROZEN_EDGE}` : 'inset -1px 0 0 #E7E5E4'].filter(Boolean).join(', '),
+});
 
 // Glowing outline for a highlighted header cell, and side lines plus a light tint down its column
 const headerGlow = (color: string): React.CSSProperties => ({
@@ -118,7 +136,6 @@ const columnGlow = (color: string, last: boolean): React.CSSProperties => ({
 // MR11 master ledger grid, shared by the MR11 page and the CEO dashboard's raw data view
 export const Mr11Table: React.FC<Mr11TableProps> = ({
   records,
-  headers,
   headerGroups = [],
   numberFormats = {},
   highlightColumns = {},
@@ -132,7 +149,58 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   onToggleComplete,
   completedView = false,
   completeTitle,
+  frozenColumns = [],
+  onFreezeColumn,
+  headers: allHeaders,
 }) => {
+  // Frozen columns move to the left, in their MR11 order, ahead of the rest
+  const frozenSet = React.useMemo(
+    () => new Set(frozenColumns.filter((h) => allHeaders.includes(h))),
+    [frozenColumns, allHeaders]
+  );
+  const headers = React.useMemo(
+    () => [...allHeaders.filter((h) => frozenSet.has(h)), ...allHeaders.filter((h) => !frozenSet.has(h))],
+    [allHeaders, frozenSet]
+  );
+  const frozenHeaders = headers.filter((h) => frozenSet.has(h));
+  const lastFrozen = frozenHeaders[frozenHeaders.length - 1];
+
+  // Each frozen column's left offset: the row-number column plus the frozen columns before it,
+  // measured from the header cells (in the table's own, unzoomed pixels)
+  const numberHeaderRef = React.useRef<HTMLTableCellElement>(null);
+  const headerRefs = React.useRef(new Map<string, HTMLTableCellElement>());
+  const tableRef = React.useRef<HTMLTableElement>(null);
+  const [lefts, setLefts] = React.useState<Record<string, number>>({});
+  const frozenKey = frozenHeaders.join('\u0000');
+  React.useLayoutEffect(() => {
+    if (!frozenKey) return;
+    const measure = () => {
+      let left = numberHeaderRef.current?.offsetWidth ?? 0;
+      const next: Record<string, number> = {};
+      for (const h of frozenKey.split('\u0000')) {
+        // 1px overlap so the shared cell border leaves no gap for scrolled cells to show through
+        next[h] = Math.max(0, left - 1);
+        left += headerRefs.current.get(h)?.offsetWidth ?? 0;
+      }
+      setLefts((prev) =>
+        Object.keys(next).length === Object.keys(prev).length && Object.keys(next).every((k) => prev[k] === next[k])
+          ? prev
+          : next
+      );
+    };
+    measure();
+    const table = tableRef.current;
+    if (!table || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(table);
+    return () => observer.disconnect();
+  }, [frozenKey, zoom, records]);
+  const leftOf = (h: string) => lefts[h] ?? 0;
+  const setHeaderRef = (h: string) => (el: HTMLTableCellElement | null) => {
+    if (el) headerRefs.current.set(h, el);
+    else headerRefs.current.delete(h);
+  };
+
   // A value as shown in a cell: numbers get comma separators (and a formatted column its fixed
   // decimals); identifier columns such as Project No keep their digits
   const cellText = (h: string, v: any): string => {
@@ -146,10 +214,35 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   const subLabelOf = (h: string) => groupOf(h)?.columns.find((c) => c.key === h)?.label ?? h;
   // A header's label, with a click to sort by it: ascending, descending, then the MR11 order
   const sortLabel = (h: string, label: string) => {
-    if (!onSortChange) return label;
+    const pin = onFreezeColumn && (
+      <button
+        type="button"
+        onClick={() => onFreezeColumn(h)}
+        title={frozenSet.has(h) ? `Unfreeze ${label}` : `Freeze ${label} (keeps it on screen when scrolling sideways)`}
+        aria-label={frozenSet.has(h) ? `Unfreeze ${label}` : `Freeze ${label}`}
+        aria-pressed={frozenSet.has(h)}
+        className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 cursor-pointer ${
+          frozenSet.has(h)
+            ? 'text-amber-600 hover:text-amber-800'
+            : 'text-stone-300 opacity-0 group-hover/col:opacity-100 focus:opacity-100 hover:text-stone-700'
+        }`}
+      >
+        {frozenSet.has(h) ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+      </button>
+    );
+    const withPin = (content: React.ReactNode) =>
+      pin ? (
+        <span className="inline-flex items-center gap-1">
+          {content}
+          {pin}
+        </span>
+      ) : (
+        content
+      );
+    if (!onSortChange) return withPin(label);
     const direction = sort?.column === h ? sort.direction : null;
     const Icon = direction === 'asc' ? ArrowUp : direction === 'desc' ? ArrowDown : ArrowUpDown;
-    return (
+    return withPin(
       <button
         type="button"
         onClick={() => onSortChange(nextSort(sort, h))}
@@ -173,12 +266,36 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
   };
   const ariaSort = (h: string) =>
     !onSortChange ? undefined : sort?.column !== h ? 'none' : sort.direction === 'asc' ? 'ascending' : 'descending';
+  // Two columns share a group header only when both are frozen or both are not
+  const sameGroup = (a: string, b: string) => groupOf(a) === groupOf(b) && frozenSet.has(a) === frozenSet.has(b);
   const groupSpan = (idx: number) => {
     const group = groupOf(headers[idx]);
     let span = 1;
-    while (group && idx + span < headers.length && groupOf(headers[idx + span]) === group) span++;
+    while (group && idx + span < headers.length && sameGroup(headers[idx + span], headers[idx])) span++;
     return span;
   };
+  // Header cell style: the department glow, and sticky-left when frozen
+  const headerStyle = (h: string, color?: string, lastCol = h, groupRow = false): React.CSSProperties | undefined => {
+    if (!frozenSet.has(h)) return color ? headerGlow(color) : undefined;
+    const glow = color ? headerGlow(color) : undefined;
+    return {
+      ...glow,
+      ...(color ? tintOver(HEADER_BG, `${color}1F`) : {}),
+      // A frozen group header draws its bottom line as a shadow, so nothing shows through the gap
+      ...frozenCell(
+        leftOf(h),
+        lastCol === lastFrozen,
+        [glow?.boxShadow, groupRow ? 'inset 0 -1px 0 #E7E5E4' : undefined].filter(Boolean).join(', ') || undefined
+      ),
+      zIndex: 30,
+    };
+  };
+  // Body cell style for a frozen column: an opaque background (the row fill, or white) under any glow tint
+  const frozenBody = (h: string, lastRow: boolean, base: string | undefined, color?: string): React.CSSProperties => ({
+    ...(base ? (color ? tintOver(base, `${color}12`) : { backgroundColor: base }) : {}),
+    ...frozenCell(leftOf(h), h === lastFrozen, color ? (columnGlow(color, lastRow).boxShadow as string) : undefined),
+    zIndex: 10,
+  });
 
   return (
     <div className="overflow-auto flex-1 h-full select-text">
@@ -190,10 +307,11 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
         }}
         className="inline-block min-w-full align-middle"
       >
-        <table className="w-full text-left border-collapse text-xs">
+        <table ref={tableRef} className="w-full text-left border-collapse text-xs">
           <thead className="bg-[#FAF9F6] text-stone-600 font-extrabold uppercase sticky top-0 z-20 text-[10px] tracking-wider border-b border-stone-200">
             <tr>
               <th
+                ref={numberHeaderRef}
                 rowSpan={2}
                 className="p-2.5 border-r border-stone-200 text-center w-10 bg-[#FAF9F6] sticky left-0 z-30 font-mono"
               >
@@ -205,9 +323,10 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                   return (
                     <th
                       key={idx}
+                      ref={setHeaderRef(h)}
                       rowSpan={2}
-                      className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
-                      style={highlightColumns[h] ? headerGlow(highlightColumns[h]) : undefined}
+                      className="group/col p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
+                      style={headerStyle(h, highlightColumns[h])}
                       aria-sort={ariaSort(h)}
                     >
                       {sortLabel(h, h)}
@@ -225,14 +344,16 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                   );
                 }
                 // Grouped column: only the first column of the group draws the shared header
-                if (idx > 0 && groupOf(headers[idx - 1]) === group) return null;
+                if (idx > 0 && sameGroup(headers[idx - 1], h)) return null;
                 const groupColor = group.columns.map((c) => highlightColumns[c.key]).find(Boolean);
                 return (
                   <th
                     key={idx}
                     colSpan={groupSpan(idx)}
-                    className="p-2.5 border-r border-b border-stone-200 whitespace-nowrap text-center bg-[#FAF9F6]"
-                    style={groupColor ? headerGlow(groupColor) : undefined}
+                    className={`p-2.5 border-r border-stone-200 whitespace-nowrap text-center bg-[#FAF9F6] ${
+                      frozenSet.has(h) ? '' : 'border-b'
+                    }`}
+                    style={headerStyle(h, groupColor, headers[idx + groupSpan(idx) - 1], true)}
                   >
                     {group.label}
                   </th>
@@ -244,8 +365,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                 groupOf(h) ? (
                   <th
                     key={idx}
-                    className="p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
-                    style={highlightColumns[h] ? headerGlow(highlightColumns[h]) : undefined}
+                    ref={setHeaderRef(h)}
+                    className="group/col p-2.5 border-r border-stone-200 whitespace-nowrap bg-[#FAF9F6]"
+                    style={headerStyle(h, highlightColumns[h])}
                     aria-sort={ariaSort(h)}
                   >
                     {sortLabel(h, subLabelOf(h))}
@@ -279,7 +401,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                 >
                   {/* Sticky Index Column (freeze and hide buttons, and delete for administrators) */}
                   <td
-                    className={`p-2 border-r border-stone-200 text-center font-mono text-[11px] sticky left-0 z-10 font-medium whitespace-nowrap ${
+                    className={`p-2 border-r border-stone-200 text-center font-mono text-[11px] sticky left-0 z-[15] font-medium whitespace-nowrap ${
                       frozen ? 'bg-amber-50 text-amber-700' : 'bg-white text-stone-400'
                     }`}
                   >
@@ -359,6 +481,9 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                             ...(glowColor ? columnGlow(glowColor, rIdx + streamSpan >= records.length) : {}),
                             // An unmerged cell keeps its BD row's font colour
                             ...(streamSpan === 1 && fontColor !== '#000000' ? { color: fontColor } : {}),
+                            ...(frozenSet.has(h)
+                              ? frozenBody(h, rIdx + streamSpan >= records.length, rowBg || '#FAFAF9', glowColor)
+                              : {}),
                           }}
                         >
                           {h === DESIGN_DATE_COLUMN && Array.isArray(row?._designDateParts) && row._designDateParts.length > 0 ? (
@@ -398,7 +523,10 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                           ...(glowColor && isYellowAtd ? { backgroundColor: undefined } : {}),
                           // The BD row's font colour runs across the whole row, as in the BD file
                           color: isYellowAtd ? '#78350F' : fontColor !== '#000000' ? fontColor : undefined,
-                          fontWeight: fontColor !== '#000000' && cIdx < 4 ? 'bold' : 'normal',
+                          fontWeight: fontColor !== '#000000' && allHeaders.indexOf(h) < 4 ? 'bold' : 'normal',
+                          ...(frozenSet.has(h)
+                            ? frozenBody(h, rIdx === records.length - 1, isYellowAtd ? undefined : rowBg || '#FFFFFF', glowColor)
+                            : {}),
                         }}
                       >
                         {cellText(h, row?.[h])}
