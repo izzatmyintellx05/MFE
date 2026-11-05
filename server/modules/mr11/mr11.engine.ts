@@ -713,11 +713,9 @@ type MonthStageHistory = Record<string, Record<string, { design: number; process
  * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2, Unutilized m2),
  * and each row's month-by-month pipeline for the CEO dashboard (row._monthStages).
  *
- * The month columns follow BD's forecast. A month that has ended shows the m2 dispatched in it
- * (actual); the current month and the months after it show BD's forecast. A row without a BD
- * forecast gets no forecast; only its ended months fill in with what was dispatched. m2 forecast
- * for a month but not dispatched is not carried forward: Unutilized m2 is the row's share of
- * Design's Total Quantity Ordered less everything dispatched (before Jan-26 too) and forecast.
+ * The month columns show the BD file's values as they are (BD's actual / forecast), nothing
+ * worked out. Unutilized m2 is the row's share of Design's Total Quantity Ordered less those
+ * values and less what was dispatched before Jan-26.
  *
  * The CEO dashboard pipeline (row._monthStages) also tracks a Design and a Processed forecast.
  * Design's Total Quantity Ordered (one value for every BD row of the same project, stream and fill
@@ -775,12 +773,12 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       const dispatchedBefore = Object.entries(dispatched)
         .filter(([key]) => key < monthKeyOf(labels[0]))
         .reduce((t, [, m2]) => t + (m2 || 0), 0);
-      const allocate = (projectM2: number | null, stage: 'design' | 'processed' | null, wholeProject: boolean): Record<string, number> => {
+      const allocate = (projectM2: number | null, stage: 'design' | 'processed', wholeProject: boolean): Record<string, number> => {
         const v: Record<string, number> = { ...bd };
         for (const l of ended) {
           const key = monthKeyOf(l);
           if (dispatched[key] !== undefined) v[l] = dispatched[key];
-          else if (stage && history[key]) v[l] = history[key][stage];
+          else if (history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
         let current = projectM2 - (wholeProject ? dispatchedBefore : 0) - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
@@ -795,9 +793,9 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       };
       const designValues = allocate(designTarget, 'design', designApplies);
       const values = allocate(target, 'processed', source !== 'BD');
-      // MR11's month columns: dispatched in ended months, BD's forecast in the others
+      // MR11's month columns: the BD file's values
       const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
-      const columnValues = allocate(null, null, false);
+      const columnValues: Record<string, number> = { ...bd };
 
       let total2026 = 0;
       let total2027 = 0;
