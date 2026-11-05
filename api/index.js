@@ -5173,13 +5173,11 @@ ${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
       }
       if (row["_fillColor"]) {
         const hex = String(row["_fillColor"]).replace("#", "");
-        addedRow.eachCell({ includeEmpty: true }, (cell) => {
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: `FF${hex}` }
-          };
-        });
+        addedRow.getCell(1).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: `FF${hex}` }
+        };
       }
     });
     records.forEach((row, i) => {

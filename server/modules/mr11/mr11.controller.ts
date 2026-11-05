@@ -423,15 +423,14 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
         });
       }
 
+      // The BD row's fill colour (its formwork type) on the front column only
       if (row['_fillColor']) {
         const hex = String(row['_fillColor']).replace('#', '');
-        addedRow.eachCell({ includeEmpty: true }, (cell) => {
-          cell.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: `FF${hex}` },
-          };
-        });
+        addedRow.getCell(1).fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: `FF${hex}` },
+        };
       }
     });
 
