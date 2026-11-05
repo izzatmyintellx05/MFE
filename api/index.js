@@ -3374,6 +3374,45 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
     });
   }
 }
+var STATUS_COLOUR_HEADERS = ["shell plan status", "formwork design status", "holing status", "accessories status"];
+function readStatusColours(sheet) {
+  const out = {};
+  const celldata = Array.isArray(sheet?.celldata) ? sheet.celldata : [];
+  const headerOf2 = {};
+  for (const cell of celldata) {
+    if (cell?.r !== 0) continue;
+    const h = String(cell.v?.m ?? cell.v?.v ?? "").trim().toLowerCase();
+    const key = STATUS_COLOUR_HEADERS.find((k) => h.startsWith(k));
+    if (key) headerOf2[cell.c] = key;
+  }
+  const plain = (c) => !c || /^#?(FFFFFF|000000)$/i.test(String(c)) || /^(white|transparent)$/i.test(String(c));
+  for (const cell of celldata) {
+    const key = headerOf2[cell?.c];
+    if (!key || cell.r === 0) continue;
+    const value = String(cell.v?.m ?? cell.v?.v ?? "").trim().toLowerCase();
+    if (!value) continue;
+    const bg = cell.v?.cbg || (plain(cell.v?.bg) ? void 0 : cell.v?.bg);
+    if (!bg) continue;
+    const fc = cell.v?.cfc || (cell.v?.cbg ? void 0 : cell.v?.fc);
+    out[key] = out[key] || {};
+    if (!out[key][value]) out[key][value] = { bg: String(bg).toUpperCase(), fc: fc ? String(fc).toUpperCase() : void 0 };
+  }
+  return out;
+}
+var MR11_STATUS_ALIASES = {
+  "fully complete": ["completed", "complete"],
+  "partially complete": ["ongoing", "in progress"],
+  "not started": ["to start", "pending drawings"]
+};
+function statusColourFor(colours, key, value) {
+  const byValue = colours[key];
+  const v = String(value ?? "").trim().toLowerCase();
+  if (!byValue || !v) return null;
+  for (const candidate of [v, ...MR11_STATUS_ALIASES[v] || []]) {
+    if (byValue[candidate]) return byValue[candidate];
+  }
+  return null;
+}
 async function executeMr11Pipeline(prisma8, options = {}) {
   const { persist = true } = options;
   const latestDbRun = await fetchLatestMr11RunFromDb();
@@ -3392,6 +3431,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
   const dispatchHeadersByPart = {};
   let bdMonthColumns = [];
   let detectedProdSeries = 0;
+  let designStatusColours = {};
   for (const dept of activeDepartments) {
     if (dept.activeVersion?.parsedWorkbook) {
       sourceSnapshot[dept.code] = dept.activeVersion.id;
@@ -3413,6 +3453,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       if (sheets.length > 0) {
         const { rows, detectedSeries, headers } = sheetToRecordsWithStyles(sheets[0]);
         datasetMap[dept.code] = rows;
+        if (dept.code === "DESIGN" /* DESIGN */) designStatusColours = readStatusColours(sheets[0]);
         if (dept.code === "PRODUCTION" /* PRODUCTION */) {
           productionHeaders = headers;
           if (detectedSeries > 0) {
@@ -4311,6 +4352,18 @@ async function executeMr11Pipeline(prisma8, options = {}) {
     }
     i += span;
   }
+  const MR11_STATUS_COLUMNS = {
+    "Shell Plan Status - Pending Consultant Drawings": "shell plan status",
+    "Formwork Design Status": "formwork design status"
+  };
+  for (const r of derivedMr11Rows) {
+    const statusColors = {};
+    for (const [column, key] of Object.entries(MR11_STATUS_COLUMNS)) {
+      const colour = statusColourFor(designStatusColours, key, r[column]);
+      if (colour) statusColors[column] = colour;
+    }
+    r["_statusColors"] = statusColors;
+  }
   const run = await prisma8.mr11Run.create({
     data: {
       status: "READY",
@@ -5127,6 +5180,15 @@ ${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
             fgColor: { argb: `FF${hex}` }
           };
         });
+      }
+    });
+    records.forEach((row, i) => {
+      for (const [column, colour] of Object.entries(row["_statusColors"] || {})) {
+        const col = headers.indexOf(column) + 1;
+        if (col <= 0 || !colour?.bg) continue;
+        const cell = worksheet.getCell(i + 3, col);
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${colour.bg.replace("#", "")}` } };
+        if (colour.fc) cell.font = { ...cell.font || {}, bold: true, color: { argb: `FF${colour.fc.replace("#", "")}` } };
       }
     });
     const designDateCol = headers.indexOf("Actual Formwork Order Completion Date") + 1;

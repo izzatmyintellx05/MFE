@@ -484,6 +484,13 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                             ...(frozenSet.has(h)
                               ? frozenBody(h, rIdx + streamSpan >= records.length, rowBg || '#FAFAF9', glowColor)
                               : {}),
+                            // A status shows the colour it has in the Shell Plan & Design file
+                            ...(row?._statusColors?.[h]
+                              ? {
+                                  backgroundColor: row._statusColors[h].bg,
+                                  ...(row._statusColors[h].fc ? { color: row._statusColors[h].fc } : {}),
+                                }
+                              : {}),
                           }}
                         >
                           {h === DESIGN_DATE_COLUMN && Array.isArray(row?._designDateParts) && row._designDateParts.length > 0 ? (
