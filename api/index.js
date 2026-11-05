@@ -3255,7 +3255,8 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
         source = "Processed";
       }
       const history = stageHistory[input.historyKey] ||= {};
-      const allocate = (projectM2, stage) => {
+      const dispatchedBefore = Object.entries(dispatched).filter(([key]) => key < monthKeyOf(labels[0])).reduce((t, [, m2]) => t + (m2 || 0), 0);
+      const allocate = (projectM2, stage, wholeProject) => {
         const v = { ...bd };
         for (const l of ended) {
           const key = monthKeyOf(l);
@@ -3263,7 +3264,7 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
           else if (stage && history[key]) v[l] = history[key][stage];
         }
         if (projectM2 === null || open.length === 0) return v;
-        let current = projectM2 - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
+        let current = projectM2 - (wholeProject ? dispatchedBefore : 0) - ended.reduce((t, l) => t + v[l], 0) - open.slice(1).reduce((t, l) => t + v[l], 0);
         v[open[0]] = Math.max(0, current);
         for (const l of open.slice(1)) {
           if (current >= 0) break;
@@ -3273,10 +3274,10 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
         }
         return v;
       };
-      const designValues = allocate(designTarget, "design");
-      const values = allocate(target, "processed");
+      const designValues = allocate(designTarget, "design", designApplies);
+      const values = allocate(target, "processed", source !== "BD");
       const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
-      const columnValues = allocate(bdForecast, null);
+      const columnValues = allocate(bdForecast, null, false);
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
