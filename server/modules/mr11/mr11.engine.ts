@@ -713,9 +713,10 @@ type MonthStageHistory = Record<string, Record<string, { design: number; process
  * Monthly forecast / actual columns (Jan-26 .. Dec-27, Total 2026 m2, Total 2027 m2, Unutilized m2),
  * and each row's month-by-month pipeline for the CEO dashboard (row._monthStages).
  *
- * The month columns show the BD file's values as they are (BD's actual / forecast), nothing
- * worked out. Unutilized m2 is the row's share of Design's Total Quantity Ordered less those
- * values and less what was dispatched before Jan-26.
+ * The month columns show the BD file's values, except a month that has ended and has a dispatch
+ * record: it shows the m2 actually dispatched in it (Local: that month's daily columns; Overseas:
+ * the rise in Total Dispatch over the month's uploads). Unutilized m2 is the row's share of
+ * Design's Total Quantity Ordered less those values and less what was dispatched before Jan-26.
  *
  * The CEO dashboard pipeline (row._monthStages) also tracks a Design and a Processed forecast.
  * Design's Total Quantity Ordered (one value for every BD row of the same project, stream and fill
@@ -793,9 +794,14 @@ function applyMonthlyForecast(rows: Record<string, any>[], currentMonth: string,
       };
       const designValues = allocate(designTarget, 'design', designApplies);
       const values = allocate(target, 'processed', source !== 'BD');
-      // MR11's month columns: the BD file's values
+      // MR11's month columns: the BD file's values, and in an ended month the m2 actually
+      // dispatched when the Dispatch file has a record for it
       const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
       const columnValues: Record<string, number> = { ...bd };
+      for (const l of ended) {
+        const key = monthKeyOf(l);
+        if (dispatched[key] !== undefined) columnValues[l] = dispatched[key];
+      }
 
       let total2026 = 0;
       let total2027 = 0;

@@ -3339,6 +3339,10 @@ function applyMonthlyForecast(rows, currentMonth, stageHistory) {
       const values = allocate(target, "processed", source !== "BD");
       const bdForecast = bdTotals[idx] > 0 ? bdTotals[idx] : null;
       const columnValues = { ...bd };
+      for (const l of ended) {
+        const key = monthKeyOf(l);
+        if (dispatched[key] !== void 0) columnValues[l] = dispatched[key];
+      }
       let total2026 = 0;
       let total2027 = 0;
       for (const l of labels) {
