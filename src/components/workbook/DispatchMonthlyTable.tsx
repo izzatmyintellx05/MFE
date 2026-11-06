@@ -74,8 +74,8 @@ export const DispatchMonthlyTable: React.FC<{ reloadKey?: number }> = ({ reloadK
           <div className="py-6 text-center text-[11px] text-rose-600">{error}</div>
         ) : shown.length === 0 || months.length === 0 ? (
           <div className="py-8 text-center text-[11px] text-slate-400">
-            Nothing dispatched yet. Local projects count the m² in their daily columns; Overseas projects count how much
-            Cumulative Dispatched goes up from one month's uploads to the next.
+            Nothing dispatched yet. Local projects count the m² in their daily columns; Overseas projects count each
+            shipment's m² in its ATD month (before any ATD, how much Cumulative Dispatched goes up from one month's uploads to the next).
           </div>
         ) : (
           <table className="w-full text-[11px] text-left border-collapse">
