@@ -715,7 +715,8 @@ type MonthStageHistory = Record<string, Record<string, { design: number; process
  *
  * The month columns show the BD file's values, except a month that has ended and has a dispatch
  * record: it shows the m2 actually dispatched in it (Local: that month's daily columns; Overseas:
- * the rise in Total Dispatch over the month's uploads). Unutilized m2 is the row's share of
+ * the Total Area m2 of shipments whose ATD is in that month, else the rise in Total Dispatch over
+ * the month's uploads). Unutilized m2 is the row's share of
  * Design's Total Quantity Ordered less those values and less what was dispatched before Jan-26.
  *
  * The CEO dashboard pipeline (row._monthStages) also tracks a Design and a Processed forecast.
@@ -2104,8 +2105,8 @@ export async function executeMr11Pipeline(
       .map((p) => findCellValue(p.data, 'Order Status'))
       .filter((v) => v !== null && v !== undefined && String(v).trim() !== '');
 
-    // m2 dispatched in each month: Local from its daily columns; Overseas from how much Total
-    // Dispatch went up between the last uploads of that month and of the month before
+    // m2 dispatched in each month: Local from its daily columns; Overseas from its shipments' ATD
+    // (else how much Total Dispatch went up between the last uploads of that month and the one before)
     const currentMonth = uploadDateStr.slice(0, 7);
     const dispatchedInMonth: Record<string, number> = {};
     if (!isBlueColor(bdFontColor)) {
@@ -2122,10 +2123,21 @@ export async function executeMr11Pipeline(
         const historyKey = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow['Products type']);
         const history = (dispatchByMonth[historyKey] ||= {});
         if (totalDispatched !== null) history[currentMonth] = totalDispatched;
-        const months = Object.keys(history).sort();
-        for (let k = 1; k < months.length; k++) {
-          // A month without an upload shows nothing dispatched; the next upload's month counts it
-          dispatchedInMonth[months[k]] = Math.max(0, history[months[k]] - history[months[k - 1]]);
+        // Shipments with an ATD count in the month they sailed, from their Total Area m2, so a
+        // month filled in late (e.g. August's shipments uploaded in November) lands in its own month
+        const sailedByMonth: Record<string, number> = {};
+        for (const [date, m2] of atdByDate) {
+          if (m2 !== null) sailedByMonth[date.slice(0, 7)] = (sailedByMonth[date.slice(0, 7)] || 0) + m2;
+        }
+        if (Object.keys(sailedByMonth).length > 0) {
+          Object.assign(dispatchedInMonth, sailedByMonth);
+        } else {
+          // No ATD yet: how much Total Dispatch went up between the last uploads of each month
+          const months = Object.keys(history).sort();
+          for (let k = 1; k < months.length; k++) {
+            // A month without an upload shows nothing dispatched; the next upload's month counts it
+            dispatchedInMonth[months[k]] = Math.max(0, history[months[k]] - history[months[k - 1]]);
+          }
         }
       }
     }

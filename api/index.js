@@ -4255,9 +4255,17 @@ async function executeMr11Pipeline(prisma8, options = {}) {
         const historyKey2 = mr11RowKey(shortName, bdStream, bdFontColor, bdFillColor, outRow["Products type"]);
         const history2 = dispatchByMonth[historyKey2] ||= {};
         if (totalDispatched !== null) history2[currentMonth] = totalDispatched;
-        const months = Object.keys(history2).sort();
-        for (let k = 1; k < months.length; k++) {
-          dispatchedInMonth[months[k]] = Math.max(0, history2[months[k]] - history2[months[k - 1]]);
+        const sailedByMonth = {};
+        for (const [date, m2] of atdByDate) {
+          if (m2 !== null) sailedByMonth[date.slice(0, 7)] = (sailedByMonth[date.slice(0, 7)] || 0) + m2;
+        }
+        if (Object.keys(sailedByMonth).length > 0) {
+          Object.assign(dispatchedInMonth, sailedByMonth);
+        } else {
+          const months = Object.keys(history2).sort();
+          for (let k = 1; k < months.length; k++) {
+            dispatchedInMonth[months[k]] = Math.max(0, history2[months[k]] - history2[months[k - 1]]);
+          }
         }
       }
     }
