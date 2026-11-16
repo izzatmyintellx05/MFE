@@ -3,6 +3,7 @@ import { BdPriceInputs, priceBdRow } from './mr11.pricing';
 import { getLmeAluminiumPrice } from '../../utils/lme';
 import { getUsdRates } from '../../utils/fx';
 import { MR11_ORDERED_COLUMNS, ORDERED_HEADER_LIST } from '../../config/mr11.config';
+import { COMBINED_NAME_COLUMN, CUSTOMER_COLUMN, PROJECT_NAME_COLUMN, splitCustomerProject, withCustomerProject } from '../../utils/customer-project';
 import { saveMr11RunToDb, fetchLatestMr11RunFromDb, restoreEngineHistory } from '../../db/supabase';
 import { exportEngineHistory } from '../../db/prisma';
 import { FortuneSheet } from '../../utils/excel-normalizer';
@@ -1399,6 +1400,10 @@ export async function executeMr11Pipeline(
     }
     // MR11 shows the stream the row was matched on
     if (streamInProjectNo) outRow['Stream'] = bdStream;
+    // Customer and Project Name in columns of their own, split from BD's "Customer & Project Name"
+    const split = splitCustomerProject(outRow[COMBINED_NAME_COLUMN], outRow['Countries']);
+    outRow[CUSTOMER_COLUMN] = split.customer || null;
+    outRow[PROJECT_NAME_COLUMN] = split.project || null;
     // Prices: BD's price columns, kept with the row so MR11 can recalculate them for each day's
     // LME price and exchange rates (see mr11.pricing.ts)
     const pricing: BdPriceInputs = {
@@ -2359,7 +2364,8 @@ export async function executeMr11Pipeline(
       const previousRecords: any[] = Array.isArray((previousRun as any)?.records) ? (previousRun as any).records : [];
       const hadPrevious = previousRecords.length > 0;
       const columns = [...new Set([...ORDERED_HEADER_LIST, ...derivedMr11Rows.flatMap((r) => Object.keys(r))])];
-      const diff = hadPrevious ? diffMr11Records(previousRecords, derivedMr11Rows, columns) : null;
+      // MR11s saved before Customer and Project Name were split get them too, so they don't show as changed
+      const diff = hadPrevious ? diffMr11Records(previousRecords.map(withCustomerProject), derivedMr11Rows, columns) : null;
       if (!diff || diff.sheets.length > 0) {
         const changedBy = options.changedById ? await prisma.user.findUnique({ where: { id: options.changedById } }) : null;
         await recordChange(MR11_SCOPE, diff, {

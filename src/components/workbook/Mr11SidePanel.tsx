@@ -198,7 +198,7 @@ export const Mr11SidePanel: React.FC<Mr11SidePanelProps> = ({
         </div>
         <ColumnGroupsList groups={groups} hidden={hiddenGroups} onChange={onHiddenGroupsChange} />
         <p className="px-2 mt-1.5 text-[10px] leading-snug text-stone-400">
-          Project name, number, short name and stream always stay visible.
+          Customer, project name, project number, short name and stream always stay visible.
         </p>
       </Section>
 

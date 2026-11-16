@@ -548,7 +548,7 @@ export const Mr11Table: React.FC<Mr11TableProps> = ({
                           ...(isYellowAtd ? {} : rowFill(rowBg, glowColor)),
                           // The BD row's font colour runs across the whole row, as in the BD file
                           color: isYellowAtd ? '#78350F' : fontColor !== '#000000' ? fontColor : undefined,
-                          fontWeight: fontColor !== '#000000' && allHeaders.indexOf(h) < 4 ? 'bold' : 'normal',
+                          fontWeight: fontColor !== '#000000' && allHeaders.indexOf(h) < 5 ? 'bold' : 'normal',
                           ...(frozenSet.has(h)
                             ? frozenBody(h, rIdx === records.length - 1, isYellowAtd ? undefined : rowBg || '#FFFFFF', glowColor)
                             : {}),

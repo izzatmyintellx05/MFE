@@ -121,7 +121,9 @@ export const MR11_SOURCE_KEY_MAP: Record<RoleCode, string[]> = {
 // "BU Actual/Forecast" is completely removed.
 export const ORDERED_HEADER_LIST = [
   // --- BD & Commercial Columns (Col A to Col AI) ---
-  'Customer & Project Name',
+  // BD's "Customer & Project Name" (column A) is shown split in two
+  'Customer',
+  'Project Name',
   'Project No',
   'Short Name',
   'Stream',
@@ -310,6 +312,8 @@ export const MR11_DEPARTMENT_COLORS: Record<string, string> = {
 export const MR11_COLUMN_DEPARTMENTS: Record<string, string> = (() => {
   const map: Record<string, string> = {};
   for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
+  map['Customer'] = RoleCode.BD;
+  map['Project Name'] = RoleCode.BD;
   for (const h of ORDERED_HEADER_LIST) {
     if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = RoleCode.BD;
   }

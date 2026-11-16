@@ -2081,7 +2081,9 @@ var MR11_NUMBER_FORMATS = {
 };
 var ORDERED_HEADER_LIST = [
   // --- BD & Commercial Columns (Col A to Col AI) ---
-  "Customer & Project Name",
+  // BD's "Customer & Project Name" (column A) is shown split in two
+  "Customer",
+  "Project Name",
   "Project No",
   "Short Name",
   "Stream",
@@ -2292,11 +2294,42 @@ var MR11_DEPARTMENT_COLORS = {
 var MR11_COLUMN_DEPARTMENTS = (() => {
   const map = {};
   for (const m of MR11_ORDERED_COLUMNS) map[m.target] = m.sourceDept;
+  map["Customer"] = "BD" /* BD */;
+  map["Project Name"] = "BD" /* BD */;
   for (const h of ORDERED_HEADER_LIST) {
     if (/^[A-Z][a-z]{2}-\d{2}$/.test(h) || /^Total 20\d\d m2$/.test(h)) map[h] = "BD" /* BD */;
   }
   return map;
 })();
+
+// server/utils/customer-project.ts
+var COMBINED_NAME_COLUMN = "Customer & Project Name";
+var CUSTOMER_COLUMN = "Customer";
+var PROJECT_NAME_COLUMN = "Project Name";
+function splitCustomerProject(combined, country) {
+  const text = String(combined ?? "").trim();
+  if (!text) return { customer: "", project: "" };
+  const parts = text.split(/\s+-\s+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length >= 3) return { customer: parts[1], project: parts.slice(2).join(" - ") };
+  if (parts.length === 2) {
+    const first = parts[0];
+    const isCountry = first.toLowerCase() === String(country ?? "").trim().toLowerCase() || /[A-Z]/.test(first) && first === first.toUpperCase();
+    return isCountry ? { customer: "", project: parts[1] } : { customer: parts[0], project: parts[1] };
+  }
+  return { customer: "", project: text };
+}
+function withCustomerProject(row) {
+  if (!row || typeof row !== "object") return row;
+  const hasCustomer = row[CUSTOMER_COLUMN] !== void 0;
+  const hasProject = row[PROJECT_NAME_COLUMN] !== void 0;
+  if (hasCustomer && hasProject) return row;
+  const { customer, project } = splitCustomerProject(row[COMBINED_NAME_COLUMN], row["Countries"]);
+  return {
+    ...row,
+    ...hasCustomer ? {} : { [CUSTOMER_COLUMN]: customer || null },
+    ...hasProject ? {} : { [PROJECT_NAME_COLUMN]: project || null }
+  };
+}
 
 // server/modules/mr11/mr11.engine.ts
 init_supabase();
@@ -3778,6 +3811,9 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       }
     }
     if (streamInProjectNo) outRow["Stream"] = bdStream;
+    const split = splitCustomerProject(outRow[COMBINED_NAME_COLUMN], outRow["Countries"]);
+    outRow[CUSTOMER_COLUMN] = split.customer || null;
+    outRow[PROJECT_NAME_COLUMN] = split.project || null;
     const pricing = {
       usd: exactValue("Selling Price (USD)"),
       myr: exactValue("Selling Price (MYR)"),
@@ -4417,7 +4453,7 @@ async function executeMr11Pipeline(prisma8, options = {}) {
       const previousRecords = Array.isArray(previousRun?.records) ? previousRun.records : [];
       const hadPrevious = previousRecords.length > 0;
       const columns = [.../* @__PURE__ */ new Set([...ORDERED_HEADER_LIST, ...derivedMr11Rows.flatMap((r) => Object.keys(r))])];
-      const diff = hadPrevious ? diffMr11Records(previousRecords, derivedMr11Rows, columns) : null;
+      const diff = hadPrevious ? diffMr11Records(previousRecords.map(withCustomerProject), derivedMr11Rows, columns) : null;
       if (!diff || diff.sheets.length > 0) {
         const changedBy = options.changedById ? await prisma8.user.findUnique({ where: { id: options.changedById } }) : null;
         await recordChange(MR11_SCOPE, diff, {
@@ -4865,7 +4901,7 @@ async function getLatestMr11(req, res) {
     const config = await prisma5.mr11Config.findUnique({ where: { id: "singleton" } });
     const [fx, lmePrice, ratesInfo] = await Promise.all([getUsdToMyrRate(), getLmeAluminiumPrice(), getUsdRatesInfo()]);
     const usdRates = ratesInfo?.rates ?? null;
-    const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates) } : latestRun;
+    const run = latestRun && Array.isArray(latestRun.records) ? { ...latestRun, records: applyLivePricing(latestRun.records.map(withCustomerProject), lmePrice?.cash ?? null, usdRates) } : latestRun;
     const bdCurrencies = (run?.records || []).map((r) => currencyCode(r?._pricing?.otherCurrency)).filter((c) => Boolean(c) && c !== "USD");
     const currencyRates = [.../* @__PURE__ */ new Set([...SHOWN_CURRENCIES, ...bdCurrencies])].filter((code) => usdRates?.[code]).map((code) => ({ code, rate: usdRates[code], inBd: bdCurrencies.includes(code), source: ratesInfo?.sources[code] ?? "" }));
     return res.json({
@@ -5123,7 +5159,7 @@ async function exportMr11ToExcel(req, res) {
       return res.status(400).json({ success: false, error: { message: "No MR11 records to export" } });
     }
     const [lmePrice, usdRates] = await Promise.all([getLmeAluminiumPrice(), getUsdRates()]);
-    const records = applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates);
+    const records = applyLivePricing(latestRun.records.map(withCustomerProject), lmePrice?.cash ?? null, usdRates);
     const workbook = new ExcelJS2.Workbook();
     const worksheet = workbook.addWorksheet("MR11 Master");
     const headers = ORDERED_HEADER_LIST2;
@@ -5180,7 +5216,7 @@ ${key < currentMonth ? "ACTUAL" : "F'CAST"}`;
       if (row["_fontColor"]) {
         const hex = String(row["_fontColor"]).replace("#", "");
         addedRow.eachCell({ includeEmpty: true }, (cell, col) => {
-          cell.font = { color: { argb: `FF${hex}` }, bold: col <= 4 && hex !== "000000" };
+          cell.font = { color: { argb: `FF${hex}` }, bold: col <= 5 && hex !== "000000" };
         });
       }
       if (row["_fillColor"]) {
