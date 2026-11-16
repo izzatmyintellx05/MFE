@@ -93,7 +93,7 @@ export const Login: React.FC = () => {
       <div className="w-full max-w-sm">
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-6">
-          <div className="p-3 rounded-2xl bg-white border border-slate-200/90 shadow-sm mb-4 flex items-center justify-center">
+          <div className="p-2 rounded-2xl bg-white border border-slate-200/90 shadow-sm mb-4 flex items-center justify-center">
             <BrandLogo size="lg" showSubtitle={true} />
           </div>
           <h1 className="text-base font-black tracking-wider uppercase text-slate-900 text-center">

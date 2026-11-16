@@ -103,10 +103,14 @@ export const Sidebar: React.FC = () => {
       {/* Brand header: logo and the collapse button when open, just the button when collapsed */}
       <div
         className={`border-b border-slate-100 flex items-center flex-shrink-0 ${
-          isOpen ? 'h-14 px-3 justify-between' : 'h-14 justify-center'
+          isOpen ? 'h-14 pl-1 pr-3 justify-between' : 'h-14 justify-center'
         }`}
       >
-        {isOpen && <BrandLogo size="sm" showSubtitle={true} className="min-w-0 overflow-hidden" />}
+        {isOpen && (
+          <div className="min-w-0 overflow-hidden">
+            <BrandLogo size="sm" showSubtitle={true} />
+          </div>
+        )}
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
