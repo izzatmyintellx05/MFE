@@ -19,6 +19,7 @@ import { recordChange, MR11_SCOPE } from '../changelog/changelog.service';
 // Currencies shown with the exchange rate on the MR11 page, besides any BD prices in
 const SHOWN_CURRENCIES = ['MYR', 'SGD', 'AUD', 'INR', 'CNY', 'EUR', 'GBP', 'AED'];
 import { getLmeAluminiumPrice } from '../../utils/lme';
+import { withCustomerProject } from '../../utils/customer-project';
 
 const prisma = new PrismaClient();
 
@@ -42,7 +43,7 @@ export async function getLatestMr11(req: Request, res: Response) {
     // Selling Price (USD), LME Adjusted and Final Selling Price for today's LME price and rates
     const run =
       latestRun && Array.isArray(latestRun.records)
-        ? { ...latestRun, records: applyLivePricing(latestRun.records, lmePrice?.cash ?? null, usdRates) }
+        ? { ...latestRun, records: applyLivePricing(latestRun.records.map(withCustomerProject), lmePrice?.cash ?? null, usdRates) }
         : latestRun;
     // 1 USD in each shown currency, and in every currency BD's Other Currencies column uses
     const bdCurrencies = ((run?.records as any[]) || [])
@@ -348,7 +349,7 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
     }
 
     const [lmePrice, usdRates] = await Promise.all([getLmeAluminiumPrice(), getUsdRates()]);
-    const records = applyLivePricing(latestRun.records as Record<string, any>[], lmePrice?.cash ?? null, usdRates);
+    const records = applyLivePricing((latestRun.records as Record<string, any>[]).map(withCustomerProject), lmePrice?.cash ?? null, usdRates);
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('MR11 Master');
 
@@ -419,7 +420,7 @@ export async function exportMr11ToExcel(req: Request, res: Response) {
         // The BD row's font colour runs across the whole row (project columns in bold)
         const hex = String(row['_fontColor']).replace('#', '');
         addedRow.eachCell({ includeEmpty: true }, (cell, col) => {
-          cell.font = { color: { argb: `FF${hex}` }, bold: col <= 4 && hex !== '000000' };
+          cell.font = { color: { argb: `FF${hex}` }, bold: col <= 5 && hex !== '000000' };
         });
       }
 

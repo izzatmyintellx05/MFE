@@ -8,7 +8,7 @@ export interface ColumnGroup {
 }
 
 // The project identity columns stay on screen whatever is hidden
-const ALWAYS_SHOWN = new Set(['Customer & Project Name', 'Project No', 'Short Name', 'Stream']);
+const ALWAYS_SHOWN = new Set(['Customer', 'Project Name', 'Customer & Project Name', 'Project No', 'Short Name', 'Stream']);
 
 const BD_COLOR = '#2563EB';
 
